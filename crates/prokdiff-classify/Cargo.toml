@@ -11,3 +11,4 @@ readme.workspace = true
 
 [dependencies]
 prokdiff-gd = { workspace = true }
+thiserror = { workspace = true }

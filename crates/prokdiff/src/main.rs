@@ -1,5 +1,5 @@
 //! ProkDiff CLI. Engine path B: Bowtie2 + Rust RA/MC/JC. No runtime breseq.
-//! Classification (near_homolog / scattered_snv / structural) is stage 3.
+//! Product path: both strains → subtract → intended mask → classes (3)→(1)→(2).
 
 mod cli;
 
@@ -7,11 +7,19 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
+use prokdiff_classify::{
+    classify, parse_intended_path, ClassifyOptions, EditorKind, RefContig, DEFAULT_MAX_MISMATCHES,
+    DEFAULT_NEAR_DISTANCE,
+};
 use prokdiff_evidence::align::FastqInput;
 use prokdiff_evidence::engine::{run_sample, EngineOptions};
-use prokdiff_evidence::fasta::write_combined_fasta;
+use prokdiff_evidence::fasta::{read_reference, write_combined_fasta};
+use prokdiff_gd::GenomeDiff;
+use prokdiff_report::{write_summary, write_unintended_tsv};
 
-use cli::{validate_evidence, validate_product, Cli, CliError, Commands, EvidenceArgs, ProductJob};
+use cli::{
+    validate_evidence, validate_product, Cli, CliError, Commands, Editor, EvidenceArgs, ProductJob,
+};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -27,6 +35,8 @@ fn main() -> ExitCode {
 enum RunError {
     Cli(CliError),
     Evidence(prokdiff_evidence::EvidenceError),
+    Gd(prokdiff_gd::GdError),
+    Intended(prokdiff_classify::IntendedError),
     Io(std::io::Error),
 }
 
@@ -42,6 +52,18 @@ impl From<prokdiff_evidence::EvidenceError> for RunError {
     }
 }
 
+impl From<prokdiff_gd::GdError> for RunError {
+    fn from(e: prokdiff_gd::GdError) -> Self {
+        Self::Gd(e)
+    }
+}
+
+impl From<prokdiff_classify::IntendedError> for RunError {
+    fn from(e: prokdiff_classify::IntendedError) -> Self {
+        Self::Intended(e)
+    }
+}
+
 impl From<std::io::Error> for RunError {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e)
@@ -53,6 +75,8 @@ impl std::fmt::Display for RunError {
         match self {
             Self::Cli(e) => write!(f, "{e}"),
             Self::Evidence(e) => write!(f, "{e}"),
+            Self::Gd(e) => write!(f, "{e}"),
+            Self::Intended(e) => write!(f, "{e}"),
             Self::Io(e) => write!(f, "{e}"),
         }
     }
@@ -87,10 +111,6 @@ fn run_evidence(args: EvidenceArgs) -> Result<(), RunError> {
 }
 
 fn run_product(job: ProductJob) -> Result<(), RunError> {
-    let _ = job.editor; // stage 3 classify; validated only
-    if job.intended.is_some() {
-        eprintln!("note: --intended is accepted but not applied until stage 3 classify");
-    }
     std::fs::create_dir_all(&job.outdir)?;
     let work = job.outdir.join("work");
     std::fs::create_dir_all(&work)?;
@@ -103,7 +123,7 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
 
     let starter_dir = job.outdir.join("starter");
     let edited_dir = job.outdir.join("edited");
-    let starter_gd = run_sample(
+    let starter_gd_path = run_sample(
         &ref_fa,
         &FastqInput {
             files: job.starter.clone(),
@@ -111,7 +131,7 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
         &starter_dir,
         &opts,
     )?;
-    let edited_gd = run_sample(
+    let edited_gd_path = run_sample(
         &ref_fa,
         &FastqInput {
             files: job.edited.clone(),
@@ -122,13 +142,62 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
 
     let starter_out = job.outdir.join("starter.gd");
     let edited_out = job.outdir.join("edited.gd");
-    std::fs::copy(&starter_gd, &starter_out)?;
-    std::fs::copy(&edited_gd, &edited_out)?;
+    std::fs::copy(&starter_gd_path, &starter_out)?;
+    std::fs::copy(&edited_gd_path, &edited_out)?;
+
+    let starter_gd = GenomeDiff::from_path(&starter_out)?;
+    let edited_gd = GenomeDiff::from_path(&edited_out)?;
+    let intended = match &job.intended {
+        Some(p) => parse_intended_path(p)?,
+        None => Vec::new(),
+    };
+    let fasta = read_reference(&ref_fa)?;
+    let refs: Vec<RefContig> = fasta
+        .into_iter()
+        .map(|r| RefContig {
+            name: r.name,
+            seq: r.seq,
+        })
+        .collect();
+    let editor_kind = match job.editor {
+        Editor::Cas9 => EditorKind::Cas9,
+        Editor::Cas12a => EditorKind::Cas12a,
+        Editor::Dsb => EditorKind::Dsb,
+    };
+    let classified = classify(
+        &edited_gd,
+        &starter_gd,
+        &intended,
+        &refs,
+        &ClassifyOptions {
+            editor: editor_kind,
+            spacer: job.spacer.clone(),
+            pam: job.pam.clone(),
+            near_distance: DEFAULT_NEAR_DISTANCE,
+            max_mismatches: DEFAULT_MAX_MISMATCHES,
+            hypothesis: job.hypothesis,
+        },
+    );
+
+    let tsv = job.outdir.join("unintended.tsv");
+    let summary = job.outdir.join("summary.txt");
+    write_unintended_tsv(
+        &tsv,
+        &classified.unintended,
+        editor_kind.as_str(),
+        job.hypothesis,
+    )?;
+    write_summary(
+        &summary,
+        &classified,
+        job.intended.is_some(),
+        editor_kind.as_str(),
+    )?;
+
     eprintln!("wrote {}", starter_out.display());
     eprintln!("wrote {}", edited_out.display());
-    eprintln!(
-        "note: mutation classification (structural / near_homolog / scattered_snv) is not in this engine MVP"
-    );
+    eprintln!("wrote {}", tsv.display());
+    eprintln!("wrote {}", summary.display());
     Ok(())
 }
 

@@ -14,6 +14,7 @@ use crate::error::{EvidenceError, Result};
 use crate::fasta::{read_reference, FastaRecord};
 use crate::jc::{accept_junction, JunctionSupport};
 use crate::mc::call_missing_coverage;
+use crate::normalize::{right_align_del, right_align_ins};
 use crate::pileup::{apply_read, AlignedRead, CigarKind, CigarOp, SplitCandidate};
 use crate::ra::{call_consensus, ConsensusCall, PileupColumn, RaOptions};
 
@@ -183,6 +184,8 @@ pub fn call_from_bam(
         let (columns, unique_depth, splits) = &contig_results[idx];
         let mut pending_del: Option<(u64, u8)> = None;
         let flush_del = |gd: &mut GenomeDiff, id: &mut u32, start: u64, size: u8| {
+            // Match breseq mutation coordinates (RA evidence may stay 5′).
+            let start = right_align_del(&rec.seq, start, u64::from(size));
             gd.entries
                 .push(GdEntry::del(*id, rec.name.clone(), start, u64::from(size)));
             *id += 1;
@@ -207,6 +210,7 @@ pub fn call_from_bam(
                     if let Some((s, sz)) = pending_del.take() {
                         flush_del(&mut gd, &mut next_id, s, sz);
                     }
+                    let (pos, seq) = right_align_ins(&rec.seq, pos, &seq);
                     let s = String::from_utf8_lossy(&seq).into_owned();
                     gd.entries
                         .push(GdEntry::ins(next_id, rec.name.clone(), pos, s));

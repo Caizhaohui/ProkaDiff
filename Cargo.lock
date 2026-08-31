@@ -433,6 +433,7 @@ name = "prokdiff-classify"
 version = "0.1.0"
 dependencies = [
  "prokdiff-gd",
+ "thiserror",
 ]
 
 [[package]]
@@ -456,6 +457,7 @@ dependencies = [
 name = "prokdiff-report"
 version = "0.1.0"
 dependencies = [
+ "prokdiff-classify",
  "prokdiff-gd",
 ]
 

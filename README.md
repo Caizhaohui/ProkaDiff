@@ -31,25 +31,27 @@ This is not mammalian GUIDE-seq, and it is not “every SNP versus MG1655.”
 
 Assignment order is locked: **structural (3) → near_homolog (1) → scattered_snv (2)**. One mutation → one class. Class (2) is **never** disabled because “this editor does not make DSBs.”
 
-1. **`near_homolog`** — near a spacer homolog + that editor’s PAM (Cas9 default NGG; Cas12a default TTTV). Annotation, not sole evidence.
-2. **`scattered_snv`** — remaining SNPs / short indels. Reported for every editor.
-3. **`structural`** — MOB / JC, large deletions, plasmid-related events.
-
-Classification lands in a later milestone. The engine MVP writes Genome Diff evidence only.
+1. **`near_homolog`** — near a spacer homolog + that editor’s PAM (Cas9 default NGG; Cas12a default TTTV; ≤4 mismatches; default 50 bp). Annotation, not sole evidence. `--editor dsb` does not assign this class.
+2. **`scattered_snv`** — remaining SNPs / short indels. Reported for every editor. Optional hypothesis `sos_widney2014` unless `--no-hypothesis`.
+3. **`structural`** — MOB / JC, large deletions (>2 bp), AMP / CON.
 
 ## CLI
 
-Product (both strains required; engine runs twice; no classify yet):
+Product (both strains required; classify after subtract):
 
 ```bash
 prokdiff \
   --starter starter_R1.fastq.gz --starter starter_R2.fastq.gz \
   --edited  edited_R1.fastq.gz  --edited  edited_R2.fastq.gz \
   --ref     NC_000913.3.fa \
+  --intended intended.tsv \
   --editor cas9 \
+  --spacer  NNNNNNNNNNNNNNNNNNNN \
   --threads 8 \
   --outdir  results/prokdiff
 ```
+
+Writes `starter.gd`, `edited.gd`, `unintended.tsv`, and `summary.txt`.
 
 Single-sample engine (oracle / parity jobs):
 
@@ -74,9 +76,7 @@ I/O contract: [docs/schema.md](docs/schema.md). Oracle rules (output + wall-cloc
 
 ## Status
 
-Engine MVP (stage 2): Bowtie2 wrapper, noodles BAM I/O, RA / MC / JC, `prokdiff evidence`. Product classify (the three classes above) is not implemented yet.
-
-Layer-0 unit tests are in-memory. Synthetic FASTQ generation (`testdata/generate.sh`) and breseq parity jobs must run on Slurm partition **`qcpu_18i`**, not a login node.
+Stage 3 product layer: subtract starter from edited, mask `--intended`, label the three classes. Engine MVP (`prokdiff evidence`) is unchanged. Layer-0 classification tests are in-memory. Layer-1 fixtures `synth_parent_child` and `synth_cas9_near` must run on Slurm **`qcpu_18i`**.
 
 ## License
 

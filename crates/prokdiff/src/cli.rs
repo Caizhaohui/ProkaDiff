@@ -1,4 +1,4 @@
-//! CLI parsing and validation (no Bowtie2). Product classify is stage 3.
+//! CLI parsing and validation (no Bowtie2).
 
 use std::path::PathBuf;
 
@@ -29,7 +29,7 @@ pub struct Cli {
     /// Coordinate-skeleton reference (FASTA or GenBank). Repeatable.
     #[arg(long = "ref", action = ArgAction::Append)]
     pub refs: Vec<PathBuf>,
-    /// Optional intended-edit table (stage 3). Accepted and ignored by the engine MVP.
+    /// Optional intended-edit table. Omitted → every post-subtract call is unintended.
     #[arg(long)]
     pub intended: Option<PathBuf>,
     /// First period: cas9 | cas12a | dsb. cast / is110 error.
@@ -41,6 +41,9 @@ pub struct Cli {
     pub pam: Option<String>,
     #[arg(long, default_value_t = 8)]
     pub threads: usize,
+    /// Omit the hypothesis column from unintended.tsv.
+    #[arg(long, default_value_t = false)]
+    pub no_hypothesis: bool,
     #[arg(long)]
     pub outdir: Option<PathBuf>,
     /// Keep intermediate BAM / Bowtie2 index under outdir.
@@ -86,6 +89,8 @@ pub enum CliError {
     MissingRef,
     MissingOutdir,
     EmptyFastq,
+    MissingSpacer,
+    OddFastqCount { flag: &'static str },
 }
 
 impl std::fmt::Display for CliError {
@@ -104,6 +109,13 @@ impl std::fmt::Display for CliError {
             Self::MissingRef => f.write_str("at least one --ref is required"),
             Self::MissingOutdir => f.write_str("--outdir is required"),
             Self::EmptyFastq => f.write_str("at least one FASTQ is required"),
+            Self::MissingSpacer => f.write_str(
+                "--spacer is required for --editor cas9 and cas12a (omit for --editor dsb)",
+            ),
+            Self::OddFastqCount { flag } => write!(
+                f,
+                "{flag}: expected 1 file (SE) or an even number of files (PE pairs, R1 then R2)"
+            ),
         }
     }
 }
@@ -130,10 +142,13 @@ pub struct ProductJob {
     pub edited: Vec<PathBuf>,
     pub refs: Vec<PathBuf>,
     pub editor: Editor,
+    pub spacer: Option<String>,
+    pub pam: Option<String>,
     pub threads: usize,
     pub outdir: PathBuf,
     pub keep_bam: bool,
     pub intended: Option<PathBuf>,
+    pub hypothesis: bool,
 }
 
 pub fn validate_product(cli: &Cli) -> Result<ProductJob, CliError> {
@@ -152,16 +167,42 @@ pub fn validate_product(cli: &Cli) -> Result<ProductJob, CliError> {
         });
     };
     let editor = parse_editor(raw)?;
+    check_fastq_pairing("--starter", &cli.starter)?;
+    check_fastq_pairing("--edited", &cli.edited)?;
+    let spacer = cli
+        .spacer
+        .as_ref()
+        .map(|s| s.trim().to_ascii_uppercase())
+        .filter(|s| !s.is_empty());
+    match editor {
+        Editor::Cas9 | Editor::Cas12a if spacer.is_none() => {
+            return Err(CliError::MissingSpacer);
+        }
+        _ => {}
+    }
     Ok(ProductJob {
         starter: cli.starter.clone(),
         edited: cli.edited.clone(),
         refs: cli.refs.clone(),
         editor,
+        spacer,
+        pam: cli.pam.clone(),
         threads: cli.threads.max(1),
         outdir,
         keep_bam: cli.keep_bam,
         intended: cli.intended.clone(),
+        hypothesis: !cli.no_hypothesis,
     })
+}
+
+fn check_fastq_pairing(flag: &'static str, files: &[PathBuf]) -> Result<(), CliError> {
+    if files.is_empty() {
+        return Err(CliError::StarterMandatory);
+    }
+    if files.len() != 1 && files.len() % 2 != 0 {
+        return Err(CliError::OddFastqCount { flag });
+    }
+    Ok(())
 }
 
 pub fn validate_evidence(args: &EvidenceArgs) -> Result<(), CliError> {
@@ -247,5 +288,103 @@ mod tests {
             s.contains("login"),
             "generate.sh must refuse the login node"
         );
+    }
+
+    #[test]
+    fn cas9_requires_spacer() {
+        let cli = Cli::try_parse_from([
+            "prokdiff",
+            "--starter",
+            "s.fq",
+            "--edited",
+            "e.fq",
+            "--ref",
+            "r.fa",
+            "--editor",
+            "cas9",
+            "--outdir",
+            "out",
+        ])
+        .unwrap();
+        let err = validate_product(&cli).unwrap_err();
+        assert!(matches!(err, CliError::MissingSpacer));
+    }
+
+    #[test]
+    fn dsb_does_not_require_spacer() {
+        let cli = Cli::try_parse_from([
+            "prokdiff",
+            "--starter",
+            "s.fq",
+            "--edited",
+            "e.fq",
+            "--ref",
+            "r.fa",
+            "--editor",
+            "dsb",
+            "--outdir",
+            "out",
+            "--no-hypothesis",
+        ])
+        .unwrap();
+        let job = validate_product(&cli).unwrap();
+        assert_eq!(job.editor, Editor::Dsb);
+        assert!(job.spacer.is_none());
+        assert!(!job.hypothesis);
+    }
+
+    #[test]
+    fn odd_fastq_count_is_rejected() {
+        let cli = Cli::try_parse_from([
+            "prokdiff",
+            "--starter",
+            "s1.fq",
+            "--starter",
+            "s2.fq",
+            "--starter",
+            "s3.fq",
+            "--edited",
+            "e.fq",
+            "--ref",
+            "r.fa",
+            "--editor",
+            "dsb",
+            "--outdir",
+            "out",
+        ])
+        .unwrap();
+        assert!(matches!(
+            validate_product(&cli).unwrap_err(),
+            CliError::OddFastqCount { flag: "--starter" }
+        ));
+    }
+
+    #[test]
+    fn intended_path_is_optional_and_stored() {
+        let cli = Cli::try_parse_from([
+            "prokdiff",
+            "--starter",
+            "s.fq",
+            "--edited",
+            "e.fq",
+            "--ref",
+            "r.fa",
+            "--editor",
+            "cas9",
+            "--spacer",
+            "acgtacgtacgtacgtacgt",
+            "--intended",
+            "intended.tsv",
+            "--outdir",
+            "out",
+        ])
+        .unwrap();
+        let job = validate_product(&cli).unwrap();
+        assert_eq!(job.spacer.as_deref(), Some("ACGTACGTACGTACGTACGT"));
+        assert_eq!(
+            job.intended.as_deref(),
+            Some(std::path::Path::new("intended.tsv"))
+        );
+        assert!(job.hypothesis);
     }
 }

@@ -11,6 +11,8 @@ default-members = [
     "crates/prokdiff",
     "crates/prokdiff-gd",
     "crates/prokdiff-evidence",
+    "crates/prokdiff-classify",
+    "crates/prokdiff-report",
 ]
 
 [workspace.package]

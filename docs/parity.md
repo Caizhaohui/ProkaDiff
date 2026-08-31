@@ -50,7 +50,7 @@ synth_snp_indel,breseq,8,<sec>,<kb>,<hostname>,…,…,
 | HTML / R 图 | breseq 报告产物；ProkDiff 第一期不要求 |
 | BAM 文件名 / 路径 | 中间比对文件命名可不同 |
 | 重复区 JC 拷贝歧义 | 「哪一个拷贝」与 breseq 一样可有 unassigned JC；允许 junction 坐标 ± 数 bp 的规范化（须在夹具说明中写明阈值） |
-| RA 短 indel 左对齐 | 同一 haplotype 下 INS/DEL 坐标可 ±1、插入序列可循环移位（例如 `INS 1999 TA` ≡ `INS 2000 AT`）。须在夹具 notes 写明；不因此判 SNP 位点失败 |
+| RA 短 indel | 引擎在写出 GD 前将 INS/DEL **3′ 对齐**（tandem repeat 上滑动并旋转插入序列），以便与 breseq / `gdtools SUBTRACT` 键一致。若仍有残留 ±1，视为实现缺陷而非白名单。 |
 | consensus 频率舍入 | `frequency` / 相关浮点字段在 consensus 下接近 1 即可，允许舍入差 |
 
 ## 不允许的差异（结果红线）
@@ -77,6 +77,10 @@ gdtools SUBTRACT edited.gd starter.gd
 再减去 `intended`（若有），与 `unintended.tsv` 变异集合一致（允许本文件白名单内的规范化差异）。
 
 合成夹具 `synth_parent_child`：出发株相对骨架的历史 SNP **不得**出现在非预期列表。
+
+**产品层 subtract 与引擎 JC 白名单的张力：** 单样本引擎允许 junction 坐标 ± 数 bp 的规范化（见上表「重复区 JC 拷贝歧义」）。产品层 `M_edited \ M_parent` 目前与 `gdtools SUBTRACT` 一样用**精确字段键**（`prokdiff-gd::GdEntry::subtract_key`）。因此出发株与编辑株两次独立调用若对同一 JC 报出差 1 bp 的坐标，该 JC 会留在非预期里并标 `structural`。这不是引擎漏报，是差分语义；第一期不把模糊匹配写进运行时。层 3 配对数据若实测到这类假阳性，在本表记下容差后再改键，禁止未测先改。MC 衍生的大 DEL 边界同此风险。
+
+`summary.txt` 阶段 3 只报 `intended_observed` 计数 / `NA`，不报声明条数、也不逐条判定目的编辑成败；完整「目的编辑成功与否」是阶段 4 报告项。
 
 引擎单样本仍须做时间 / 资源对照；产品层差分本身可不与 breseq 比 wall（breseq 无等价流水线）。
 

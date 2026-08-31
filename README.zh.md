@@ -31,25 +31,27 @@
 
 判定顺序锁定：**结构 (3) → 近同源 (1) → 散在 (2)**。一条突变只进一类。**不得**因「该编辑器不做 DSB」关闭散在突变。
 
-1. **`near_homolog`** — 落在 spacer 近同源 + 该编辑器 PAM 附近（Cas9 默认 NGG；Cas12a 默认 TTTV）。注释，非唯一证据。
-2. **`scattered_snv`** — 其余点突变 / 短 indel。所有编辑器都要报。
-3. **`structural`** — MOB / JC、大片段、质粒相关等。
-
-分类属于后续里程碑。当前引擎 MVP 只写 Genome Diff 证据。
+1. **`near_homolog`** — 落在 spacer 近同源 + 该编辑器 PAM 附近（Cas9 默认 NGG；Cas12a 默认 TTTV；最多 4 个错配；默认 50 bp）。注释，非唯一证据。`--editor dsb` 不打此类。
+2. **`scattered_snv`** — 其余点突变 / 短 indel。所有编辑器都要报。可选假说 `sos_widney2014`（`--no-hypothesis` 可关）。
+3. **`structural`** — MOB / JC、大片段缺失（>2 bp）、AMP / CON。
 
 ## CLI
 
-产品入口（两株必填；引擎各跑一次；尚未分类）：
+产品入口（两株必填；差分后再分类）：
 
 ```bash
 prokdiff \
   --starter starter_R1.fastq.gz --starter starter_R2.fastq.gz \
   --edited  edited_R1.fastq.gz  --edited  edited_R2.fastq.gz \
   --ref     NC_000913.3.fa \
+  --intended intended.tsv \
   --editor cas9 \
+  --spacer  NNNNNNNNNNNNNNNNNNNN \
   --threads 8 \
   --outdir  results/prokdiff
 ```
+
+写出 `starter.gd`、`edited.gd`、`unintended.tsv`、`summary.txt`。
 
 单样本引擎（oracle / 对拍任务）：
 
@@ -74,9 +76,7 @@ prokdiff evidence \
 
 ## 当前进度
 
-引擎 MVP（阶段 2）：Bowtie2 包装、noodles BAM、RA / MC / JC、`prokdiff evidence`。产品层三类分类尚未实现。
-
-层 0 单元测试为纯内存。合成 FASTQ（`testdata/generate.sh`）以及与 breseq 的对拍必须提交 Slurm 分区 **`qcpu_18i`**，不要在登录节点跑。
+阶段 3 产品层：出发株减去、目的掩码、三类标签。引擎 MVP（`prokdiff evidence`）不变。层 0 分类测试为纯内存。层 1 夹具 `synth_parent_child` / `synth_cas9_near` 必须提交 Slurm **`qcpu_18i`**。
 
 ## 许可
 

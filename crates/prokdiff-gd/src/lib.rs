@@ -508,6 +508,23 @@ UN\t6\t.\tNC_000913\t900\t910
     }
 
     #[test]
+    fn subtract_jc_requires_exact_coordinates() {
+        // First-period product subtract matches gdtools SUBTRACT (exact fields).
+        // A 1 bp junction jitter therefore does *not* cancel — documented risk.
+        let edited = GenomeDiff {
+            metadata: vec![],
+            entries: vec![GdEntry::jc(1, "chr", 100, "+", "chr", 500, "-", 0)],
+        };
+        let starter = GenomeDiff {
+            metadata: vec![],
+            entries: vec![GdEntry::jc(1, "chr", 101, "+", "chr", 500, "-", 0)],
+        };
+        let out = edited.subtract(&starter);
+        assert_eq!(out.entries.len(), 1);
+        assert_eq!(out.entries[0].fields[1], "100");
+    }
+
+    #[test]
     fn subtract_does_not_drop_un_as_oracle_failure() {
         let edited = GenomeDiff {
             metadata: vec![],
