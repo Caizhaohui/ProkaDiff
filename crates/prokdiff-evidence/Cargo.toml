@@ -12,3 +12,7 @@ readme.workspace = true
 [dependencies]
 prokdiff-gd = { workspace = true }
 thiserror = { workspace = true }
+# BAM/SAM I/O only (AGENTS Rule 9). FASTA uses a tiny local parser so we do not
+# pull noodles-fasta into the pileup path.
+noodles = { workspace = true }
+rayon = { workspace = true }

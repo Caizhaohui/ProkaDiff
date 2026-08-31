@@ -1,3 +1,9 @@
+# Local development plans (not published to GitHub)
+DEVELOPMENT_PLAN.md
+DEVELOPMENT.md
+AGENTS.md
+原核基因编辑脱靶检测-开发计划.md
+
 /target/
 **/*.rs.bk
 Cargo.lock.bak
@@ -16,6 +22,8 @@ testdata/private/**
 *.sam
 *.bt2
 *.bt2l
+
+testdata/generated/
 
 # Benchmark job outputs (templates stay tracked)
 benchmark/results/*

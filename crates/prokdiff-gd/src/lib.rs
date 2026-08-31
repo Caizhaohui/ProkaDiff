@@ -162,6 +162,29 @@ impl GdEntry {
         }
     }
 
+    pub fn mc(
+        id: u32,
+        seq_id: impl Into<String>,
+        start: u64,
+        end: u64,
+        start_range: u64,
+        end_range: u64,
+    ) -> Self {
+        Self {
+            kind: GdKind::Mc,
+            id,
+            parent_ids: Vec::new(),
+            fields: vec![
+                seq_id.into(),
+                start.to_string(),
+                end.to_string(),
+                start_range.to_string(),
+                end_range.to_string(),
+            ],
+            attrs: BTreeMap::new(),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn jc(
         id: u32,

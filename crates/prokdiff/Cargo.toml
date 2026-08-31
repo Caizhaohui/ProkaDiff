@@ -18,3 +18,4 @@ prokdiff-gd = { workspace = true }
 prokdiff-evidence = { workspace = true }
 prokdiff-classify = { workspace = true }
 prokdiff-report = { workspace = true }
+clap = { workspace = true }

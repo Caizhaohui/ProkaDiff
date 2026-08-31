@@ -1,6 +1,14 @@
 # ProkDiff 输入 / 输出契约
 
-本文是 [DEVELOPMENT_PLAN.md](../DEVELOPMENT_PLAN.md) 第 5 节的落地副本。实现与测试以本文件为准；改契约须同步改计划与测试。
+本文是 CLI / Genome Diff / TSV 的落地契约。实现与测试以本文件为准。
+
+**引擎子命令（单样本，oracle / 对拍）：**
+
+```text
+prokdiff evidence --ref genome.fa --fastq R1.fastq --fastq R2.fastq --threads 8 --outdir out/
+```
+
+写出 `out/output.gd`。产品层分类不在此子命令内。
 
 ## CLI（第一期）
 
