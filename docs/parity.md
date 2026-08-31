@@ -49,6 +49,7 @@ synth_snp_indel,breseq,8,<sec>,<kb>,<hostname>,…,…,
 | UN / 未知区 | `UN` 证据不对拍失败 |
 | HTML / R 图 | breseq 报告产物；ProkDiff 第一期不要求 |
 | BAM 文件名 / 路径 | 中间比对文件命名可不同 |
+| 重复区 JC 拷贝歧义 | 「哪一个拷贝」与 breseq 一样可有 unassigned JC；允许 junction 坐标 ± 数 bp 的规范化（须在夹具说明中写明阈值） |
 | RA 短 indel 左对齐 | 同一 haplotype 下 INS/DEL 坐标可 ±1、插入序列可循环移位（例如 `INS 1999 TA` ≡ `INS 2000 AT`）。须在夹具 notes 写明；不因此判 SNP 位点失败 |
 | consensus 频率舍入 | `frequency` / 相关浮点字段在 consensus 下接近 1 即可，允许舍入差 |
 
