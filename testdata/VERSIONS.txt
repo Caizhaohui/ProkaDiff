@@ -1,0 +1,12 @@
+# Oracle / aligner versions for ProkDiff development
+# Target pin (DEVELOPMENT_PLAN): breseq 0.40.x + matching bowtie2.
+# Recorded on login3 from conda env BactGenome (2026-08-31).
+# Do not claim 0.40.x is installed; do not retarget 0.35.4.
+
+env_prefix=/hpcfs/fhome/caizhh/.conda/envs/BactGenome
+
+breseq=0.39.0
+gdtools=0.39.0
+bowtie2=2.5.4
+
+notes=Local oracle is breseq 0.39.0 until 0.40.x is installed in this env. Layer-1/2 jobs must load this env on qcpu_18i.

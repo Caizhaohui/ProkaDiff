@@ -1,0 +1,40 @@
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Private paired WGS (never commit)
+testdata/private/**
+!testdata/private/.gitkeep
+
+# Generated / large sequencing files
+*.fastq
+*.fastq.gz
+*.fq
+*.fq.gz
+*.bam
+*.bam.bai
+*.sam
+*.bt2
+*.bt2l
+
+# Benchmark job outputs (templates stay tracked)
+benchmark/results/*
+!benchmark/results/.gitkeep
+!benchmark/results/README.md
+benchmark/logs/
+
+# Slurm
+*.out
+*.err
+slurm-*.out
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Local env
+.env
+.env.*
+!.env.example

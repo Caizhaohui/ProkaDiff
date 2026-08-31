@@ -1,0 +1,20 @@
+[package]
+name = "prokdiff"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "ProkDiff CLI"
+readme.workspace = true
+
+[[bin]]
+name = "prokdiff"
+path = "src/main.rs"
+
+[dependencies]
+prokdiff-gd = { workspace = true }
+prokdiff-evidence = { workspace = true }
+prokdiff-classify = { workspace = true }
+prokdiff-report = { workspace = true }

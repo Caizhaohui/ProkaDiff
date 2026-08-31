@@ -1,0 +1,13 @@
+[package]
+name = "prokdiff-classify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Starter-strain subtract, intended-edit mask, three-class labels"
+readme.workspace = true
+
+[dependencies]
+prokdiff-gd = { workspace = true }
