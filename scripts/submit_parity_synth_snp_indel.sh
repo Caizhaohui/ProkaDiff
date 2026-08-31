@@ -86,8 +86,14 @@ if [[ ! -f "${BRESEQ_GD}" ]]; then
   exit 1
 fi
 
-gdtools SUBTRACT "${RUST_GD}" "${BRESEQ_GD}" > "${JOBOUT}/subtract_rust_minus_breseq.gd"
-gdtools SUBTRACT "${BRESEQ_GD}" "${RUST_GD}" > "${JOBOUT}/subtract_breseq_minus_rust.gd"
+# gdtools SUBTRACT writes "output.gd" in cwd; run inside the job dir.
+(
+  cd "${JOBOUT}"
+  gdtools SUBTRACT "${RUST_GD}" "${BRESEQ_GD}"
+  mv -f output.gd subtract_rust_minus_breseq.gd
+  gdtools SUBTRACT "${BRESEQ_GD}" "${RUST_GD}"
+  mv -f output.gd subtract_breseq_minus_rust.gd
+)
 
 python3 - "${JOBOUT}" "${GEN}/truth.gd" "${THREADS}" <<'PY'
 import csv
@@ -164,10 +170,7 @@ notes = (
     f"over={over[:8]!r};under={under[:8]!r}"
 )
 
-csv_path = Path(os.environ.get("ROOT", ".")) / "benchmark/results/synth_snp_indel.csv"
-# jobout is .../benchmark/results/synth_snp_indel_<id>
-root = jobout.parents[1]
-csv_path = root / "benchmark" / "results" / "synth_snp_indel.csv"
+csv_path = jobout.parent / "synth_snp_indel.csv"
 new_file = not csv_path.exists()
 with csv_path.open("a", newline="") as fh:
     w = csv.writer(fh)

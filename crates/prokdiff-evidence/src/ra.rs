@@ -86,7 +86,10 @@ pub fn call_consensus(col: &PileupColumn, opts: &RaOptions) -> ConsensusCall {
     if consensus == col.ref_base {
         return ConsensusCall::MatchRef;
     }
-    if plus[best_i] == 0 || minus[best_i] == 0 {
+    let plus_cov: usize = plus.iter().sum();
+    let minus_cov: usize = minus.iter().sum();
+    // Strand bias only when both strands are observed and the consensus is one-sided.
+    if plus_cov > 0 && minus_cov > 0 && (plus[best_i] == 0 || minus[best_i] == 0) {
         return ConsensusCall::RejectedStrandBias;
     }
     if consensus == b'-' {
@@ -225,6 +228,15 @@ mod tests {
             ConsensusCall::Ins {
                 seq: b"AT".to_vec()
             }
+        );
+    }
+
+    #[test]
+    fn snp_called_when_the_other_strand_has_no_coverage() {
+        let c = col(b'T', &[(b'C', Strand::Plus); 6]);
+        assert_eq!(
+            call_consensus(&c, &RaOptions::default()),
+            ConsensusCall::Snp { alt: b'C' }
         );
     }
 

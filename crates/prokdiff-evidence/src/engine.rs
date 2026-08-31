@@ -237,6 +237,10 @@ pub fn call_from_bam(
             if span.len() < 3 {
                 continue;
             }
+            // Contig ends look like unique-depth 0; breseq reports UN, not DEL.
+            if span.start_0 == 0 || span.end_0 == unique_depth.len() {
+                continue;
+            }
             let start = span.start_1();
             let end = span.end_1();
             let size = end.saturating_sub(start) + 1;
