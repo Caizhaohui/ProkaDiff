@@ -13,9 +13,11 @@ use crate::align::{align_to_bam, FastqInput};
 use crate::error::{EvidenceError, Result};
 use crate::fasta::{read_reference, FastaRecord};
 use crate::jc::{accept_junction, JunctionSupport};
-use crate::mc::call_missing_coverage;
+use crate::mc::{
+    call_missing_coverage, promote_mc_to_del_with_jc, true_missing_core, MC_DEL_MIN_LEN,
+};
 use crate::normalize::{right_align_del, right_align_ins};
-use crate::pileup::{apply_read, AlignedRead, CigarKind, CigarOp, SplitCandidate};
+use crate::pileup::{apply_read, place_softclip, AlignedRead, CigarKind, CigarOp, SplitCandidate};
 use crate::ra::{call_consensus, ConsensusCall, PileupColumn, RaOptions};
 
 #[derive(Clone, Debug)]
@@ -24,7 +26,13 @@ pub struct EngineOptions {
     pub keep_bam: bool,
     pub ra: RaOptions,
     pub mc_min_len: usize,
+    /// Unique-mapping + total-depth-0 gap must be at least this long to become
+    /// a consensus DEL without JC support (see `docs/parity.md`).
+    pub mc_del_min_len: usize,
 }
+
+type ContigPileup = (Vec<PileupColumn>, Vec<u32>, Vec<u32>, Vec<SplitCandidate>);
+type JcKey = (usize, u64, usize, u64, i64);
 
 impl Default for EngineOptions {
     fn default() -> Self {
@@ -33,6 +41,7 @@ impl Default for EngineOptions {
             keep_bam: false,
             ra: RaOptions::default(),
             mc_min_len: 3,
+            mc_del_min_len: MC_DEL_MIN_LEN,
         }
     }
 }
@@ -65,6 +74,11 @@ pub fn call_from_bam(
     fasta: &[FastaRecord],
     opts: &EngineOptions,
 ) -> Result<GenomeDiff> {
+    let aligned = read_aligned_bam(bam_path, fasta)?;
+    Ok(call_from_aligned(fasta, &aligned, opts))
+}
+
+fn read_aligned_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result<Vec<AlignedRead>> {
     let name_to_idx: HashMap<&str, usize> = fasta
         .iter()
         .enumerate()
@@ -97,7 +111,7 @@ pub fn call_from_bam(
         let Some(Ok(start)) = rec.alignment_start() else {
             continue;
         };
-        let mapq = rec.mapping_quality().map(u8::from).unwrap_or(0); // Option<MappingQuality>
+        let mapq = rec.mapping_quality().map(u8::from).unwrap_or(0);
         let minus = rec.flags().is_reverse_complemented();
         let seq_len = rec.sequence().len();
         let mut seq = Vec::with_capacity(seq_len);
@@ -134,14 +148,20 @@ pub fn call_from_bam(
             mapq,
         });
     }
+    Ok(aligned)
+}
 
+/// In-memory consensus (no BAM). Used by `call_from_bam` and layer-0 tests.
+pub fn call_from_aligned(
+    fasta: &[FastaRecord],
+    aligned: &[AlignedRead],
+    opts: &EngineOptions,
+) -> GenomeDiff {
     let pool = if opts.threads > 1 {
-        Some(
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(opts.threads)
-                .build()
-                .map_err(|e| EvidenceError::Alignment(e.to_string()))?,
-        )
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(opts.threads)
+            .build()
+            .ok()
     } else {
         None
     };
@@ -162,15 +182,27 @@ pub fn call_from_bam(
                     })
                     .collect();
                 let mut unique_depth = vec![0u32; n];
+                let mut total_depth = vec![0u32; n];
                 let mut splits = Vec::new();
+                let mut clips = Vec::new();
                 for read in aligned.iter().filter(|r| r.contig_idx == idx) {
-                    apply_read(read, &mut columns, &mut unique_depth, &mut splits);
+                    apply_read(
+                        read,
+                        &mut columns,
+                        &mut unique_depth,
+                        &mut total_depth,
+                        &mut splits,
+                        &mut clips,
+                    );
                 }
-                (columns, unique_depth, splits)
+                for hint in &clips {
+                    splits.extend(place_softclip(hint, fasta));
+                }
+                (columns, unique_depth, total_depth, splits)
             })
             .collect()
     };
-    let contig_results: Vec<(Vec<PileupColumn>, Vec<u32>, Vec<SplitCandidate>)> = match &pool {
+    let contig_results: Vec<ContigPileup> = match &pool {
         Some(p) => p.install(call_contigs),
         None => call_contigs(),
     };
@@ -181,7 +213,7 @@ pub fn call_from_bam(
     let mut next_id = 1u32;
 
     for (idx, rec) in fasta.iter().enumerate() {
-        let (columns, unique_depth, splits) = &contig_results[idx];
+        let (columns, unique_depth, total_depth, splits) = &contig_results[idx];
         let mut pending_del: Option<(u64, u8)> = None;
         let flush_del = |gd: &mut GenomeDiff, id: &mut u32, start: u64, size: u8| {
             // Match breseq mutation coordinates (RA evidence may stay 5′).
@@ -237,34 +269,21 @@ pub fn call_from_bam(
             flush_del(&mut gd, &mut next_id, s, sz);
         }
 
-        for span in call_missing_coverage(unique_depth, opts.mc_min_len) {
-            if span.len() < 3 {
-                continue;
-            }
-            // Contig ends look like unique-depth 0; breseq reports UN, not DEL.
-            if span.start_0 == 0 || span.end_0 == unique_depth.len() {
-                continue;
-            }
-            let start = span.start_1();
-            let end = span.end_1();
-            let size = end.saturating_sub(start) + 1;
-            let mc_id = next_id;
-            next_id += 1;
-            gd.entries
-                .push(GdEntry::mc(mc_id, rec.name.clone(), start, end, 0, 0));
-            gd.entries
-                .push(GdEntry::del(next_id, rec.name.clone(), start, size));
-            if let Some(last) = gd.entries.last_mut() {
-                last.parent_ids = vec![mc_id];
-            }
-            next_id += 1;
-        }
-
-        let mut by_key: HashMap<(u64, u64, i64, bool), JunctionSupport> = HashMap::new();
+        let mut by_key: HashMap<JcKey, JunctionSupport> = HashMap::new();
+        let mut jc_meta: HashMap<JcKey, (bool, bool)> = HashMap::new();
         for sp in splits {
-            // Long I/D splits are JC candidates (IS / cassette must not be dropped).
-            let key = (sp.side1_pos_1, sp.side2_pos_1, sp.overlap, sp.minus);
+            // Do not key on read strand: plus and minus must aggregate (accept_junction).
+            let key = (
+                sp.contig_idx,
+                sp.side1_pos_1,
+                sp.side2_contig_idx,
+                sp.side2_pos_1,
+                sp.overlap,
+            );
             let e = by_key.entry(key).or_default();
+            jc_meta
+                .entry(key)
+                .or_insert((sp.side1_minus, sp.side2_minus));
             let ov1 = sp.left.len().max(3);
             let ov2 = sp.right.len().max(3);
             if sp.minus {
@@ -287,26 +306,77 @@ pub fn call_from_bam(
                 e.min_overlap_side2.min(ov2)
             };
         }
-        for ((p1, p2, ov, minus), support) in by_key {
-            if !accept_junction(&support) {
+        let mut accepted_jc = Vec::new();
+        let mut jc_endpoints_1 = Vec::new();
+        for (key, support) in &by_key {
+            if !accept_junction(support) {
                 continue;
             }
-            let s1 = if minus { "-" } else { "+" };
-            gd.entries.push(GdEntry::jc(
-                next_id,
-                rec.name.clone(),
-                p1,
-                s1,
-                rec.name.clone(),
-                p2,
-                s1,
-                ov,
-            ));
+            let (c1, p1, c2, p2, ov) = *key;
+            let (m1, m2) = jc_meta[key];
+            accepted_jc.push((c1, p1, m1, c2, p2, m2, ov));
+            if c1 == idx {
+                jc_endpoints_1.push(p1);
+            }
+            if c2 == idx {
+                jc_endpoints_1.push(p2);
+            }
+        }
+
+        for span in call_missing_coverage(unique_depth, opts.mc_min_len) {
+            if span.len() < 3 {
+                continue;
+            }
+            // Contig ends look like unique-depth 0; breseq reports UN, not DEL.
+            if span.start_0 == 0 || span.end_0 == unique_depth.len() {
+                continue;
+            }
+            let start = span.start_1();
+            let end = span.end_1();
+            let mc_id = next_id;
+            next_id += 1;
+            gd.entries
+                .push(GdEntry::mc(mc_id, rec.name.clone(), start, end, 0, 0));
+            if !promote_mc_to_del_with_jc(
+                span,
+                unique_depth,
+                total_depth,
+                opts.mc_del_min_len,
+                opts.mc_min_len,
+                &jc_endpoints_1,
+            ) {
+                continue;
+            }
+            let core = true_missing_core(
+                span,
+                unique_depth,
+                total_depth,
+                crate::mc::coverage_cutoff(unique_depth),
+            )
+            .unwrap_or(span);
+            let del_start = core.start_1();
+            let del_end = core.end_1();
+            let size = del_end.saturating_sub(del_start) + 1;
+            gd.entries
+                .push(GdEntry::del(next_id, rec.name.clone(), del_start, size));
+            if let Some(last) = gd.entries.last_mut() {
+                last.parent_ids = vec![mc_id];
+            }
+            next_id += 1;
+        }
+
+        for (c1, p1, m1, c2, p2, m2, ov) in accepted_jc {
+            let s1 = if m1 { "-" } else { "+" };
+            let s2 = if m2 { "-" } else { "+" };
+            let n1 = fasta[c1].name.clone();
+            let n2 = fasta[c2].name.clone();
+            gd.entries
+                .push(GdEntry::jc(next_id, n1, p1, s1, n2, p2, s2, ov));
             next_id += 1;
         }
     }
 
-    Ok(gd)
+    gd
 }
 
 #[cfg(test)]
@@ -346,11 +416,250 @@ mod tests {
                 }],
                 mapq: UNIQUE_MAPQ,
             };
-            apply_read(&read, &mut columns, &mut depth, &mut splits);
+            apply_read(
+                &read,
+                &mut columns,
+                &mut depth,
+                &mut vec![0u32; n],
+                &mut splits,
+                &mut Vec::new(),
+            );
         }
         assert_eq!(
             call_consensus(&columns[2], &RaOptions::default()),
             ConsensusCall::Snp { alt: b'T' }
+        );
+    }
+
+    fn fasta_chr(seq: &[u8]) -> [FastaRecord; 1] {
+        [FastaRecord {
+            name: "chr".into(),
+            seq: seq.to_vec(),
+        }]
+    }
+
+    fn covering_reads(
+        seq: &[u8],
+        start: i64,
+        len: usize,
+        n_plus: usize,
+        n_minus: usize,
+        mapq: u8,
+    ) -> Vec<AlignedRead> {
+        let slice = seq[start as usize..start as usize + len].to_vec();
+        let mut out = Vec::new();
+        for minus in std::iter::repeat_n(false, n_plus).chain(std::iter::repeat_n(true, n_minus)) {
+            out.push(AlignedRead {
+                contig_idx: 0,
+                ref_start_0: start,
+                minus,
+                seq: slice.clone(),
+                cigar: vec![CigarOp {
+                    kind: CigarKind::Match,
+                    len,
+                }],
+                mapq,
+            });
+        }
+        out
+    }
+
+    fn gd_dels(gd: &GenomeDiff) -> Vec<&prokdiff_gd::GdEntry> {
+        gd.entries
+            .iter()
+            .filter(|e| e.kind == prokdiff_gd::GdKind::Del)
+            .collect()
+    }
+
+    fn opts_single_thread() -> EngineOptions {
+        EngineOptions {
+            threads: 1,
+            ..EngineOptions::default()
+        }
+    }
+
+    #[test]
+    fn short_internal_coverage_gap_does_not_emit_del() {
+        let seq = vec![b'A'; 40];
+        let mut reads = covering_reads(&seq, 0, 15, 6, 6, UNIQUE_MAPQ);
+        reads.extend(covering_reads(&seq, 20, 20, 6, 6, UNIQUE_MAPQ));
+        let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
+        assert!(
+            gd_dels(&gd).is_empty(),
+            "short unique+total gap must stay MC, not consensus DEL; got {:?}",
+            gd_dels(&gd).iter().map(|e| &e.fields).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn contig_terminal_zero_does_not_emit_del() {
+        let seq = vec![b'A'; 40];
+        let reads = covering_reads(&seq, 10, 30, 6, 6, UNIQUE_MAPQ);
+        let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
+        assert!(gd_dels(&gd).is_empty());
+    }
+
+    #[test]
+    fn repeat_like_low_mapq_coverage_is_not_del() {
+        let seq = vec![b'A'; 40];
+        let mut reads = covering_reads(&seq, 0, 10, 6, 6, UNIQUE_MAPQ);
+        reads.extend(covering_reads(&seq, 10, 16, 6, 6, 3)); // MAPQ < unique
+        reads.extend(covering_reads(&seq, 26, 14, 6, 6, UNIQUE_MAPQ));
+        let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
+        assert!(
+            gd_dels(&gd).is_empty(),
+            "unique-depth 0 with remaining total coverage must not be DEL; got {:?}",
+            gd_dels(&gd).iter().map(|e| &e.fields).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn long_internal_true_gap_emits_del() {
+        let seq = vec![b'A'; 80];
+        let mut reads = covering_reads(&seq, 0, 10, 6, 6, UNIQUE_MAPQ);
+        reads.extend(covering_reads(&seq, 70, 10, 6, 6, UNIQUE_MAPQ));
+        let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
+        let dels = gd_dels(&gd);
+        assert_eq!(
+            dels.len(),
+            1,
+            "expected one unique-mapping DEL, got {dels:?}"
+        );
+        let start: u64 = dels[0].fields[1].parse().unwrap();
+        let size: u64 = dels[0].fields[2].parse().unwrap();
+        assert!(start > 1, "DEL must not be contig-terminal, start={start}");
+        assert!(
+            size >= 50,
+            "unique+total-zero core must be long, size={size}"
+        );
+    }
+
+    fn gd_jcs(gd: &GenomeDiff) -> Vec<&prokdiff_gd::GdEntry> {
+        gd.entries
+            .iter()
+            .filter(|e| e.kind == prokdiff_gd::GdKind::Jc)
+            .collect()
+    }
+
+    #[test]
+    fn both_strand_long_deletion_emits_jc() {
+        let seq = vec![b'A'; 50];
+        let mut reads = Vec::new();
+        for minus in [false, false, false, true, true, true] {
+            reads.push(AlignedRead {
+                contig_idx: 0,
+                ref_start_0: 0,
+                minus,
+                seq: vec![b'A'; 30],
+                cigar: vec![
+                    CigarOp {
+                        kind: CigarKind::Match,
+                        len: 15,
+                    },
+                    CigarOp {
+                        kind: CigarKind::Del,
+                        len: 8,
+                    },
+                    CigarOp {
+                        kind: CigarKind::Match,
+                        len: 15,
+                    },
+                ],
+                mapq: UNIQUE_MAPQ,
+            });
+        }
+        let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
+        assert!(
+            !gd_jcs(&gd).is_empty(),
+            "plus+minus long-D splits must aggregate into an accepted JC; entries={:?}",
+            gd.entries
+                .iter()
+                .map(|e| (e.kind, e.fields.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn softclip_onto_repeat_copy_emits_jc() {
+        // Unique flanks + two identical 20 bp IS-like copies (first-period mosaic).
+        let mut seq = vec![b'C'; 160];
+        let motif = *b"ACGTACGTACGTACGTACGT";
+        seq[40..60].copy_from_slice(&motif);
+        seq[100..120].copy_from_slice(&motif);
+        let mut reads = Vec::new();
+        let mut clip_seq = vec![b'C'; 20];
+        clip_seq.extend_from_slice(&motif);
+        for minus in [false, false, false, true, true, true] {
+            reads.push(AlignedRead {
+                contig_idx: 0,
+                ref_start_0: 70,
+                minus,
+                seq: clip_seq.clone(),
+                cigar: vec![
+                    CigarOp {
+                        kind: CigarKind::Match,
+                        len: 20,
+                    },
+                    CigarOp {
+                        kind: CigarKind::SoftClip,
+                        len: 20,
+                    },
+                ],
+                mapq: UNIQUE_MAPQ,
+            });
+        }
+        let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
+        let jcs = gd_jcs(&gd);
+        assert!(
+            !jcs.is_empty(),
+            "softclipped IS motif must place a JC onto a repeat copy; entries={:?}",
+            gd.entries
+                .iter()
+                .map(|e| (e.kind, e.fields.clone()))
+                .collect::<Vec<_>>()
+        );
+        let side2: u64 = jcs[0].fields[4].parse().unwrap();
+        assert!(
+            (41..=60).contains(&side2) || (101..=120).contains(&side2),
+            "side2 should land in an IS copy, got {side2}"
+        );
+    }
+
+    #[test]
+    fn jc_supported_cigar_gap_promotes_short_del() {
+        let seq = vec![b'A'; 50];
+        let mut reads = Vec::new();
+        for minus in [false, false, false, true, true, true] {
+            reads.push(AlignedRead {
+                contig_idx: 0,
+                ref_start_0: 0,
+                minus,
+                seq: vec![b'A'; 30],
+                cigar: vec![
+                    CigarOp {
+                        kind: CigarKind::Match,
+                        len: 15,
+                    },
+                    CigarOp {
+                        kind: CigarKind::Del,
+                        len: 8,
+                    },
+                    CigarOp {
+                        kind: CigarKind::Match,
+                        len: 15,
+                    },
+                ],
+                mapq: UNIQUE_MAPQ,
+            });
+        }
+        let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
+        assert!(
+            !gd_dels(&gd).is_empty(),
+            "short true gap with both-flank JC must become DEL; entries={:?}",
+            gd.entries
+                .iter()
+                .map(|e| (e.kind, e.fields.clone()))
+                .collect::<Vec<_>>()
         );
     }
 }

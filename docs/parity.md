@@ -64,6 +64,36 @@ synth_snp_indel,breseq,8,<sec>,<kb>,<hostname>,…,…,
 | 大 DEL 漏报 | 明确的大片段缺失漏报（MC/JC 路径） |
 | 白名单外的系统性多报 | `SUBTRACT rust.gd breseq.gd` 留下非白名单条目 |
 
+### 第一期 MC→DEL（作业 2369858 收口）
+
+Clonal leftover（breseq **0.39.0**，见 `benchmark/results/clonal_leftover.md`）：134 条 over DEL 均伴 MC，与 breseq 0 精确交集。原因：unique-mapping 深度 0 在重复区 / IS 拷贝上也会出现（低 MAPQ 读段仍覆盖），不等于缺失。
+
+第一期规则（层 0 可测，写入 `prokdiff-evidence::mc`）：
+
+1. 覆盖缺口**始终写 MC**（contig 末端仍不写 DEL / 不把末端 0-depth 当缺失）。
+2. **不**再把每个内部 MC 自动升格为 consensus DEL。
+3. 升格 DEL 仅当 unique-0 且 **total（任意 MAPQ）深度低于 cutoff** 的核心满足：
+   - 两端有 unique 覆盖（允许 1 bp pileup end-trim 边距）；
+   - 无 JC：核心长度 ≥ 50 bp（`MC_DEL_MIN_LEN`）；
+   - 或 JC 端点落在两侧翼 ±20 bp 内：长度 ≥ 3 bp。
+4. 大 DEL（如 REL606 `3894997` / 6934 bp IS 介导）应走 **两侧 JC 或 MC+JC**，不靠「unique 缺口一律 DEL」。
+
+测试：`repeat_like_unique_gap_is_not_promoted_to_del`、`short_internal_true_gap_is_not_promoted_to_del`、`contig_terminal_zero_depth_is_not_promoted_to_del`、`long_internal_zero_total_gap_promotes_to_del`、`jc_supported_short_gap_promotes_to_del`；引擎层 `short_internal_coverage_gap_does_not_emit_del`、`repeat_like_low_mapq_coverage_is_not_del`、`long_internal_true_gap_emits_del`。
+
+### 第一期 JC / MOB
+
+作业 2369858：ProkDiff JC=0、MOB=0；breseq 27 JC、5 unique-mapping MOB。根因（清洁室，非 breseq 源码）：(1) 正负链 JC 被拆进不同聚合键，`accept_junction` 永远缺一链；(2) CIGAR softclip 未对照参考放置第二端。
+
+第一期实现：
+
+- 长 CIGAR I/D（>2 bp）仍作 mosaic 候选；**聚合键不含 read strand**，正负链合并后再 `accept_junction`。
+- ≥14 bp softclip：在参考上精确匹配（含反向互补），跳过本比对的平凡延续；重复拷贝允许 unassigned JC。
+- **MOB：** 第一期不写 `IS150` 等注释名（无 GBK repeat 表）。Clonal 的 5 条 unique-mapping MOB **仍可能只以 JC 出现**；等 breseq **0.40.x** 层 2 再验。这落在上表「重复区 JC 拷贝歧义」白名单，**不**把 breseq `.gd` 抄进运行时。
+- 层 0 测例：`both_strand_long_deletion_emits_jc`、`softclip_onto_repeat_copy_emits_jc`、`jc_supported_cigar_gap_promotes_short_del`。
+- **未在登录节点重跑 Clonal FASTQ。** 不得声称 27 条 JC 已与 0.39.0 leftover 对齐。
+
+层 2 等 0.40.x 再重跑；不要重提作业 2369858。
+
 时间 / RSS 无「必须更快」硬阈值；但 **必须有可复核记录**。若 ProkDiff 明显更慢或吃内存异常，记入 notes，不得静默省略。
 
 ## 产品层（双样本）

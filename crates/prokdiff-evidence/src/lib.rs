@@ -16,7 +16,7 @@ pub mod pileup;
 pub mod ra;
 
 pub use align::FastqInput;
-pub use engine::{run_sample, EngineOptions};
+pub use engine::{call_from_aligned, run_sample, EngineOptions};
 pub use error::EvidenceError;
 pub use fasta::{read_reference, write_combined_fasta, FastaRecord};
 pub use mc::call_missing_coverage;

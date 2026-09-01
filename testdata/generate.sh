@@ -5,6 +5,7 @@
 #   testdata/generate.sh synth_snp_indel [outdir]
 #   testdata/generate.sh synth_parent_child [outdir]
 #   testdata/generate.sh synth_cas9_near [outdir]
+#   testdata/generate.sh synth_is_mob [outdir]
 set -euo pipefail
 
 host="$(hostname -s 2>/dev/null || hostname)"
@@ -18,7 +19,7 @@ FIXTURE="synth_snp_indel"
 OUT=""
 if [[ $# -ge 1 ]]; then
   case "$1" in
-    synth_snp_indel|synth_parent_child|synth_cas9_near)
+    synth_snp_indel|synth_parent_child|synth_cas9_near|synth_is_mob)
       FIXTURE="$1"
       OUT="${2:-}"
       ;;
@@ -145,6 +146,24 @@ elif fixture == "synth_cas9_near":
     (out / "snp.txt").write_text(f"{snp_pos}\t{r}\t{a}\n")
     print(f"wrote cas9_near {out} spacer@{plant} snp@{snp_pos}")
 
+elif fixture == "synth_is_mob":
+    # Short unique backbone + two identical 80 bp IS-like copies in the reference.
+    # Mutated genome inserts a third copy at a unique site (layer-1 IS/MOB).
+    rng = random.Random(45)
+    is_len = 80
+    motif = "".join(rng.choice(bases) for _ in range(is_len))
+    left = "".join(rng.choice(bases) for _ in range(400))
+    mid = "".join(rng.choice(bases) for _ in range(400))
+    right = "".join(rng.choice(bases) for _ in range(400))
+    ref = left + motif + mid + motif + right
+    insert_at = 200  # 0-based unique site in left
+    edited = ref[:insert_at] + motif + ref[insert_at:]
+    write_fa(out / "ref.fa", "synth", ref)
+    write_fa(out / "mutated.fa", "synth", edited)
+    (out / "is_motif.txt").write_text(motif + "\n")
+    (out / "mob.txt").write_text(f"insert_at_1based\t{insert_at + 1}\tis_len\t{is_len}\n")
+    print(f"wrote synth_is_mob {out} ref={len(ref)} insert@{insert_at + 1}")
+
 else:
     raise SystemExit(f"unknown fixture {fixture}")
 PY
@@ -181,5 +200,13 @@ case "${FIXTURE}" in
       "${OUT}/edited_R1.fastq" \
       "${OUT}/edited_R2.fastq"
     echo "generated cas9_near FASTQ under ${OUT}"
+    ;;
+  synth_is_mob)
+    "${wgsim_n[@]}" -S 46 \
+      "${OUT}/mutated.fa" \
+      "${OUT}/edited_R1.fastq" \
+      "${OUT}/edited_R2.fastq"
+    echo "generated synth_is_mob FASTQ under ${OUT}"
+    echo "IS motif / insert: ${OUT}/mob.txt"
     ;;
 esac

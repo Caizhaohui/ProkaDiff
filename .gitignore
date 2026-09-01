@@ -30,6 +30,7 @@ testdata/layer2/
 benchmark/results/*
 !benchmark/results/.gitkeep
 !benchmark/results/README.md
+!benchmark/results/clonal_leftover.md
 benchmark/logs/
 
 # Slurm
