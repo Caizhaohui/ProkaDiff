@@ -147,16 +147,21 @@ elif fixture == "synth_cas9_near":
     print(f"wrote cas9_near {out} spacer@{plant} snp@{snp_pos}")
 
 elif fixture == "synth_is_mob":
-    # Short unique backbone + two identical 80 bp IS-like copies in the reference.
+    # Unique backbone + two identical 80 bp IS-like copies in the reference.
     # Mutated genome inserts a third copy at a unique site (layer-1 IS/MOB).
+    # Genome is ~4000 bp with the insert site >=600 bp from BOTH ends: with
+    # wgsim -d 500 fragments, junction-spanning reads then exist on both
+    # strands. The old 1440 bp / insert@201 geometry forced the junction into
+    # the left half of every fragment, so only plus-strand left mates crossed
+    # it and the both-strands accept rule could never fire (job 2371383).
     rng = random.Random(45)
     is_len = 80
     motif = "".join(rng.choice(bases) for _ in range(is_len))
-    left = "".join(rng.choice(bases) for _ in range(400))
-    mid = "".join(rng.choice(bases) for _ in range(400))
-    right = "".join(rng.choice(bases) for _ in range(400))
+    left = "".join(rng.choice(bases) for _ in range(1200))
+    mid = "".join(rng.choice(bases) for _ in range(1200))
+    right = "".join(rng.choice(bases) for _ in range(1440))
     ref = left + motif + mid + motif + right
-    insert_at = 200  # 0-based unique site in left
+    insert_at = 600  # 0-based unique site in left; 600 bp from the near end
     edited = ref[:insert_at] + motif + ref[insert_at:]
     write_fa(out / "ref.fa", "synth", ref)
     write_fa(out / "mutated.fa", "synth", edited)

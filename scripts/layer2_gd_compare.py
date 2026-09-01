@@ -3,6 +3,8 @@
 
 Red-line types: SNP / INS / DEL / MOB / AMP / CON (exact key).
 JC: greedy match after canonicalizing sides, ±JC_TOL_BP (default 5).
+Unmatched JC are additionally split by a nonempty reject= field
+(oracle-side rejected predictions, e.g. breseq reject=COVERAGE_EVENNESS_SKEW).
 UN / RA / MC are ignored. Does not invent numbers; missing inputs → exit 1.
 """
 
@@ -76,24 +78,33 @@ def jc_close(a, b, tol):
     return abs(a1[2] - b1[2]) <= tol and abs(a2[2] - b2[2]) <= tol
 
 
+def jc_rejected(row):
+    """True if a JC row carries a nonempty reject= key=value field."""
+    return any(
+        f.startswith("reject=") and f[len("reject="):] for f in row["fields"]
+    )
+
+
 def pair_jc(over, under, tol):
     over_jc = [r for r in over if r["kind"] == JC]
     under_jc = [r for r in under if r["kind"] == JC]
-    used = set()
-    matched = 0
-    for j1 in over_jc:
+    used_under = set()
+    used_over = set()
+    for oi, j1 in enumerate(over_jc):
         for i, j2 in enumerate(under_jc):
-            if i in used:
+            if i in used_under:
                 continue
             if jc_close(j1, j2, tol):
-                used.add(i)
-                matched += 1
+                used_under.add(i)
+                used_over.add(oi)
                 break
-    return (
-        matched,
-        len(over_jc) - matched,
-        len(under_jc) - len(used),
-    )
+    over_unmatched = [r for oi, r in enumerate(over_jc) if oi not in used_over]
+    under_unmatched = [r for i, r in enumerate(under_jc) if i not in used_under]
+    return {
+        "matched": len(used_over),
+        "over_unmatched": over_unmatched,
+        "under_unmatched": under_unmatched,
+    }
 
 
 def compare(left, right, tol):
@@ -101,13 +112,17 @@ def compare(left, right, tol):
     under = leftover_exact(right, left)
     over_red = [r for r in over if r["kind"] in RED]
     under_red = [r for r in under if r["kind"] in RED]
-    jc_matched, over_jc, under_jc = pair_jc(over, under, tol)
+    jc = pair_jc(over, under, tol)
     return {
         "over_red": over_red,
         "under_red": under_red,
-        "jc_matched": jc_matched,
-        "over_jc_unmatched": over_jc,
-        "under_jc_unmatched": under_jc,
+        "jc_matched": jc["matched"],
+        "over_jc_unmatched": len(jc["over_unmatched"]),
+        "under_jc_unmatched": len(jc["under_unmatched"]),
+        "over_jc_rejected": sum(1 for r in jc["over_unmatched"] if jc_rejected(r)),
+        "under_jc_oracle_rejected": sum(
+            1 for r in jc["under_unmatched"] if jc_rejected(r)
+        ),
         "over_red_n": len(over_red),
         "under_red_n": len(under_red),
     }
@@ -155,6 +170,8 @@ def summarize(tag, stats):
         f"{tag}_over_red={stats['over_red_n']};{tag}_under_red={stats['under_red_n']};"
         f"{tag}_over_jc_unmatched={stats['over_jc_unmatched']};"
         f"{tag}_under_jc_unmatched={stats['under_jc_unmatched']};"
+        f"{tag}_under_jc_oracle_rejected={stats['under_jc_oracle_rejected']};"
+        f"{tag}_over_jc_rejected={stats['over_jc_rejected']};"
         f"{tag}_jc_matched_tol={stats['jc_matched']};"
         f"{tag}_over_red_preview={fmt_preview(stats['over_red'])};"
         f"{tag}_under_red_preview={fmt_preview(stats['under_red'])}"
@@ -190,7 +207,8 @@ def main():
     bt2_v = ver(["bowtie2", "--version"])
     notes = [
         f"jc_tol_bp={args.jc_tol_bp}",
-        "red=SNP,INS,DEL,MOB,AMP,CON exact; JC greedy ±tol after side canonicalization; UN/RA/MC ignored",
+        "red=SNP,INS,DEL,MOB,AMP,CON exact; JC greedy ±tol after side canonicalization; UN/RA/MC ignored; "
+        "under_jc_oracle_rejected = unmatched oracle-side JC carrying nonempty reject= (breseq rejected predictions)",
         f"oracle_breseq_env={breseq_v}",
         summarize("vs_samenode", vs_node),
     ]

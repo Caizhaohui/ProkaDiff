@@ -93,6 +93,8 @@ Clonal leftover（breseq **0.39.0**，见 `benchmark/results/clonal_leftover.md`
 - **未在登录节点重跑 Clonal FASTQ。** 不得声称 27 条 JC 已与 0.39.0 leftover 对齐。
 - **Softclip 链向规范化 + best-read 接受规则（作业 2371258 收口）：** synth_is_mob 层 1 红线类型双向 leftover=0，但 ProkDiff 吐出 empty GD，breseq 报 4 JC（200→401、200→881、201→480、201→960；夹具在 201 处插入第三个 80 bp motif 拷贝，已有拷贝在 401-480、881-960）。根因二条：(1) softclip hint 的 `aligned_pos_1` / `clip_is_left` 此前按 **read 方向**记录，minus 链接合点键错位（5′ clip 键在 151 而非 200），正负链无法聚合；现统一为**参考方向**（`ref_clip_is_left = clip_on_read_left XOR minus`；left→`first_match_ref+1`，right→`last_match_ref+1`），`clip_seq` 仍保持 read 方向（`place_softclip` 双链搜索），side2 公式相应改为 `clip_is_left == (is_rc XOR minus)`。(2) `accept_junction` 的 ≥14 bp 规则此前取所有支持读段的 **min**，一条不平衡读段（如单侧 5 bp）即可杀死 junction；现按发表方法改为**最佳单读段**每侧 ≥14 bp（max over reads of min(ov1,ov2)），且**每链**有读段每侧 ≥9 bp（per-strand max-of-min），每侧最小延伸 ≥3 bp 保留为文档性检查（`.max(3)` 钳位使其恒真）。
 
+- **synth_is_mob 夹具几何修正（作业 2371383 BAM 诊断收口）：** (a) 旧夹具 1440 bp（left400+motif80+mid400+motif80+right400），插入点在 201；wgsim 插入片段 ~500 bp（`-d 500` 默认），跨接合点片段起点只能 ≤280，接合点恒落在片段左半，只有正链 left mate 能跨过（实测 263 条接合点 softclip 读段全部为正链），双链 `accept_junction` 规则因此吐出 0 JC。引擎本身记录 softclip 无误（位置精确在 200/201，MAPQ 全部 ≥10），属夹具几何缺陷而非引擎缺陷。(b) breseq 0.40.2 对同一数据报 4 条 JC，全部单链且全部带 `reject=COVERAGE_EVENNESS_SKEW`；ProkDiff 保留已发表的双链接受规则，不为对齐 oracle 放宽。`scripts/layer2_gd_compare.py` 现把未匹配 JC 按 `reject=` 拆分单列（`*_under_jc_oracle_rejected`），oracle 拒收条数不再混入普通 unmatched。(c) 夹具改为 ~4000 bp（left1200+motif80+mid1200+motif80+right1440），插入点移到 601（0-based 600），距基因组两端均 ≥600 bp，双链跨接合点读段在几何上存在；wgsim 参数不变。
+
 层 2 等 0.40.x 再重跑；不要重提作业 2369858。
 
 时间 / RSS 无「必须更快」硬阈值；但 **必须有可复核记录**。若 ProkDiff 明显更慢或吃内存异常，记入 notes，不得静默省略。
