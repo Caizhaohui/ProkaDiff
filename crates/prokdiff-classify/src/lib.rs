@@ -134,6 +134,20 @@ mod tests {
         assert_eq!(out.unintended[0].entry.fields[1], "200");
         assert_eq!(out.intended_observed.len(), 1);
         assert_eq!(out.intended_observed[0].fields[1], "100");
+        assert_eq!(out.intended_declared, 1);
+    }
+
+    #[test]
+    fn classify_sets_intended_declared_to_slice_len_even_if_partial() {
+        let edited = gd(vec![GdEntry::snp(1, "chr", 100, "G")]);
+        let intended = parse_intended(
+            "seq_id\tstart\tend\tref\talt\tkind\nchr\t100\t100\tA\tG\tsnp\nchr\t200\t200\tA\tC\tsnp\n",
+        )
+        .unwrap();
+        let out = classify(&edited, &gd(vec![]), &intended, &[], &cas9_opts(false));
+        assert_eq!(out.intended_declared, 2);
+        assert_eq!(out.intended_observed.len(), 1);
+        assert_eq!(out.unintended.len(), 0);
     }
 
     #[test]
@@ -142,6 +156,7 @@ mod tests {
         let out = classify(&edited, &gd(vec![]), &[], &[], &cas9_opts(false));
         assert_eq!(out.unintended.len(), 1);
         assert!(out.intended_observed.is_empty());
+        assert_eq!(out.intended_declared, 0);
     }
 
     #[test]

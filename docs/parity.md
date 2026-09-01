@@ -80,7 +80,7 @@ gdtools SUBTRACT edited.gd starter.gd
 
 **产品层 subtract 与引擎 JC 白名单的张力：** 单样本引擎允许 junction 坐标 ± 数 bp 的规范化（见上表「重复区 JC 拷贝歧义」）。产品层 `M_edited \ M_parent` 目前与 `gdtools SUBTRACT` 一样用**精确字段键**（`prokdiff-gd::GdEntry::subtract_key`）。因此出发株与编辑株两次独立调用若对同一 JC 报出差 1 bp 的坐标，该 JC 会留在非预期里并标 `structural`。这不是引擎漏报，是差分语义；第一期不把模糊匹配写进运行时。层 3 配对数据若实测到这类假阳性，在本表记下容差后再改键，禁止未测先改。MC 衍生的大 DEL 边界同此风险。
 
-`summary.txt` 阶段 3 只报 `intended_observed` 计数 / `NA`，不报声明条数、也不逐条判定目的编辑成败；完整「目的编辑成功与否」是阶段 4 报告项。
+`summary.txt` 报 `intended_provided` / `intended_declared` / `intended_observed` / `intended_status`（`all_observed` \| `partial` \| `none_observed` \| `NA`）以及 QC 行 `intended_missing`。字段契约见 [docs/schema.md](schema.md)。不做逐条长篇报告。
 
 引擎单样本仍须做时间 / 资源对照；产品层差分本身可不与 breseq 比 wall（breseq 无等价流水线）。
 

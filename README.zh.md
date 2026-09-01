@@ -53,6 +53,8 @@ prokdiff \
 
 写出 `starter.gd`、`edited.gd`、`unintended.tsv`、`summary.txt`。
 
+`summary.txt` 记录是否提供了 `--intended`（`intended_provided`）、声明行数（`intended_declared`）、掩码命中条数（`intended_observed`），以及汇总状态 `intended_status`（`all_observed` / `partial` / `none_observed` / `NA`）。TSV 中 SNP 的 `ref` 为参考碱基；JC 另有 `side2_seq_id` / `side2_position`。完整契约见 [docs/schema.md](docs/schema.md)。
+
 单样本引擎（oracle / 对拍任务）：
 
 ```bash
@@ -76,7 +78,7 @@ prokdiff evidence \
 
 ## 当前进度
 
-阶段 3 产品层：出发株减去、目的掩码、三类标签。引擎 MVP（`prokdiff evidence`）不变。层 0 分类测试为纯内存。层 1 夹具 `synth_parent_child` / `synth_cas9_near` 必须提交 Slurm **`qcpu_18i`**。
+阶段 4 报告层：`summary.txt` 含目的编辑声明/观察/状态；`unintended.tsv` 写出 SNP 参考碱基与 JC 第二端坐标。引擎 MVP（`prokdiff evidence`）不变。层 0 测试为纯内存。层 1 / 层 2 引擎作业必须提交 Slurm **`qcpu_18i`**。
 
 ## 许可
 

@@ -92,25 +92,43 @@ gdtools SUBTRACT edited.gd starter.gd
 
 ## `unintended.tsv`（产品输出）
 
+列顺序锁定（`--no-hypothesis` 时省略最后一列 `hypothesis`）：
+
+```text
+seq_id	position	end	gd_type	ref	alt	class	editor	pam_profile	offtarget_mismatch	distance_to_site	side2_seq_id	side2_position	hypothesis
+```
+
 | 列 | 必填 | 说明 |
 | --- | --- | --- |
-| `seq_id` | 是 | 骨架参考序列 |
-| `position` | 是 | 1-based |
-| `end` | 是 | 闭区间 |
+| `seq_id` | 是 | 骨架参考序列（JC 为 side 1） |
+| `position` | 是 | 1-based（JC 为 side 1） |
+| `end` | 是 | 闭区间（SNP/INS/JC 与 `position` 相同；DEL 为起点 + size − 1） |
 | `gd_type` | 是 | `SNP` / `INS` / `DEL` / `MOB` / `JC` / … |
-| `ref` / `alt` | SNP/indel 是 | |
+| `ref` | SNP 是 | SNP：参考该 1-based 位点的碱基。INS / DEL / MOB / JC 第一期为 `.` |
+| `alt` | SNP/INS 是 | 新等位；DEL / JC 为 `.` |
 | `class` | 是 | `structural` \| `near_homolog` \| `scattered_snv`（对应 (3)(1)(2)） |
 | `editor` | 是 | CLI 传入值 |
 | `pam_profile` | class (1) 是 | 如 `NGG` / `TTTV`；`dsb` 为空 |
 | `offtarget_mismatch` | class (1) 建议 | 相对 spacer 的错配数 |
 | `distance_to_site` | class (1) 是 | 距预测近同源位点 bp；默认阈值 50 |
-| `hypothesis` | 否 | `sos_widney2014` / `unknown_global` / 空；`--no-hypothesis` 时省略 |
-| `coverage` / `frequency` | 建议 | consensus 下频率应接近 1；舍入差异见 parity |
+| `side2_seq_id` | JC 是 | JC 第二端序列名；非 JC 行为空 |
+| `side2_position` | JC 是 | JC 第二端 1-based 坐标；非 JC 行为空 |
+| `hypothesis` | 否 | `sos_widney2014` / `unknown_global` / 空；`--no-hypothesis` 时省略整列 |
+| `coverage` / `frequency` | 建议（后续） | consensus 下频率应接近 1；第一期 TSV **不写这两列** |
 
-另写 `summary.txt`（或 JSON）：
+另写 `summary.txt`（TSV 风格 `key\tvalue`，一行一项）：
 
-- 目的编辑是否观察到（无 `--intended` 时标明 N/A）
-- 三类计数
-- 出发株相对骨架的变异总数（仅供质控，不列入非预期）
+| 键 | 未提供 `--intended` | 提供了 `--intended` |
+| --- | --- | --- |
+| `editor` | CLI 值 | 同左 |
+| `intended_provided` | `no` | `yes` |
+| `intended_declared` | `NA` | 声明行数（`intended.len()`，可为 `0`） |
+| `intended_observed` | `NA` | 掩码命中的突变条数 |
+| `intended_status` | `NA` | 声明行数为 0 → `NA`；`observed == declared` → `all_observed`；`observed == 0` → `none_observed`；否则 → `partial` |
+| `intended_missing` | `NA` | 声明行数为 0 → `NA`；否则 `declared − observed`（saturating） |
+| `structural` / `near_homolog` / `scattered_snv` | 非预期三类计数 | 同左 |
+| `starter_vs_ref_mutations` | 出发株相对骨架的变异总数（质控，不列入非预期） | 同左 |
 
-阶段 3 的 `summary.txt` 只写 `intended_observed` **计数**（提供了 `--intended` 时）或 `NA`（未提供）。**没有** `intended_declared`，也没有逐行「成功 / 未观察到」。多条目 intended 时无法从摘要判断是否部分命中。计划 §9「目的编辑成功与否」的完整判定放到阶段 4。
+`intended_observed` 计的是**被掩码的突变条目**，不是「声明行中被命中的行数」。一条 cassette 声明匹配两条 JC 时，`observed` 可为 2 而 `declared` 为 1，此时 `intended_status=partial`。不做 HTML，不做逐突变长篇报告。
+
+`ClassifyResult.intended_declared` 等于传入 `classify()` 的 `intended` slice 长度。

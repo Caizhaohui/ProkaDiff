@@ -53,6 +53,8 @@ prokdiff \
 
 Writes `starter.gd`, `edited.gd`, `unintended.tsv`, and `summary.txt`.
 
+`summary.txt` records whether `--intended` was supplied (`intended_provided`), how many rows were declared (`intended_declared`), how many post-subtract mutations were masked (`intended_observed`), and a roll-up `intended_status` (`all_observed` / `partial` / `none_observed` / `NA`). SNP `ref` in the TSV is the reference base; JC rows also have `side2_seq_id` / `side2_position`. Full contract: [docs/schema.md](docs/schema.md).
+
 Single-sample engine (oracle / parity jobs):
 
 ```bash
@@ -76,7 +78,7 @@ I/O contract: [docs/schema.md](docs/schema.md). Oracle rules (output + wall-cloc
 
 ## Status
 
-Stage 3 product layer: subtract starter from edited, mask `--intended`, label the three classes. Engine MVP (`prokdiff evidence`) is unchanged. Layer-0 classification tests are in-memory. Layer-1 fixtures `synth_parent_child` and `synth_cas9_near` must run on Slurm **`qcpu_18i`**.
+Stage 4 report layer: `summary.txt` includes declared / observed / status for intended edits; `unintended.tsv` writes SNP reference bases and JC side-2 coordinates. Engine MVP (`prokdiff evidence`) is unchanged. Layer-0 tests are in-memory. Layer-1 / layer-2 engine jobs must run on Slurm **`qcpu_18i`**.
 
 ## License
 

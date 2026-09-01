@@ -45,6 +45,8 @@ pub struct ClassifiedMutation {
 pub struct ClassifyResult {
     pub unintended: Vec<ClassifiedMutation>,
     pub intended_observed: Vec<GdEntry>,
+    /// Number of rows in the `--intended` table (`intended.len()`). Zero when omitted.
+    pub intended_declared: usize,
     pub starter_vs_ref: usize,
 }
 
@@ -93,6 +95,7 @@ pub fn classify(
     ClassifyResult {
         unintended,
         intended_observed: observed.into_iter().cloned().collect(),
+        intended_declared: intended.len(),
         starter_vs_ref: starter_muts.len(),
     }
 }

@@ -24,6 +24,7 @@ testdata/private/**
 *.bt2l
 
 testdata/generated/
+testdata/layer2/
 
 # Benchmark job outputs (templates stay tracked)
 benchmark/results/*

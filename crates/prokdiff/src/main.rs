@@ -186,6 +186,7 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
         &classified.unintended,
         editor_kind.as_str(),
         job.hypothesis,
+        &refs,
     )?;
     write_summary(
         &summary,
