@@ -145,7 +145,7 @@ echo "=== ProkDiff evidence (clonal) ==="
     --keep-bam \
   | tee "${JOBOUT}/prokdiff.stdout"
 
-echo "=== breseq oracle (same node; env is 0.39.0, not 0.40.x) ==="
+echo "=== breseq oracle (same node; env is breseq 0.40.2) ==="
 "${TIME[@]}" -o "${JOBOUT}/breseq.time" \
   breseq -j "${THREADS}" -o "${JOBOUT}/breseq" \
     -r "${REF}" \
