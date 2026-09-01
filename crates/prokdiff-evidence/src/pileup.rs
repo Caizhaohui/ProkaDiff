@@ -48,6 +48,21 @@ pub struct SplitCandidate {
     pub side1_pos_1: u64,
     pub side2_pos_1: u64,
     pub overlap: i64,
+    pub origin: SplitOrigin,
+}
+
+/// Where a split candidate came from. Used by the engine's redundancy
+/// folding to tell "one read, several placement hits" apart from genuinely
+/// independent support.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitOrigin {
+    /// Long CIGAR I/D: the candidate is its own identity and must never be
+    /// folded away by the multi-copy placement rule.
+    Cigar,
+    /// Softclip placement: index of the originating `SoftclipHint`. A read
+    /// whose clip has several exact placement hits (repeat copies)
+    /// contributes one candidate per hit, all sharing this identity.
+    Softclip(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -98,6 +113,7 @@ impl SplitCandidate {
             side1_pos_1,
             side2_pos_1,
             overlap,
+            origin: SplitOrigin::Cigar,
         }
     }
 }
@@ -357,8 +373,14 @@ fn is_continuation(hint: &SoftclipHint, hit_contig: usize, hit_0: usize, clip_le
 
 /// Place a softclip onto the reference (exact match, both strands). Repeat
 /// copies are allowed (unassigned JC). Skip the trivial continuation of the
-/// same alignment.
-pub fn place_softclip(hint: &SoftclipHint, fasta: &[FastaRecord]) -> Vec<SplitCandidate> {
+/// same alignment. `hint_id` tags every produced candidate with the
+/// originating hint so the engine can fold multi-copy placements of the
+/// same underlying reads.
+pub fn place_softclip(
+    hint: &SoftclipHint,
+    fasta: &[FastaRecord],
+    hint_id: usize,
+) -> Vec<SplitCandidate> {
     if hint.clip_seq.len() < MIN_CLIP_FOR_JC || hint.aligned_q_len < MIN_CLIP_FOR_JC {
         return Vec::new();
     }
@@ -415,6 +437,7 @@ pub fn place_softclip(hint: &SoftclipHint, fasta: &[FastaRecord]) -> Vec<SplitCa
                 side1_pos_1: hint.aligned_pos_1,
                 side2_pos_1,
                 overlap: 0,
+                origin: SplitOrigin::Softclip(hint_id),
             });
         }
     }
@@ -559,7 +582,7 @@ mod tests {
         assert_eq!(clips.len(), 1);
         assert_eq!(clips[0].aligned_pos_1, 90);
         assert!(!clips[0].clip_is_left);
-        let placed = place_softclip(&clips[0], &fasta);
+        let placed = place_softclip(&clips[0], &fasta, 0);
         assert!(
             placed
                 .iter()

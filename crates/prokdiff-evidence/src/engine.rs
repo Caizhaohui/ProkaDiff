@@ -1,6 +1,6 @@
 //! Single-sample consensus engine: Bowtie2 → BAM (noodles) → RA / MC / JC → Genome Diff.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -17,7 +17,9 @@ use crate::mc::{
     call_missing_coverage, promote_mc_to_del_with_jc, true_missing_core, MC_DEL_MIN_LEN,
 };
 use crate::normalize::{right_align_del, right_align_ins};
-use crate::pileup::{apply_read, place_softclip, AlignedRead, CigarKind, CigarOp, SplitCandidate};
+use crate::pileup::{
+    apply_read, place_softclip, AlignedRead, CigarKind, CigarOp, SplitCandidate, SplitOrigin,
+};
 use crate::ra::{call_consensus, ConsensusCall, PileupColumn, RaOptions};
 
 #[derive(Clone, Debug)]
@@ -57,6 +59,13 @@ struct JcCluster {
     rep_side1_minus: bool,
     rep_side2_minus: bool,
     support: JunctionSupport,
+    /// (hint contig, hint index) of each supporting softclip placement.
+    /// Members from the same underlying read share their id even when the
+    /// clip placed onto several repeat copies.
+    ids: HashSet<(usize, usize)>,
+    /// True if any member came from a long CIGAR I/D. Such clusters have
+    /// unique identity and are never folded by the multi-copy rule.
+    has_cigar: bool,
 }
 
 impl JcCluster {
@@ -68,12 +77,20 @@ impl JcCluster {
             rep_side1_minus: sp.side1_minus,
             rep_side2_minus: sp.side2_minus,
             support: JunctionSupport::default(),
+            ids: HashSet::new(),
+            has_cigar: false,
         };
         c.add(sp);
         c
     }
 
     fn add(&mut self, sp: &SplitCandidate) {
+        match sp.origin {
+            SplitOrigin::Cigar => self.has_cigar = true,
+            SplitOrigin::Softclip(id) => {
+                self.ids.insert((sp.contig_idx, id));
+            }
+        }
         let ov1 = sp.left.len().max(3);
         let ov2 = sp.right.len().max(3);
         // Best-read semantics: one unbalanced read must not kill the
@@ -99,6 +116,177 @@ impl JcCluster {
             e.min_overlap_side2.min(ov2)
         };
     }
+}
+
+/// An accepted junction cluster plus the identity of its supporting
+/// evidence, carried through the redundancy folding below.
+struct AcceptedJc {
+    c1: usize,
+    p1: u64,
+    m1: bool,
+    c2: usize,
+    p2: u64,
+    m2: bool,
+    overlap: i64,
+    support: JunctionSupport,
+    /// (hint contig, hint index) of each supporting softclip; CIGAR-split
+    /// members contribute no id and set `has_cigar` instead.
+    ids: HashSet<(usize, usize)>,
+    has_cigar: bool,
+}
+
+/// (contig, 1-based pos, minus) of one junction side.
+type SideKey = (usize, u64, bool);
+/// Junction direction key: (side1, side2).
+type DirKey = (SideKey, SideKey);
+
+fn dir_key(j: &AcceptedJc) -> DirKey {
+    ((j.c1, j.p1, j.m1), (j.c2, j.p2, j.m2))
+}
+
+/// Canonical direction: lexicographically smaller of the forward key and
+/// the swapped-sides key. A side's strand is the direction its sequence
+/// extends away from the junction — intrinsic to the junction geometry,
+/// not to the reporting read — so swapping sides keeps each strand
+/// attached to its position. (Measured, synth_is_mob 2372015: the reverse
+/// report `2560(-1)->601(+1)` duplicates `599(+1)->2558(-1)` with strands
+/// preserved per position, shifted only by the ±2 bp register.)
+fn canonical_dir_key(j: &AcceptedJc) -> DirKey {
+    let f = dir_key(j);
+    let r = (f.1, f.0);
+    f.min(r)
+}
+
+/// Same physical event seen from both sides: equal contigs and strands,
+/// both coordinates within JC_CLUSTER_TOL_BP (register shifts).
+fn dir_key_within_tol(a: &DirKey, b: &DirKey) -> bool {
+    a.0 .0 == b.0 .0
+        && a.0 .2 == b.0 .2
+        && a.0 .1.abs_diff(b.0 .1) <= JC_CLUSTER_TOL_BP
+        && a.1 .0 == b.1 .0
+        && a.1 .2 == b.1 .2
+        && a.1 .1.abs_diff(b.1 .1) <= JC_CLUSTER_TOL_BP
+}
+
+fn absorb_support(a: &mut JunctionSupport, b: &JunctionSupport) {
+    a.plus_reads += b.plus_reads;
+    a.minus_reads += b.minus_reads;
+    a.best_min_overlap = a.best_min_overlap.max(b.best_min_overlap);
+    a.plus_best_min = a.plus_best_min.max(b.plus_best_min);
+    a.minus_best_min = a.minus_best_min.max(b.minus_best_min);
+    // 0 is the unset sentinel (see JcCluster::add).
+    a.min_overlap_side1 = match (a.min_overlap_side1, b.min_overlap_side1) {
+        (0, y) => y,
+        (x, 0) => x,
+        (x, y) => x.min(y),
+    };
+    a.min_overlap_side2 = match (a.min_overlap_side2, b.min_overlap_side2) {
+        (0, y) => y,
+        (x, 0) => x,
+        (x, y) => x.min(y),
+    };
+}
+
+fn support_total(s: &JunctionSupport) -> usize {
+    s.plus_reads + s.minus_reads
+}
+
+/// Merge `j` into group representative `g`, keeping the better-supported
+/// report's own emitted coordinates (ties keep the existing
+/// representative, i.e. the smallest canonical key since the input is
+/// sorted). Reads and ids of the folded-away report are retained.
+fn absorb_into_rep(g: &mut AcceptedJc, j: AcceptedJc) {
+    if support_total(&j.support) > support_total(&g.support) {
+        let mut rep = j;
+        absorb_support(&mut rep.support, &g.support);
+        rep.ids.extend(g.ids.drain());
+        rep.has_cigar |= g.has_cigar;
+        *g = rep;
+    } else {
+        absorb_support(&mut g.support, &j.support);
+        g.ids.extend(j.ids);
+        g.has_cigar |= j.has_cigar;
+    }
+}
+
+/// Fold reverse-direction duplicates: one physical junction reported once
+/// per side (a read aligned on side1 with its clip placed on side2, and
+/// another read aligned on side2 with its clip placed on side1). Reports
+/// of the same event match after swapping sides within JC_CLUSTER_TOL_BP.
+/// One report is kept per event: the better-supported one (ties: smallest
+/// canonical key), emitted in its own orientation — the oracle-side
+/// comparison canonicalizes sides itself and matches within ±5 bp, so any
+/// register/orientation of the same event compares equal.
+/// Deterministic: the input is sorted before the greedy single pass.
+fn fold_reverse_duplicates(mut accepted: Vec<AcceptedJc>) -> Vec<AcceptedJc> {
+    accepted.sort_by_key(canonical_dir_key);
+    let mut folded: Vec<AcceptedJc> = Vec::new();
+    for j in accepted {
+        let ck = canonical_dir_key(&j);
+        let mut hit = None;
+        for (i, g) in folded.iter().enumerate() {
+            if dir_key_within_tol(&canonical_dir_key(g), &ck) {
+                hit = Some(i);
+                break;
+            }
+        }
+        match hit {
+            Some(i) => absorb_into_rep(&mut folded[i], j),
+            None => folded.push(j),
+        }
+    }
+    folded
+}
+
+/// One shared junction side (same contig and strand, within
+/// JC_CLUSTER_TOL_BP), in either emitted orientation.
+fn shares_one_side(a: &AcceptedJc, b: &AcceptedJc) -> bool {
+    let sa = [(a.c1, a.p1, a.m1), (a.c2, a.p2, a.m2)];
+    let sb = [(b.c1, b.p1, b.m1), (b.c2, b.p2, b.m2)];
+    sa.iter().any(|x| {
+        sb.iter()
+            .any(|y| x.0 == y.0 && x.2 == y.2 && x.1.abs_diff(y.1) <= JC_CLUSTER_TOL_BP)
+    })
+}
+
+/// Fold multi-copy placement duplicates: a read whose clipped bases have
+/// several exact placement hits (repeat copies) contributes one candidate
+/// per hit, so the same junction appears once per copy. Two accepted
+/// junctions sharing one side and >50% of the smaller supporting-read
+/// identity set are one event. (The identity set is the real
+/// discriminator: two genuinely distinct junctions can share a repeat
+/// copy as one side, but never the same underlying reads.) The emitted
+/// placement is the one with the most supporting reads — measured,
+/// synth_is_mob 2372015: the copy breseq kept is the one carrying extra
+/// copy-anchored reads — ties broken by canonical-key order.
+/// CIGAR-split junctions have unique identity and are never folded by
+/// this rule. Deterministic: sorted before the greedy single pass.
+fn fold_multicopy_placements(mut junctions: Vec<AcceptedJc>) -> Vec<AcceptedJc> {
+    junctions.sort_by_key(canonical_dir_key);
+    let mut groups: Vec<AcceptedJc> = Vec::new();
+    for j in junctions {
+        let mut hit = None;
+        for (i, g) in groups.iter().enumerate() {
+            if g.has_cigar || j.has_cigar {
+                continue;
+            }
+            if !shares_one_side(g, &j) {
+                continue;
+            }
+            let shared = g.ids.intersection(&j.ids).count();
+            let smaller = g.ids.len().min(j.ids.len());
+            if smaller == 0 || shared * 2 <= smaller {
+                continue;
+            }
+            hit = Some(i);
+            break;
+        }
+        match hit {
+            Some(i) => absorb_into_rep(&mut groups[i], j),
+            None => groups.push(j),
+        }
+    }
+    groups
 }
 
 impl Default for EngineOptions {
@@ -262,8 +450,8 @@ pub fn call_from_aligned(
                         &mut clips,
                     );
                 }
-                for hint in &clips {
-                    splits.extend(place_softclip(hint, fasta));
+                for (hint_id, hint) in clips.iter().enumerate() {
+                    splits.extend(place_softclip(hint, fasta, hint_id));
                 }
                 (columns, unique_depth, total_depth, splits)
             })
@@ -278,6 +466,10 @@ pub fn call_from_aligned(
     gd.metadata
         .push(("PROGRAM".into(), "prokdiff-evidence".into()));
     let mut next_id = 1u32;
+    // Accepted junctions are collected across ALL contigs and emitted only
+    // after redundancy folding: a reverse-direction duplicate keyed on
+    // contig B can belong to a physical event first reported on contig A.
+    let mut accepted_all: Vec<AcceptedJc> = Vec::new();
 
     for (idx, rec) in fasta.iter().enumerate() {
         let (columns, unique_depth, total_depth, splits) = &contig_results[idx];
@@ -358,7 +550,6 @@ pub fn call_from_aligned(
         }
         let mut group_keys: Vec<(usize, usize, i8)> = groups.keys().copied().collect();
         group_keys.sort_unstable();
-        let mut accepted_jc = Vec::new();
         let mut jc_endpoints_1 = Vec::new();
         for gk in group_keys {
             let mut members: Vec<&SplitCandidate> = groups[&gk].clone();
@@ -385,21 +576,24 @@ pub fn call_from_aligned(
                 if !accept_junction(&c.support) {
                     continue;
                 }
-                accepted_jc.push((
-                    gk.0,
-                    c.rep_side1,
-                    c.rep_side1_minus,
-                    gk.1,
-                    c.rep_side2,
-                    c.rep_side2_minus,
-                    c.rep_overlap,
-                ));
                 if gk.0 == idx {
                     jc_endpoints_1.push(c.rep_side1);
                 }
                 if gk.1 == idx {
                     jc_endpoints_1.push(c.rep_side2);
                 }
+                accepted_all.push(AcceptedJc {
+                    c1: gk.0,
+                    p1: c.rep_side1,
+                    m1: c.rep_side1_minus,
+                    c2: gk.1,
+                    p2: c.rep_side2,
+                    m2: c.rep_side2_minus,
+                    overlap: c.rep_overlap,
+                    support: c.support,
+                    ids: c.ids,
+                    has_cigar: c.has_cigar,
+                });
             }
         }
 
@@ -444,17 +638,24 @@ pub fn call_from_aligned(
             }
             next_id += 1;
         }
+    }
 
-        for (c1, p1, m1, c2, p2, m2, ov) in accepted_jc {
-            // breseq GD convention: side strands are 1 / -1.
-            let s1 = if m1 { "-1" } else { "1" };
-            let s2 = if m2 { "-1" } else { "1" };
-            let n1 = fasta[c1].name.clone();
-            let n2 = fasta[c2].name.clone();
-            gd.entries
-                .push(GdEntry::jc(next_id, n1, p1, s1, n2, p2, s2, ov));
-            next_id += 1;
-        }
+    // Redundancy folding (synth_is_mob 2372015: 6 JC emitted for 2
+    // physical junctions — 2 multi-copy placements + 2 reverse-direction
+    // duplicates). Reverse first: folding copy placements before direction
+    // duplicates would strand the copy-side reports. Then emit one JC per
+    // physical event, in deterministic coordinate order.
+    let mut folded = fold_multicopy_placements(fold_reverse_duplicates(accepted_all));
+    folded.sort_by_key(|j| (j.c1, j.p1, j.m1, j.c2, j.p2, j.m2));
+    for j in folded {
+        // breseq GD convention: side strands are 1 / -1.
+        let s1 = if j.m1 { "-1" } else { "1" };
+        let s2 = if j.m2 { "-1" } else { "1" };
+        let n1 = fasta[j.c1].name.clone();
+        let n2 = fasta[j.c2].name.clone();
+        gd.entries
+            .push(GdEntry::jc(next_id, n1, j.p1, s1, n2, j.p2, s2, j.overlap));
+        next_id += 1;
     }
 
     gd
@@ -711,14 +912,16 @@ mod tests {
     }
 
     #[test]
-    fn synth_is_mob_geometry_both_strand_softclips_aggregate() {
-        // Regression for the synth_is_mob empty-GD failures (jobs 2371258,
-        // 2371412): plus and minus reads with 3′ softclips cross the SAME
-        // insert left boundary. SAM/BAM stores SEQ reference-forward, so both
-        // strands share the same stored SEQ/CIGAR and must key side1 at the
-        // junction base (30). Keying minus reads at the opposite end of the
-        // match block (the pre-fix behavior) scattered minus candidates tens
-        // of bp away, so plus/minus never aggregated and no JC was accepted.
+    fn same_reads_placed_on_two_copies_fold_to_one_jc() {
+        // Multi-copy placement folding (job 2372015). Regression base for
+        // the synth_is_mob empty-GD failures (jobs 2371258, 2371412): plus
+        // and minus reads with 3′ softclips cross the SAME insert left
+        // boundary. SAM/BAM stores SEQ reference-forward, so both strands
+        // share the same stored SEQ/CIGAR and must key side1 at the
+        // junction base (30). The SAME reads' clips hit both motif copies,
+        // so after folding exactly ONE JC remains (not one per copy); with
+        // no copy-anchored reads the two placements tie on support and the
+        // deterministic tie-break keeps the smallest side2 (first copy).
         let motif = *b"TGCAAGTCGATCGTTAGCCA";
         let mut seq = vec![b'C'; 160];
         seq[40..60].copy_from_slice(&motif);
@@ -752,28 +955,22 @@ mod tests {
         let jcs = gd_jcs(&gd);
         assert_eq!(
             jcs.len(),
-            2,
-            "one aggregated JC per motif copy; entries={:?}",
+            1,
+            "same reads placed on two copies must fold to one JC; entries={:?}",
             gd.entries
                 .iter()
                 .map(|e| (e.kind, e.fields.clone()))
                 .collect::<Vec<_>>()
         );
-        let mut side2s = Vec::new();
-        for jc in &jcs {
-            let side1: u64 = jc.fields[1].parse().unwrap();
-            let side2: u64 = jc.fields[4].parse().unwrap();
-            assert_eq!(
-                side1, 30,
-                "both strands must key side1 at the junction base"
-            );
-            side2s.push(side2);
-        }
-        side2s.sort_unstable();
+        let side1: u64 = jcs[0].fields[1].parse().unwrap();
+        let side2: u64 = jcs[0].fields[4].parse().unwrap();
         assert_eq!(
-            side2s,
-            vec![41, 101],
-            "side2 must be the two motif copy starts"
+            side1, 30,
+            "both strands must key side1 at the junction base"
+        );
+        assert_eq!(
+            side2, 41,
+            "support tie keeps the lexicographically smallest side2"
         );
     }
 
@@ -902,6 +1099,284 @@ mod tests {
         let mut side1s: Vec<u64> = jcs.iter().map(|jc| jc.fields[1].parse().unwrap()).collect();
         side1s.sort_unstable();
         assert_eq!(side1s, vec![599, 609]);
+    }
+
+    /// 80 bp IS-like motif with 2 bp register coincidences against the
+    /// flank markers used in the folding tests: the first 2 bp equal the
+    /// right-flank start ("TT") and the last 2 bp equal the left-flank end
+    /// ("AA"), mirroring the measured synth_is_mob motif/ref coincidences
+    /// (job 2371412 diagnostic: motif prefix GT == ref 601-602, motif
+    /// suffix GC == ref 599-600).
+    fn is_motif_80() -> Vec<u8> {
+        let mut m = Vec::new();
+        m.extend_from_slice(b"TTGCAAGTCGATCGTTAGCC"); // [0..20]
+        m.extend_from_slice(b"GATCCGATGCTAGCTTACGA"); // [20..40]
+        m.extend_from_slice(b"ACGTGGATCCTTAGCGATCA"); // [40..60]
+        m.extend_from_slice(b"GCTAGGCCATGATCGATAAA"); // [60..80]
+        m
+    }
+
+    fn softclip_read(
+        ref_start_0: i64,
+        minus: bool,
+        seq: &[u8],
+        cigar: &[(CigarKind, usize)],
+    ) -> AlignedRead {
+        AlignedRead {
+            contig_idx: 0,
+            ref_start_0,
+            minus,
+            seq: seq.to_vec(),
+            cigar: cigar
+                .iter()
+                .map(|&(kind, len)| CigarOp { kind, len })
+                .collect(),
+            mapq: UNIQUE_MAPQ,
+        }
+    }
+
+    #[test]
+    fn synth_is_mob_2372015_multicopy_and_reverse_duplicates_fold() {
+        // End-to-end geometry of job 2372015 (4000 bp genome, 80 bp motif
+        // copies at 1201-1280 / 2481-2560, third copy inserted at 601).
+        // Each insert boundary is reported (a) once per existing motif copy
+        // (multi-copy placement of the same clipped reads) and (b) once in
+        // the reverse direction by reads aligned on a copy with the unique
+        // flank clipped. Before folding this emitted 6 JC for 2 physical
+        // junctions (4 redundant over-JC vs breseq: 599->1278, 602->1203,
+        // 2480->599, 2560->601); after folding exactly 2 canonical JC must
+        // remain.
+        let motif = is_motif_80();
+        // Unique flank markers (NOT homopolymers: copy-anchored reads clip
+        // the flank, and place_softclip searches both strands — an A/T
+        // homopolymer pair would reverse-complement onto each other).
+        // lmark ends in "AA" and rmark starts with "TT", mirroring the
+        // measured 2 bp register coincidences with the motif ends.
+        let lmark = *b"ACGATCGGTTAACTGCGGAA"; // genome 581..600 (1-based)
+        let rmark = *b"TTGCGATCGATCCGGAATCG"; // genome 601..620 (1-based)
+        let mut seq = vec![b'C'; 4000];
+        seq[580..600].copy_from_slice(&lmark);
+        seq[600..620].copy_from_slice(&rmark);
+        seq[1200..1280].copy_from_slice(&motif); // copy1, 1-based 1201..1280
+        seq[2480..2560].copy_from_slice(&motif); // copy2, 1-based 2481..2560
+
+        // Stored SEQ (reference-forward on both strands).
+        let mut left_junction_seq = lmark.to_vec();
+        left_junction_seq.extend_from_slice(&motif[0..20]);
+        let mut right_junction_seq = Vec::new();
+        right_junction_seq.extend_from_slice(&motif[60..80]);
+        right_junction_seq.extend_from_slice(&rmark);
+
+        let mut reads = Vec::new();
+        // Left junction, flank-anchored: M on the left flank, trailing clip
+        // = motif prefix. Register 600 (20M+20S) and register 602 (22M+18S;
+        // the M block extends 2 bp into the motif because motif[0..2]=="TT"
+        // equals the right-flank start).
+        for minus in [false, false, true, true] {
+            reads.push(softclip_read(
+                580,
+                minus,
+                &left_junction_seq,
+                &[(CigarKind::Match, 20), (CigarKind::SoftClip, 20)],
+            ));
+        }
+        for minus in [false, true] {
+            reads.push(softclip_read(
+                580,
+                minus,
+                &left_junction_seq,
+                &[(CigarKind::Match, 22), (CigarKind::SoftClip, 18)],
+            ));
+        }
+        // Left junction, copy-anchored (bowtie2 placed the motif block on
+        // copy2): leading clip = left-flank suffix.
+        for minus in [false, true] {
+            reads.push(softclip_read(
+                2480,
+                minus,
+                &left_junction_seq,
+                &[(CigarKind::SoftClip, 20), (CigarKind::Match, 20)],
+            ));
+        }
+        // Right junction, flank-anchored: leading clip = motif suffix, M on
+        // the right flank. Register 601 (20S+20M) and register 599
+        // (18S+22M; motif[78..80]=="AA" equals the left-flank end).
+        for minus in [false, false, true, true] {
+            reads.push(softclip_read(
+                600,
+                minus,
+                &right_junction_seq,
+                &[(CigarKind::SoftClip, 20), (CigarKind::Match, 20)],
+            ));
+        }
+        for minus in [false, true] {
+            reads.push(softclip_read(
+                598,
+                minus,
+                &right_junction_seq,
+                &[(CigarKind::SoftClip, 18), (CigarKind::Match, 22)],
+            ));
+        }
+        // Right junction, copy-anchored: M on copy2 end, trailing clip =
+        // right-flank prefix.
+        for minus in [false, true] {
+            reads.push(softclip_read(
+                2540,
+                minus,
+                &right_junction_seq,
+                &[(CigarKind::Match, 20), (CigarKind::SoftClip, 20)],
+            ));
+        }
+
+        let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
+        let jcs = gd_jcs(&gd);
+        assert_eq!(
+            jcs.len(),
+            2,
+            "6 redundant reports must fold to exactly 2 canonical JC; entries={:?}",
+            gd.entries
+                .iter()
+                .map(|e| (e.kind, e.fields.clone()))
+                .collect::<Vec<_>>()
+        );
+        // Canonical coordinates: the copy2 placements carry the extra
+        // copy-anchored reads, so they win the multi-copy fold.
+        assert_eq!(
+            jcs[0].fields,
+            vec!["chr", "599", "1", "chr", "2558", "-1", "0"],
+            "left junction canonical JC"
+        );
+        assert_eq!(
+            jcs[1].fields,
+            vec!["chr", "600", "-1", "chr", "2481", "1", "0"],
+            "right junction canonical JC"
+        );
+    }
+
+    #[test]
+    fn distinct_junctions_apart_beyond_tol_are_not_folded() {
+        // Two genuinely distinct junctions 40 bp apart (> tol), each
+        // supported by its own read set whose clips place on both motif
+        // copies. Each junction's two copy placements fold (same reads);
+        // the two junctions must NOT fold into each other.
+        let motif = is_motif_80();
+        let mut seq = vec![b'C'; 4000];
+        seq[580..600].fill(b'A');
+        seq[620..640].fill(b'G');
+        seq[1200..1280].copy_from_slice(&motif);
+        seq[2480..2560].copy_from_slice(&motif);
+        let mut reads = Vec::new();
+        for (flank_base, start0) in [(b'A', 580i64), (b'G', 620)] {
+            let mut read_seq = vec![flank_base; 20];
+            read_seq.extend_from_slice(&motif[0..20]);
+            for minus in [false, false, false, true, true, true] {
+                reads.push(softclip_read(
+                    start0,
+                    minus,
+                    &read_seq,
+                    &[(CigarKind::Match, 20), (CigarKind::SoftClip, 20)],
+                ));
+            }
+        }
+        let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
+        let jcs = gd_jcs(&gd);
+        assert_eq!(
+            jcs.len(),
+            2,
+            "junctions 40 bp apart must not fold; entries={:?}",
+            gd.entries
+                .iter()
+                .map(|e| (e.kind, e.fields.clone()))
+                .collect::<Vec<_>>()
+        );
+        let mut side1s: Vec<u64> = jcs.iter().map(|jc| jc.fields[1].parse().unwrap()).collect();
+        side1s.sort_unstable();
+        assert_eq!(side1s, vec![600, 640]);
+        for jc in &jcs {
+            // Equal support on both copies -> smallest side2 (copy1).
+            assert_eq!(jc.fields[4], "1201");
+        }
+    }
+
+    #[test]
+    fn distinct_read_sets_same_flank_are_not_folded() {
+        // Same side1 (within tol) but DISJOINT supporting read sets placing
+        // on two different copies: not the same underlying reads, so the
+        // multi-copy rule must not fold them (identity gate).
+        let motif_p = is_motif_80();
+        let mut motif_q = Vec::new();
+        motif_q.extend_from_slice(b"GCGTTAACCGGATCGTACGT");
+        motif_q.extend_from_slice(b"CCGGAATTAACCGGTTAACC");
+        motif_q.extend_from_slice(b"TTGGCCAATTGGCCAATTGG");
+        motif_q.extend_from_slice(b"AACCGGTTCCTTAAGGCCAA");
+        let mut seq = vec![b'C'; 4000];
+        seq[580..600].fill(b'A');
+        seq[1200..1280].copy_from_slice(&motif_p);
+        seq[2480..2560].copy_from_slice(&motif_q);
+        let mut reads = Vec::new();
+        for motif in [&motif_p, &motif_q] {
+            let mut read_seq = vec![b'A'; 20];
+            read_seq.extend_from_slice(&motif[0..20]);
+            for minus in [false, false, false, true, true, true] {
+                reads.push(softclip_read(
+                    580,
+                    minus,
+                    &read_seq,
+                    &[(CigarKind::Match, 20), (CigarKind::SoftClip, 20)],
+                ));
+            }
+        }
+        let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
+        let jcs = gd_jcs(&gd);
+        assert_eq!(
+            jcs.len(),
+            2,
+            "disjoint read sets must not fold even at the same side1; entries={:?}",
+            gd.entries
+                .iter()
+                .map(|e| (e.kind, e.fields.clone()))
+                .collect::<Vec<_>>()
+        );
+        let mut side2s: Vec<u64> = jcs.iter().map(|jc| jc.fields[4].parse().unwrap()).collect();
+        side2s.sort_unstable();
+        assert_eq!(side2s, vec![1201, 2481]);
+    }
+
+    #[test]
+    fn cigar_split_junctions_are_never_multicopy_folded() {
+        // Two long-D deletions sharing side1 (within tol) but reaching
+        // different side2 positions: distinct events. CIGAR splits have
+        // unique identity and must survive as 2 JC.
+        let seq = vec![b'A'; 400];
+        let mut reads = Vec::new();
+        for del_len in [8usize, 100] {
+            for minus in [false, false, false, true, true, true] {
+                reads.push(softclip_read(
+                    0,
+                    minus,
+                    &[b'A'; 30],
+                    &[
+                        (CigarKind::Match, 15),
+                        (CigarKind::Del, del_len),
+                        (CigarKind::Match, 15),
+                    ],
+                ));
+            }
+        }
+        let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
+        let jcs = gd_jcs(&gd);
+        assert_eq!(
+            jcs.len(),
+            2,
+            "CIGAR-split junctions must never be multi-copy folded; entries={:?}",
+            gd.entries
+                .iter()
+                .map(|e| (e.kind, e.fields.clone()))
+                .collect::<Vec<_>>()
+        );
+        let mut side2s: Vec<u64> = jcs.iter().map(|jc| jc.fields[4].parse().unwrap()).collect();
+        side2s.sort_unstable();
+        assert_eq!(side2s, vec![24, 116]);
     }
 
     #[test]

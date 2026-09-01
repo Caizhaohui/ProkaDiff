@@ -89,7 +89,7 @@ Clonal leftover（breseq **0.39.0**，见 `benchmark/results/clonal_leftover.md`
 - 长 CIGAR I/D（>2 bp）仍作 mosaic 候选；**聚合键不含 read strand**，正负链合并后再 `accept_junction`。
 - ≥14 bp softclip：在参考上精确匹配（含反向互补），跳过本比对的平凡延续；重复拷贝允许 unassigned JC。
 - **MOB：** 第一期不写 `IS150` 等注释名（无 GBK repeat 表）。Clonal 的 5 条 unique-mapping MOB **仍可能只以 JC 出现**；等 breseq **0.40.x** 层 2 再验。这落在上表「重复区 JC 拷贝歧义」白名单，**不**把 breseq `.gd` 抄进运行时。
-- 层 0 测例：`both_strand_long_deletion_emits_jc`、`softclip_onto_repeat_copy_emits_jc`、`jc_supported_cigar_gap_promotes_short_del`、`synth_is_mob_geometry_both_strand_softclips_aggregate`。
+- 层 0 测例：`both_strand_long_deletion_emits_jc`、`softclip_onto_repeat_copy_emits_jc`、`jc_supported_cigar_gap_promotes_short_del`、`same_reads_placed_on_two_copies_fold_to_one_jc`（原 `synth_is_mob_geometry_both_strand_softclips_aggregate`，见下方折叠规则）。
 - **未在登录节点重跑 Clonal FASTQ。** 不得声称 27 条 JC 已与 0.39.0 leftover 对齐。
 - **Softclip 链向规范化 + best-read 接受规则（作业 2371258 收口）：** synth_is_mob 层 1 红线类型双向 leftover=0，但 ProkDiff 吐出 empty GD，breseq 报 4 JC（200→401、200→881、201→480、201→960；夹具在 201 处插入第三个 80 bp motif 拷贝，已有拷贝在 401-480、881-960）。根因二条：(1) softclip hint 的 `aligned_pos_1` / `clip_is_left` 此前按 **read 方向**记录，minus 链接合点键错位（5′ clip 键在 151 而非 200），正负链无法聚合；现统一为**参考方向**（`ref_clip_is_left = clip_on_read_left XOR minus`；left→`first_match_ref+1`，right→`last_match_ref+1`），`clip_seq` 仍保持 read 方向（`place_softclip` 双链搜索），side2 公式相应改为 `clip_is_left == (is_rc XOR minus)`。(2) `accept_junction` 的 ≥14 bp 规则此前取所有支持读段的 **min**，一条不平衡读段（如单侧 5 bp）即可杀死 junction；现按发表方法改为**最佳单读段**每侧 ≥14 bp（max over reads of min(ov1,ov2)），且**每链**有读段每侧 ≥9 bp（per-strand max-of-min），每侧最小延伸 ≥3 bp 保留为文档性检查（`.max(3)` 钳位使其恒真）。
 
@@ -102,6 +102,16 @@ Clonal leftover（breseq **0.39.0**，见 `benchmark/results/clonal_leftover.md`
   - 层 0 测例：`few_bp_strand_split_junctions_cluster_into_one_jc`（599/602 跨链聚成 1 条 JC）、`junctions_beyond_cluster_tolerance_do_not_merge`（10 bp 不并簇）、`minus_strand_leading_clip_keys_at_first_match`、`minus_strand_trailing_clip_keys_at_last_match`；既有 softclip/JC 测例的 minus 读段模型改为参考正向存储。
 
 - **Clonal 2371389 头条（oracle breseq 0.40.2，新引擎）：** 134 条 MC→DEL 过报**消除**（over_red 139 → 5，仅剩 5 SNP；DEL 134→0）。JC 仍为 0（本轮跑在聚类与 minus 键位修复**之前**），27 条 oracle JC 全未匹配（其中 9 条 oracle 自带 `reject=`）。wall / RSS（同节点单次，**非正式**记录）：ProkDiff 137.23 s / 2.97 GB，breseq 2667.67 s / 1.86 GB。详见 `benchmark/results/clonal_leftover.md` 2371389 节。
+
+- **JC 冗余折叠（作业 2372015 收口）：** 2372015 实测 ProkDiff 吐 6 条 JC、breseq 0.40.2 吐 2 条（`599 (+1) -> 2558 (-1)`、`602 (-1) -> 2483 (+1)`，jc_matched_tol=2、under=0）；4 条 over-JC 全是同一物理事件的冗余报告：
+  1. 多拷贝放置——同一批 softclip 读段的 clip 同时精确命中两个 motif 拷贝（1201-1280 / 2481-2560），多出 `599 (+1) -> 1278 (-1)` 与 `602 (-1) -> 1203 (+1)`（copy1 放置；breseq 只保留 copy2 2483/2558）。
+  2. 反向重复——`2560 (-1) -> 601 (+1)` 与 `2480 (+1) -> 599 (-1)` 是两条已匹配 JC 从另一侧报告的方向重复（寄存器漂移：599+2=601、2558+2=2560；602−3=599、2483−3=2480）。
+
+  第一期折叠规则（`prokdiff-evidence::engine`，层 0 可测；先反向、后多拷贝——先折多拷贝会把 copy 侧报告残留为额外 JC）：
+  1. **反向规范化**：交换两侧后在 ±`JC_CLUSTER_TOL_BP`（5 bp）内匹配（contig 相同、各侧链向相同——链向随参考位置固有，**不**随报告方向翻转；2372015 实测反向报告的两侧链向与原报告逐位置一致，仅坐标差 ±2/3 bp）。每个物理事件只吐一条：代表 = 支持读段最多者，并列取 canonical 键（forward vs 交换侧后的字典序）最小者。
+  2. **多拷贝放置折叠**：`place_softclip` 给每个候选打上来源 softclip 的身份（hint 序号；一次命中多拷贝的读段每个拷贝贡献一个候选、共享同一身份）。共享一侧（同 contig/链向、±5 bp，任一方向）且支持读段身份交集 > 较小集合 50% 的已接受 JC 并为一条；代表 = 支持读段最多的拷贝（2372015 实测 breseq 保留的正是带额外 copy-anchored 读段的拷贝），并列取 canonical 键最小者。CIGAR 长 I/D 候选身份唯一，**永不**被本规则折叠。
+
+  写出坐标为代表簇原坐标、原方向（±5 bp 寄存器 / 方向歧义在「重复区 JC 拷贝歧义」白名单内，对拍脚本自行做侧规范化）。层 0 测例：`synth_is_mob_2372015_multicopy_and_reverse_duplicates_fold`（2372015 全几何 6→2）、`distinct_junctions_apart_beyond_tol_are_not_folded`、`distinct_read_sets_same_flank_are_not_folded`、`cigar_split_junctions_are_never_multicopy_folded`；`synth_is_mob_geometry_both_strand_softclips_aggregate` 相应改为 `same_reads_placed_on_two_copies_fold_to_one_jc`（同一批读段命中两个拷贝 → 1 条 JC）。
 
 层 2 等 0.40.x 再重跑；不要重提作业 2369858。
 
