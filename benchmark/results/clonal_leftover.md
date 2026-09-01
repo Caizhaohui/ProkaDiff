@@ -213,6 +213,12 @@ ProkDiff JC=0，故 ±5 bp 规范化帮不上。breseq JC 多为 unique 侧 × �
 
 ## 结论与下一步（2372151 之后）
 
-- JC 聚类（7043cca）在 Clonal 真实数据上**未产出任何 JC**；27 条 oracle JC 恢复数仍为 0/27。JC 通路根因未闭合，需回到 synth_is_mob 诊断继续定位（真实数据与合成 fixture 的 softclip 几何差异）。
-- 折叠（52c5256）尚未被任何 Clonal 作业检验；下次重提前确认二进制 mtime 晚于该提交。
+- JC 聚类（7043cca）在 Clonal 真实数据上**未产出任何 JC**；27 条 oracle JC 恢复数仍为 0/27。根因不是 synth_is_mob 几何，而是主 BAM 无 S≥14（见下节）。
+- 折叠（52c5256）未进入本轮二进制；**不要**再为折叠重提 Clonal——主 BAM 无长 softclip 可折叠。
 - 5 条 over SNP 的同坐标错分（`3289962`、`3894997`）依旧待 JC/MOB 路径收口。
+
+## BAM 诊断（作业 2372402 / 2372418，对 clonal_2372151 `aligned.bam` 只读）
+
+Clonal 读长 **36 bp**。整 BAM 实测：mapped **7,195,511**；含任意 S **625,062**；S 长度 1–5: **582,007**，6–13: **43,055**，**≥14: 0**。H≥14 / `SA:Z` / supplementary: **0**。27 条 oracle JC 窗口均有 mapped 覆盖与短 S（maxS 峰值 **12**），**可放置 S≥14 = 0**。引擎 `MIN_CLIP_FOR_JC=14` 因此输入为空。窗口 MAPQ 36–44（「低 MAPQ 滤掉长 clip」为假）。本样本 breseq JC 来自二次比对候选接合点（`04_candidate_junction_alignment/*.sam`），不是主 BAM 长 softclip。synth_is_mob 能报是因为那份 BAM 确实有 S≥14。
+
+下一步 JC 工作是发表方法中的 **candidate-junction 二次比对**，不是再为折叠重提 Clonal。详见 [docs/parity.md](../../docs/parity.md) 第一期 JC / MOB。

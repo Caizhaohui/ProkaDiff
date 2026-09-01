@@ -38,6 +38,10 @@ benchmark/logs/
 *.err
 slurm-*.out
 
+# Python
+__pycache__/
+*.pyc
+
 # IDE / OS
 .idea/
 .vscode/

@@ -113,6 +113,10 @@ Clonal leftover（breseq **0.39.0**，见 `benchmark/results/clonal_leftover.md`
 
   写出坐标为代表簇原坐标、原方向（±5 bp 寄存器 / 方向歧义在「重复区 JC 拷贝歧义」白名单内，对拍脚本自行做侧规范化）。层 0 测例：`synth_is_mob_2372015_multicopy_and_reverse_duplicates_fold`（2372015 全几何 6→2）、`distinct_junctions_apart_beyond_tol_are_not_folded`、`distinct_read_sets_same_flank_are_not_folded`、`cigar_split_junctions_are_never_multicopy_folded`；`synth_is_mob_geometry_both_strand_softclips_aggregate` 相应改为 `same_reads_placed_on_two_copies_fold_to_one_jc`（同一批读段命中两个拷贝 → 1 条 JC）。
 
+- **Clonal 36 bp / 主 BAM 无 S≥14（作业 2372402 / 2372418，对 `clonal_2372151` BAM 只读）：** Clonal 读长 **36 bp**。整 BAM 实测：mapped **7,195,511**；含任意 S **625,062**；S 长度 1–5: **582,007**，6–13: **43,055**，**≥14: 0**。H≥14 / `SA:Z` / supplementary: **0**。27 条 oracle JC 窗口均有 mapped 覆盖与短 S（maxS 峰值 **12**），**可放置 S≥14 = 0**。引擎 `MIN_CLIP_FOR_JC=14` 因此输入为空，**无法触发**。JC 窗口 MAPQ 36–44（「低 MAPQ 滤掉长 clip」为假）。本样本 breseq JC 来自二次比对候选接合点（`04_candidate_junction_alignment/*.sam`），不是主 BAM 长 softclip。synth_is_mob 能报 JC 是因为那份 BAM **确实有** S≥14。
+
+  结论：聚类（7043cca）与折叠（52c5256）**不能**从主 BAM 恢复 Clonal JC；不要再为折叠重提 Clonal。下一步 JC 工作是发表方法中的 **candidate-junction 二次比对**，不是再改主 BAM 聚合。详见 `benchmark/results/clonal_leftover.md` 作业 [2372151](../benchmark/results/clonal_leftover.md)。
+
 层 2 等 0.40.x 再重跑；不要重提作业 2369858。
 
 时间 / RSS 无「必须更快」硬阈值；但 **必须有可复核记录**。若 ProkDiff 明显更慢或吃内存异常，记入 notes，不得静默省略。
