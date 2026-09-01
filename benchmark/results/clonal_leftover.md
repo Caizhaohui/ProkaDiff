@@ -131,3 +131,42 @@ ProkDiff JC=0，故 ±5 bp 规范化帮不上。breseq JC 多为 unique 侧 × �
 
 - 在计算节点重新 `cargo build --release -p prokdiff`（或删掉旧二进制让提交脚本自建）后重提 Clonal 作业；本轮 2371272 的 ProkDiff 侧数字作废，只保留 breseq 0.40.2 oracle 侧输出。
 - 提交脚本宜加「二进制mtime < 最新源码提交则重建」或显式 `cargo build` 防 stale；未修复前不得引用本轮引擎侧结果。
+
+# 2026-09-01 复跑：作业 2371389（oracle breseq 0.40.2，新引擎首轮）
+
+首个真正跑到新引擎（MC→DEL 收紧 + 链合并 JC + best-read 接受规则）的 Clonal 作业。提交脚本已显式 `cargo build`（2371272 的 stale-binary 教训已修）。
+
+## 作业元数据（2371389）
+
+| 项 | 值 |
+| --- | --- |
+| Slurm 作业 | **2371389**（`scripts/submit_parity_clonal.sh`） |
+| 分区 / 线程 | `qcpu_18i` / 8 |
+| Oracle | breseq **0.40.2**，bowtie2 2.5.4 |
+| ProkDiff 二进制 | 新引擎（含 a9f8e85 MC→DEL 收紧、f31503c JC 链向合并；**不含**后续的 minus 键位修正与 ±5 bp 聚类） |
+
+同作业实测（同节点、单次；wall-clock 为**非正式**记录，不作加速比宣传）：
+
+| 工具 | wall_s | peak RSS (KB) |
+| --- | --- | --- |
+| ProkDiff | 137.23 | 2974112 |
+| breseq 0.40.2 | 2667.67 | 1857152 |
+
+## 类型表（2371389，红线类型；UN/RA/MC 证据行不计）
+
+方向 `over` = rust−breseq（多报）；`under` = breseq−rust（漏报）。
+
+| 方向 | SNP | INS | DEL | MOB | JC unmatched |
+| --- | --- | --- | --- | --- | --- |
+| over | 5 | 0 | **0** | 0 | 0 |
+| under | 0 | 3 | 3 | 5 | 27（其中 9 条 oracle 自带 `reject=`） |
+
+- **134 条 MC→DEL 过报消除**：over DEL 134 → 0，`over_red` 139 → 5（仅剩 5 条 SNP：`2031736 G`、`2054876 G`、`2054924 A`、`3289962 C`、`3894997 T`，与基线逐条一致；`3289962` / `3894997` 仍属同坐标错分，见首轮分类）。
+- under 侧不变：INS 3 + DEL 3 + MOB 5（IS150 ×4 + IS186 ×1）+ JC 27。
+- **JC 仍全漏**：ProkDiff 报 0 条 JC，27 条 oracle JC ±5 bp 匹配 0 条（9 条 oracle-rejected 单列）。本轮引擎尚无 minus 链 softclip 键位修正与 ±5 bp 聚类；synth_is_mob 2371412 的 BAM 诊断（作业 2371899）已定位根因，修复见 [docs/parity.md](../../docs/parity.md) 第一期 JC / MOB 节。
+- vs 官方 `Clonal_Output`：`over_red` 5、`under_red` 11、JC unmatched 26（oracle-rejected 8），与同机 breseq 同量级。
+
+## 下一步（2371389 之后）
+
+- 用含 minus 键位修正 + ±5 bp 聚类的引擎重提 Clonal，再验 27 条 JC 的匹配数与 5 条 MOB 是否以 JC 形式出现。
+- 5 条 over SNP 的同坐标错分（`3289962` DEL 16 bp、`3894997` DEL 6934 IS150）仍待 JC/MOB 路径收口。

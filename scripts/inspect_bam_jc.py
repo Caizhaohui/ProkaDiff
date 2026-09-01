@@ -4,16 +4,29 @@
 Reads SAM text on stdin (samtools view aligned.bam, or cat work/aligned.sam)
 and reports measured counts only. No files are written.
 
-Geometry below matches the PRE-FIX fixture used by job 2371383 (1440 bp,
-insert at 201). testdata/generate.sh has since moved the insert to 601 in a
-~4000 bp genome; this script is kept as the historical diagnosis of 2371383.
+Geometry below matches the FIXED fixture used by job 2371412 (4000 bp,
+insert at 601, motif copies 1201-1280 / 2481-2560). The pre-fix fixture
+(1440 bp, insert at 201) was diagnosed by an earlier revision of this
+script; see git history.
 
-Geometry (testdata/generate.sh synth_is_mob, pre-fix):
-  ref = left(1-400) + motif(401-480) + mid(481-880) + motif(881-960)
-        + right(961-1360)
-  edited genome inserts a third motif copy between ref positions 200 and 201.
+Geometry (testdata/generate.sh synth_is_mob, post-fix):
+  ref = left(1-1200) + motif(1201-1280) + mid(1281-2480) + motif(2481-2560)
+        + right(2561-4000)
+  edited genome inserts a third motif copy between ref positions 600 and 601
+  (insert_at_1based = 601).
+  Measured register coincidences (ref vs motif ends):
+    motif[:2] == ref[601:602]  ("GT") -> L|M junction may key at 600 or 602
+    motif[-2:] == ref[599:600] ("GC") -> M|R junction may key at 601 or 599
+  breseq 0.40.2 (job 2371412) reports exactly these two registers:
+    JC 599 (+1) -> 2558 (-1)  and  JC 602 (-1) -> 2483 (+1), both freq ~0.6.
+
+With --ref, softclips of reads near the junction are additionally placed on
+the reference with the same rules as the engine (exact match, both strands,
+trivial continuation skipped) so the side2 landing sites can be compared
+against the motif copies.
 """
 
+import argparse
 import re
 import sys
 from collections import Counter
@@ -24,23 +37,76 @@ REF_CONSUMING = set("MDN=X")
 MIN_CLIP = 14  # engine MIN_CLIP_FOR_JC
 UNIQUE_MAPQ = 10  # engine UNIQUE_MAPQ
 
-J_END = 200       # aligned block ending here = left side of insert junction
-J_START = 201     # aligned block starting here = right side of insert junction
+J_END = 600       # nominal 1-based left flank end (insert between 600 and 601)
+J_START = 601     # nominal 1-based right flank start
+J_WIN = (595, 610)  # diagnosis window around the junction (task-specified)
 NEAR = 5
-MOTIF_COPIES = [(401, 480), (881, 960)]
-COPY_EDGE_ENDS = {400, 480, 481, 880, 960, 961}
-COPY_EDGE_STARTS = {401, 481, 881, 960, 961}
-INDEL_WINDOW = (150, 550)
+MOTIF_COPIES = [(1201, 1280), (2481, 2560)]
+COPY_EDGE_ENDS = {1200, 1280, 1281, 2480, 2560, 2561}
+COPY_EDGE_STARTS = {1201, 1280, 1281, 2481, 2560, 2561}
+INDEL_WINDOW = (501, 700)
 
 
 def parse_cigar(cigar):
     return [(int(n), op) for n, op in CIGAR_RE.findall(cigar)]
 
 
+def lead_trail_s(ops):
+    """(leading S len, trailing S len), tolerating hard clips."""
+    lead = 0
+    trail = 0
+    if ops:
+        if ops[0][1] == "S":
+            lead = ops[0][0]
+        elif len(ops) > 1 and ops[0][1] == "H" and ops[1][1] == "S":
+            lead = ops[1][0]
+        if ops[-1][1] == "S":
+            trail = ops[-1][0]
+        elif len(ops) > 1 and ops[-1][1] == "H" and ops[-2][1] == "S":
+            trail = ops[-2][0]
+    return lead, trail
+
+
+def rc_dna(seq):
+    return seq.translate(_RC_TABLE)[::-1]
+
+
+_RC_TABLE = str.maketrans("ACGTNacgtn", "TGCANtgcan")
+
+
+def find_exact(hay, needle):
+    out = []
+    start = 0
+    while True:
+        i = hay.find(needle, start)
+        if i < 0:
+            return out
+        out.append(i)
+        start = i + 1
+
+
+def copy_label(pos1):
+    for i, (s, e) in enumerate(MOTIF_COPIES, 1):
+        if s <= pos1 <= e:
+            return f"copy{i}[{s}-{e}]"
+    return "outside_copies"
+
+
 def main():
-    label = "stdin"
-    if "--label" in sys.argv:
-        label = sys.argv[sys.argv.index("--label") + 1]
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--label", default="stdin")
+    ap.add_argument("--ref", default=None,
+                    help="reference FASTA for engine-style clip placement")
+    args = ap.parse_args()
+    label = args.label
+
+    ref_seq = None
+    if args.ref:
+        with open(args.ref) as fh:
+            ref_seq = "".join(
+                line.strip() for line in fh if not line.startswith(">")
+            ).upper()
+        print(f"loaded_ref\t{args.ref}\t{len(ref_seq)} bp")
 
     total = 0
     minus_total = 0
@@ -54,8 +120,8 @@ def main():
 
     clip_pos = Counter()          # (side, pos), strand-unaware (v1 compat)
     clip_pos_strand = Counter()   # (strand, side, pos)
-    end200 = []
-    start201 = []
+    end_j = []
+    start_j = []
     near_end = Counter()
     near_start = Counter()
     j_mapq = Counter()
@@ -77,6 +143,17 @@ def main():
     examples_pool = []
     minus_examples = []
 
+    # Junction-window diagnosis (clip >= MIN_CLIP, aligned block end/start in
+    # J_WIN). Engine reference-oriented side1 key per strand, plus clip
+    # placement onto the reference when --ref is given.
+    win_raw = Counter()         # (strand, cigar_side, pos)
+    win_key = Counter()         # (strand, engine side1 key)
+    win_mapq = Counter()        # (strand, mapq)
+    win_side2 = Counter()       # (strand, side2_pos_1)
+    win_side2_copy = Counter()  # (strand, copy label)
+    win_unplaced = Counter()    # strand
+    win_examples = []
+
     for line in sys.stdin:
         if line.startswith("@"):
             continue
@@ -84,6 +161,7 @@ def main():
         if len(f) < 11:
             continue
         qname, flag_s, _rname, pos_s, mapq_s, cigar = f[0], f[1], f[2], f[3], f[4], f[5]
+        seq = f[9]
         flag = int(flag_s)
         pos = int(pos_s)
         mapq = int(mapq_s)
@@ -96,6 +174,7 @@ def main():
         ops = parse_cigar(cigar)
         ref_len = sum(n for n, op in ops if op in REF_CONSUMING)
         ref_end = pos + ref_len - 1
+        lead_s, trail_s = lead_trail_s(ops)
         s_lens = [n for n, op in ops if op == "S"]
         nm = next((int(t[5:]) for t in f[11:] if t.startswith("NM:i:")), None)
         strand = "minus" if minus else "plus"
@@ -140,8 +219,6 @@ def main():
                 if mapq < UNIQUE_MAPQ:
                     clip_ge14_mapq_lt10 += 1
                 cigar_pattern[re.sub(r"\d+", "N", cigar)] += 1
-                lead_s = ops[0][1] == "S"
-                trail_s = ops[-1][1] == "S"
                 if trail_s:
                     clip_pos[("end", ref_end)] += 1
                     clip_pos_strand[(strand, "end", ref_end)] += 1
@@ -151,9 +228,9 @@ def main():
 
                 is_j = (trail_s and ref_end == J_END) or (lead_s and pos == J_START)
                 if trail_s and ref_end == J_END:
-                    end200.append((qname, flag, pos, mapq, cigar, ops[-1][0]))
+                    end_j.append((qname, flag, pos, mapq, cigar, ops[-1][0]))
                 if lead_s and pos == J_START:
-                    start201.append((qname, flag, pos, mapq, cigar, ops[0][0]))
+                    start_j.append((qname, flag, pos, mapq, cigar, ops[0][0]))
                 if trail_s and ref_end != J_END and abs(ref_end - J_END) <= NEAR:
                     near_end[ref_end] += 1
                 if lead_s and pos != J_START and abs(pos - J_START) <= NEAR:
@@ -172,6 +249,62 @@ def main():
                 if lead_s and pos in COPY_EDGE_STARTS:
                     copy_edge[("start", pos)] += 1
                     copy_edge_strand[(strand, "start", pos)] += 1
+
+                # Junction-window sides: aligned block end (trailing S) or
+                # start (leading S) inside J_WIN.
+                win_sides = []
+                if trail_s and J_WIN[0] <= ref_end <= J_WIN[1]:
+                    win_sides.append(("end", ref_end, trail_s))
+                if lead_s and J_WIN[0] <= pos <= J_WIN[1]:
+                    win_sides.append(("start", pos, lead_s))
+                for side, apos, slen in win_sides:
+                    win_raw[(strand, side, apos)] += 1
+                    win_mapq[(strand, mapq)] += 1
+                    # Engine reference-oriented side1 key (pileup.rs):
+                    # trailing S: last match if plus else first match;
+                    # leading S: first match if plus else last match.
+                    if side == "end":
+                        key = ref_end if not minus else pos
+                        clip = seq[len(seq) - slen:] if seq != "*" else ""
+                    else:
+                        key = pos if not minus else ref_end
+                        clip = seq[:slen] if seq != "*" else ""
+                    clip_is_left = (side == "start") != minus  # lead_s XOR minus
+                    win_key[(strand, key)] += 1
+                    if len(win_examples) < 12:
+                        win_examples.append(
+                            (qname, flag, pos, mapq, cigar, side, key))
+                    if ref_seq and len(clip) >= MIN_CLIP:
+                        m_len = sum(n for n, op in ops if op in "M=X")
+                        if m_len < MIN_CLIP:
+                            continue
+                        placed = []
+                        for q, is_rc in ((clip.upper(), False),
+                                         (rc_dna(clip.upper()), True)):
+                            for hit0 in find_exact(ref_seq, q):
+                                hlen = len(q)
+                                # engine is_continuation: skip the trivial
+                                # continuation of the same alignment
+                                if clip_is_left:
+                                    hend1 = hit0 + hlen
+                                    if hend1 == key or hend1 + 1 == key:
+                                        continue
+                                else:
+                                    hstart1 = hit0 + 1
+                                    if hstart1 == key + 1 or hstart1 == key:
+                                        continue
+                                content_rc_hit = is_rc != minus
+                                if clip_is_left == content_rc_hit:
+                                    side2 = hit0 + 1
+                                else:
+                                    side2 = hit0 + hlen
+                                placed.append(side2)
+                        if placed:
+                            for s2 in placed:
+                                win_side2[(strand, s2)] += 1
+                                win_side2_copy[(strand, copy_label(s2))] += 1
+                        else:
+                            win_unplaced[strand] += 1
 
         if pos <= INDEL_WINDOW[1] and ref_end >= INDEL_WINDOW[0]:
             long_ops = [(n, op) for n, op in ops if op in "ID" and n > 2]
@@ -192,13 +325,35 @@ def main():
     print(f"reads_with_S_ge{MIN_CLIP}_mapq_lt{UNIQUE_MAPQ}\t{clip_ge14_mapq_lt10}")
     print("flag_counts_S_ge14\t" + ",".join(f"{fl}:{c}" for fl, c in flag_ge14.most_common(10)))
     print()
-    print(f"junction_end_at_{J_END}\t{len(end200)}")
-    print(f"junction_start_at_{J_START}\t{len(start201)}")
-    print("near_miss_end_196-204_excl200\t" + ",".join(f"{p}:{c}" for p, c in sorted(near_end.items())))
-    print("near_miss_start_196-206_excl201\t" + ",".join(f"{p}:{c}" for p, c in sorted(near_start.items())))
+    print(f"junction_end_at_{J_END}\t{len(end_j)}")
+    print(f"junction_start_at_{J_START}\t{len(start_j)}")
+    print(f"near_miss_end_{J_END - NEAR}-{J_END + NEAR}_excl{J_END}\t"
+          + ",".join(f"{p}:{c}" for p, c in sorted(near_end.items())))
+    print(f"near_miss_start_{J_START - NEAR}-{J_START + NEAR}_excl{J_START}\t"
+          + ",".join(f"{p}:{c}" for p, c in sorted(near_start.items())))
     print(f"junction_mapq_lt{UNIQUE_MAPQ}\t{j_mapq_lt10}")
     print("junction_mapq_values\t" + ",".join(f"{m}:{c}" for m, c in sorted(j_mapq.items())))
     print(f"junction_strand_mapq_ge{UNIQUE_MAPQ}\t" + ",".join(f"{s}:{c}" for s, c in sorted(j_strand_ge10.items())))
+    print()
+    print(f"== junction window {J_WIN[0]}-{J_WIN[1]} (clip>={MIN_CLIP}) ==")
+    print("win_raw_by_strand_side_pos\t" + ",".join(
+        f"{k[0]}|{k[1]}@{k[2]}:{c}" for k, c in sorted(win_raw.items())))
+    print("win_engine_side1_key_by_strand\t" + ",".join(
+        f"{k[0]}@{k[1]}:{c}" for k, c in sorted(win_key.items())))
+    print("win_mapq_by_strand\t" + ",".join(
+        f"{k[0]}|mq{k[1]}:{c}" for k, c in sorted(win_mapq.items())))
+    if ref_seq:
+        print("win_clip_side2_by_strand\t" + ",".join(
+            f"{k[0]}@{k[1]}:{c}" for k, c in sorted(win_side2.items())))
+        print("win_clip_side2_copy_by_strand\t" + ",".join(
+            f"{k[0]}|{k[1]}:{c}" for k, c in sorted(win_side2_copy.items())))
+        print("win_clip_unplaced_by_strand\t" + ",".join(
+            f"{s}:{c}" for s, c in sorted(win_unplaced.items())))
+    print("win_examples (QNAME FLAG POS MAPQ CIGAR side engine_key):")
+    for q, fl, p, m, c, side, key in win_examples:
+        print(f"  {q}\t{fl}\t{p}\t{m}\t{c}\t{side}\tkey={key}")
+    if not win_examples:
+        print("  (none)")
     print()
     print("top_clip_adjacent_positions\t" + ",".join(f"{k[0]}@{k[1]}:{c}" for k, c in clip_pos.most_common(20)))
     print("top_clip_adjacent_by_strand\t" + ",".join(

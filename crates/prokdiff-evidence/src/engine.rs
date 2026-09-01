@@ -32,7 +32,74 @@ pub struct EngineOptions {
 }
 
 type ContigPileup = (Vec<PileupColumn>, Vec<u32>, Vec<u32>, Vec<SplitCandidate>);
-type JcKey = (usize, u64, usize, u64, i64);
+
+/// Two split candidates whose side1 AND side2 both land within this many bp
+/// are clustered into one junction before `accept_junction`. IS terminal /
+/// TSD register ambiguity keys reads of one event a few bp apart (measured
+/// in the synth_is_mob 2371412 BAM: plus reads of the same junction end at
+/// 601 and 602; breseq's own two JC for the event land at 599 and 602,
+/// 3 bp apart), so exact-key aggregation can strand reads of one junction
+/// in different buckets. Tied to `jc_tol_bp=5` in
+/// `scripts/layer2_gd_compare.py` (oracle-side matching tolerance); see
+/// `docs/parity.md`.
+pub const JC_CLUSTER_TOL_BP: u64 = 5;
+
+/// One junction cluster: representative coordinates are those of the FIRST
+/// member (smallest side1/side2 after the deterministic sort; the
+/// breseq-side comparison matches greedily within ±5 bp, so any member
+/// coordinate would do — first-member is the simplest deterministic choice).
+/// `JunctionSupport` is aggregated over ALL members, merging strands across
+/// the few-bp register split.
+struct JcCluster {
+    rep_side1: u64,
+    rep_side2: u64,
+    rep_overlap: i64,
+    rep_side1_minus: bool,
+    rep_side2_minus: bool,
+    support: JunctionSupport,
+}
+
+impl JcCluster {
+    fn new(sp: &SplitCandidate) -> Self {
+        let mut c = Self {
+            rep_side1: sp.side1_pos_1,
+            rep_side2: sp.side2_pos_1,
+            rep_overlap: sp.overlap,
+            rep_side1_minus: sp.side1_minus,
+            rep_side2_minus: sp.side2_minus,
+            support: JunctionSupport::default(),
+        };
+        c.add(sp);
+        c
+    }
+
+    fn add(&mut self, sp: &SplitCandidate) {
+        let ov1 = sp.left.len().max(3);
+        let ov2 = sp.right.len().max(3);
+        // Best-read semantics: one unbalanced read must not kill the
+        // junction (published accept rules are max-of-min per read).
+        let m = ov1.min(ov2);
+        let e = &mut self.support;
+        e.best_min_overlap = e.best_min_overlap.max(m);
+        if sp.minus {
+            e.minus_reads += 1;
+            e.minus_best_min = e.minus_best_min.max(m);
+        } else {
+            e.plus_reads += 1;
+            e.plus_best_min = e.plus_best_min.max(m);
+        }
+        e.min_overlap_side1 = if e.min_overlap_side1 == 0 {
+            ov1
+        } else {
+            e.min_overlap_side1.min(ov1)
+        };
+        e.min_overlap_side2 = if e.min_overlap_side2 == 0 {
+            ov2
+        } else {
+            e.min_overlap_side2.min(ov2)
+        };
+    }
+}
 
 impl Default for EngineOptions {
     fn default() -> Self {
@@ -269,59 +336,70 @@ pub fn call_from_aligned(
             flush_del(&mut gd, &mut next_id, s, sz);
         }
 
-        let mut by_key: HashMap<JcKey, JunctionSupport> = HashMap::new();
-        let mut jc_meta: HashMap<JcKey, (bool, bool)> = HashMap::new();
+        // Junction clustering (replaces exact-key aggregation). Do not key
+        // on read strand: plus and minus must aggregate (accept_junction).
+        // Group by (contig, side2 contig, overlap sign) — the exact overlap
+        // value is register-dependent, but its sign is biologically distinct
+        // (deletion-like < 0, blunt = 0, insertion-like > 0). Within a group,
+        // sort by (side1, side2) and greedily cluster: a candidate joins the
+        // first cluster whose FIRST member is within JC_CLUSTER_TOL_BP on
+        // both sides (single-pass against the first member is deterministic;
+        // documented in docs/parity.md).
+        let mut groups: HashMap<(usize, usize, i8), Vec<&SplitCandidate>> = HashMap::new();
         for sp in splits {
-            // Do not key on read strand: plus and minus must aggregate (accept_junction).
-            let key = (
-                sp.contig_idx,
-                sp.side1_pos_1,
-                sp.side2_contig_idx,
-                sp.side2_pos_1,
-                sp.overlap,
-            );
-            let e = by_key.entry(key).or_default();
-            jc_meta
-                .entry(key)
-                .or_insert((sp.side1_minus, sp.side2_minus));
-            let ov1 = sp.left.len().max(3);
-            let ov2 = sp.right.len().max(3);
-            // Best-read semantics: one unbalanced read must not kill the
-            // junction (published accept rules are max-of-min per read).
-            let m = ov1.min(ov2);
-            e.best_min_overlap = e.best_min_overlap.max(m);
-            if sp.minus {
-                e.minus_reads += 1;
-                e.minus_best_min = e.minus_best_min.max(m);
-            } else {
-                e.plus_reads += 1;
-                e.plus_best_min = e.plus_best_min.max(m);
-            }
-            e.min_overlap_side1 = if e.min_overlap_side1 == 0 {
-                ov1
-            } else {
-                e.min_overlap_side1.min(ov1)
-            };
-            e.min_overlap_side2 = if e.min_overlap_side2 == 0 {
-                ov2
-            } else {
-                e.min_overlap_side2.min(ov2)
-            };
+            groups
+                .entry((
+                    sp.contig_idx,
+                    sp.side2_contig_idx,
+                    sp.overlap.signum() as i8,
+                ))
+                .or_default()
+                .push(sp);
         }
+        let mut group_keys: Vec<(usize, usize, i8)> = groups.keys().copied().collect();
+        group_keys.sort_unstable();
         let mut accepted_jc = Vec::new();
         let mut jc_endpoints_1 = Vec::new();
-        for (key, support) in &by_key {
-            if !accept_junction(support) {
-                continue;
+        for gk in group_keys {
+            let mut members: Vec<&SplitCandidate> = groups[&gk].clone();
+            // Stable sort: read order breaks ties, keeping the first member
+            // (hence the representative) deterministic.
+            members.sort_by_key(|sp| (sp.side1_pos_1, sp.side2_pos_1));
+            let mut clusters: Vec<JcCluster> = Vec::new();
+            for sp in members {
+                let mut hit = None;
+                for (i, c) in clusters.iter().enumerate() {
+                    if sp.side1_pos_1.abs_diff(c.rep_side1) <= JC_CLUSTER_TOL_BP
+                        && sp.side2_pos_1.abs_diff(c.rep_side2) <= JC_CLUSTER_TOL_BP
+                    {
+                        hit = Some(i);
+                        break;
+                    }
+                }
+                match hit {
+                    Some(i) => clusters[i].add(sp),
+                    None => clusters.push(JcCluster::new(sp)),
+                }
             }
-            let (c1, p1, c2, p2, ov) = *key;
-            let (m1, m2) = jc_meta[key];
-            accepted_jc.push((c1, p1, m1, c2, p2, m2, ov));
-            if c1 == idx {
-                jc_endpoints_1.push(p1);
-            }
-            if c2 == idx {
-                jc_endpoints_1.push(p2);
+            for c in clusters {
+                if !accept_junction(&c.support) {
+                    continue;
+                }
+                accepted_jc.push((
+                    gk.0,
+                    c.rep_side1,
+                    c.rep_side1_minus,
+                    gk.1,
+                    c.rep_side2,
+                    c.rep_side2_minus,
+                    c.rep_overlap,
+                ));
+                if gk.0 == idx {
+                    jc_endpoints_1.push(c.rep_side1);
+                }
+                if gk.1 == idx {
+                    jc_endpoints_1.push(c.rep_side2);
+                }
             }
         }
 
@@ -368,8 +446,9 @@ pub fn call_from_aligned(
         }
 
         for (c1, p1, m1, c2, p2, m2, ov) in accepted_jc {
-            let s1 = if m1 { "-" } else { "+" };
-            let s2 = if m2 { "-" } else { "+" };
+            // breseq GD convention: side strands are 1 / -1.
+            let s1 = if m1 { "-1" } else { "1" };
+            let s2 = if m2 { "-1" } else { "1" };
             let n1 = fasta[c1].name.clone();
             let n2 = fasta[c2].name.clone();
             gd.entries
@@ -581,19 +660,6 @@ mod tests {
         );
     }
 
-    fn rc(seq: &[u8]) -> Vec<u8> {
-        seq.iter()
-            .rev()
-            .map(|&b| match b {
-                b'A' => b'T',
-                b'T' => b'A',
-                b'C' => b'G',
-                b'G' => b'C',
-                x => x,
-            })
-            .collect()
-    }
-
     #[test]
     fn softclip_onto_repeat_copy_emits_jc() {
         // Unique flanks + two identical 20 bp IS-like copies (first-period mosaic).
@@ -601,51 +667,29 @@ mod tests {
         let motif = *b"ACGTACGTACGTACGTACGT";
         seq[40..60].copy_from_slice(&motif);
         seq[100..120].copy_from_slice(&motif);
-        // Plus read crossing the insert left boundary: match ref 71..90, 3′ clip.
-        let mut plus_seq = vec![b'C'; 20];
-        plus_seq.extend_from_slice(&motif);
-        // Minus read crossing the SAME boundary: SEQ = rc([match][clip]) =
-        // [rc(clip)][rc(match)], so the clip leads and the CIGAR is S+M over
-        // the same reference match span (biologically consistent minus read).
-        let mut minus_seq = rc(&motif);
-        minus_seq.extend(std::iter::repeat_n(b'C', 20));
+        // Reads crossing the insert left boundary: match ref 71..90, 3′ clip.
+        // SAM/BAM stores SEQ reference-forward (minus reads are reverse-
+        // complemented), so plus and minus reads crossing the same boundary
+        // share the SAME stored SEQ and CIGAR; only the flag differs.
+        let mut read_seq = vec![b'C'; 20];
+        read_seq.extend_from_slice(&motif);
         let mut reads = Vec::new();
         for minus in [false, false, false, true, true, true] {
-            let (s, cigar) = if minus {
-                (
-                    minus_seq.clone(),
-                    vec![
-                        CigarOp {
-                            kind: CigarKind::SoftClip,
-                            len: 20,
-                        },
-                        CigarOp {
-                            kind: CigarKind::Match,
-                            len: 20,
-                        },
-                    ],
-                )
-            } else {
-                (
-                    plus_seq.clone(),
-                    vec![
-                        CigarOp {
-                            kind: CigarKind::Match,
-                            len: 20,
-                        },
-                        CigarOp {
-                            kind: CigarKind::SoftClip,
-                            len: 20,
-                        },
-                    ],
-                )
-            };
             reads.push(AlignedRead {
                 contig_idx: 0,
                 ref_start_0: 70,
                 minus,
-                seq: s,
-                cigar,
+                seq: read_seq.clone(),
+                cigar: vec![
+                    CigarOp {
+                        kind: CigarKind::Match,
+                        len: 20,
+                    },
+                    CigarOp {
+                        kind: CigarKind::SoftClip,
+                        len: 20,
+                    },
+                ],
                 mapq: UNIQUE_MAPQ,
             });
         }
@@ -668,56 +712,41 @@ mod tests {
 
     #[test]
     fn synth_is_mob_geometry_both_strand_softclips_aggregate() {
-        // Regression for the synth_is_mob empty-GD failure (job 2371258):
-        // plus reads with 3′ softclips and minus reads with 5′ softclips cross
-        // the SAME insert left boundary. Before strand normalization the minus
-        // hints keyed at first_match_ref+1 (e.g. 11) instead of the junction
-        // base (30), so plus/minus never aggregated and no JC was accepted.
+        // Regression for the synth_is_mob empty-GD failures (jobs 2371258,
+        // 2371412): plus and minus reads with 3′ softclips cross the SAME
+        // insert left boundary. SAM/BAM stores SEQ reference-forward, so both
+        // strands share the same stored SEQ/CIGAR and must key side1 at the
+        // junction base (30). Keying minus reads at the opposite end of the
+        // match block (the pre-fix behavior) scattered minus candidates tens
+        // of bp away, so plus/minus never aggregated and no JC was accepted.
         let motif = *b"TGCAAGTCGATCGTTAGCCA";
         let mut seq = vec![b'C'; 160];
         seq[40..60].copy_from_slice(&motif);
         seq[100..120].copy_from_slice(&motif);
         // Junction: unique flank up to ref 30 (1-based), then motif content.
-        let mut plus_seq = vec![b'C'; 20];
-        plus_seq.extend_from_slice(&motif);
-        let mut minus_seq = rc(&motif);
-        minus_seq.extend(std::iter::repeat_n(b'C', 20));
+        let mut read_seq = vec![b'C'; 20];
+        read_seq.extend_from_slice(&motif);
         let mut reads = Vec::new();
         for _ in 0..3 {
-            reads.push(AlignedRead {
-                contig_idx: 0,
-                ref_start_0: 10, // 20M covers ref 11..30 (1-based)
-                minus: false,
-                seq: plus_seq.clone(),
-                cigar: vec![
-                    CigarOp {
-                        kind: CigarKind::Match,
-                        len: 20,
-                    },
-                    CigarOp {
-                        kind: CigarKind::SoftClip,
-                        len: 20,
-                    },
-                ],
-                mapq: UNIQUE_MAPQ,
-            });
-            reads.push(AlignedRead {
-                contig_idx: 0,
-                ref_start_0: 10, // same reference match span, minus strand
-                minus: true,
-                seq: minus_seq.clone(),
-                cigar: vec![
-                    CigarOp {
-                        kind: CigarKind::SoftClip,
-                        len: 20,
-                    },
-                    CigarOp {
-                        kind: CigarKind::Match,
-                        len: 20,
-                    },
-                ],
-                mapq: UNIQUE_MAPQ,
-            });
+            for minus in [false, true] {
+                reads.push(AlignedRead {
+                    contig_idx: 0,
+                    ref_start_0: 10, // 20M covers ref 11..30 (1-based)
+                    minus,
+                    seq: read_seq.clone(),
+                    cigar: vec![
+                        CigarOp {
+                            kind: CigarKind::Match,
+                            len: 20,
+                        },
+                        CigarOp {
+                            kind: CigarKind::SoftClip,
+                            len: 20,
+                        },
+                    ],
+                    mapq: UNIQUE_MAPQ,
+                });
+            }
         }
         let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
         let jcs = gd_jcs(&gd);
@@ -746,6 +775,133 @@ mod tests {
             vec![41, 101],
             "side2 must be the two motif copy starts"
         );
+    }
+
+    #[test]
+    fn few_bp_strand_split_junctions_cluster_into_one_jc() {
+        // Regression for the synth_is_mob job 2371412 zero-JC failure. IS
+        // terminal / TSD register ambiguity keys reads of one insertion
+        // junction a few bp apart (measured in the 2371412 BAM: plus M+S
+        // reads end at 601/602, and breseq's own two JC for the event land
+        // at 599/602, 3 bp apart). Plus reads: M+S ending at 599. Minus
+        // reads: same reference-forward stored SEQ, M+S ending at 602.
+        // Exact-key aggregation put the registers in different buckets;
+        // ±5 bp clustering must merge them into exactly ONE accepted JC.
+        let motif = *b"TGCAAGTCGATCGTTAGCCA";
+        let mut seq = vec![b'C'; 700];
+        seq[100..120].copy_from_slice(&motif); // one existing copy -> side2 = 101
+                                               // Stored SEQ (reference-forward on both strands): match = unique
+                                               // flank, 3′ clip = motif content.
+        let mut read_seq = vec![b'C'; 20];
+        read_seq.extend_from_slice(&motif);
+        let mut reads = Vec::new();
+        for _ in 0..3 {
+            // Plus reads: match ref 580..599 (1-based) -> side1 = 599.
+            reads.push(AlignedRead {
+                contig_idx: 0,
+                ref_start_0: 579,
+                minus: false,
+                seq: read_seq.clone(),
+                cigar: vec![
+                    CigarOp {
+                        kind: CigarKind::Match,
+                        len: 20,
+                    },
+                    CigarOp {
+                        kind: CigarKind::SoftClip,
+                        len: 20,
+                    },
+                ],
+                mapq: UNIQUE_MAPQ,
+            });
+            // Minus reads: match ref 583..602 (1-based) -> side1 = 602.
+            reads.push(AlignedRead {
+                contig_idx: 0,
+                ref_start_0: 582,
+                minus: true,
+                seq: read_seq.clone(),
+                cigar: vec![
+                    CigarOp {
+                        kind: CigarKind::Match,
+                        len: 20,
+                    },
+                    CigarOp {
+                        kind: CigarKind::SoftClip,
+                        len: 20,
+                    },
+                ],
+                mapq: UNIQUE_MAPQ,
+            });
+        }
+        let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
+        let jcs = gd_jcs(&gd);
+        assert_eq!(
+            jcs.len(),
+            1,
+            "599/602 strand split must cluster into exactly one JC; entries={:?}",
+            gd.entries
+                .iter()
+                .map(|e| (e.kind, e.fields.clone()))
+                .collect::<Vec<_>>()
+        );
+        let side1: u64 = jcs[0].fields[1].parse().unwrap();
+        let side2: u64 = jcs[0].fields[4].parse().unwrap();
+        assert_eq!(
+            side1, 599,
+            "representative = first member after the (side1, side2) sort"
+        );
+        assert_eq!(side2, 101, "clip must place onto the motif copy start");
+    }
+
+    #[test]
+    fn junctions_beyond_cluster_tolerance_do_not_merge() {
+        // Two junctions 10 bp apart (> JC_CLUSTER_TOL_BP), each with both
+        // strands, must stay two clusters -> two JC.
+        let motif = *b"TGCAAGTCGATCGTTAGCCA";
+        let mut seq = vec![b'C'; 700];
+        seq[100..120].copy_from_slice(&motif);
+        let mut read_seq = vec![b'C'; 20];
+        read_seq.extend_from_slice(&motif);
+        let mut reads = Vec::new();
+        // Junction A: plus ends 599 / minus ends 602.
+        // Junction B: plus ends 609 / minus ends 612 (10 bp from A).
+        for (plus_start0, minus_start0) in [(579i64, 582i64), (589, 592)] {
+            for _ in 0..3 {
+                for (start0, minus) in [(plus_start0, false), (minus_start0, true)] {
+                    reads.push(AlignedRead {
+                        contig_idx: 0,
+                        ref_start_0: start0,
+                        minus,
+                        seq: read_seq.clone(),
+                        cigar: vec![
+                            CigarOp {
+                                kind: CigarKind::Match,
+                                len: 20,
+                            },
+                            CigarOp {
+                                kind: CigarKind::SoftClip,
+                                len: 20,
+                            },
+                        ],
+                        mapq: UNIQUE_MAPQ,
+                    });
+                }
+            }
+        }
+        let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
+        let jcs = gd_jcs(&gd);
+        assert_eq!(
+            jcs.len(),
+            2,
+            "junctions 10 bp apart must not merge; entries={:?}",
+            gd.entries
+                .iter()
+                .map(|e| (e.kind, e.fields.clone()))
+                .collect::<Vec<_>>()
+        );
+        let mut side1s: Vec<u64> = jcs.iter().map(|jc| jc.fields[1].parse().unwrap()).collect();
+        side1s.sort_unstable();
+        assert_eq!(side1s, vec![599, 609]);
     }
 
     #[test]

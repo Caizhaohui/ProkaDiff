@@ -53,15 +53,19 @@ pub struct SplitCandidate {
 #[derive(Clone, Debug)]
 pub struct SoftclipHint {
     pub contig_idx: usize,
+    /// Read strand (drives plus/minus read counts in `JunctionSupport`).
     pub minus: bool,
-    /// 1-based reference position of the aligned base next to the clip
-    /// (reference-oriented: for a minus-strand read the junction-adjacent
-    /// base is on the opposite read end).
+    /// 1-based reference position of the aligned base next to the clip.
+    /// SAM/BAM stores SEQ reference-forward (minus-strand reads are
+    /// reverse-complemented), so this is strand-independent: last match
+    /// for a trailing clip, first match for a leading clip.
     pub aligned_pos_1: u64,
-    /// Reference-oriented: true if the clip lies at LOWER reference
-    /// coordinates than the aligned block (`clip_on_read_left XOR minus`).
+    /// True if the clip lies at LOWER reference coordinates than the
+    /// aligned block (leading clip of the stored sequence). Strand-
+    /// independent for the same reason.
     pub clip_is_left: bool,
-    /// Clipped bases in READ orientation (`place_softclip` searches both strands).
+    /// Clipped bases in stored (reference-forward) orientation;
+    /// `place_softclip` searches both strands.
     pub clip_seq: Vec<u8>,
     pub aligned_q_len: usize,
 }
@@ -82,8 +86,13 @@ impl SplitCandidate {
             contig_idx,
             side2_contig_idx: contig_idx,
             minus,
-            side1_minus: minus,
-            side2_minus: minus,
+            // breseq side-strand convention: each side's strand is the
+            // direction its sequence extends away from the junction.
+            // side1 (left flank end) extends leftward, side2 (right flank
+            // start) extends rightward — matches the measured oracle
+            // deletion-flank JC (e.g. Clonal 3289961 -1 -> 3289978 1).
+            side1_minus: true,
+            side2_minus: false,
             left,
             right,
             side1_pos_1,
@@ -238,20 +247,20 @@ pub fn apply_read(
                     if last_match_ref.is_none() {
                         pending_left_clip = Some(clip);
                     } else if let Some(pos) = last_match_ref {
-                        // 3′ (read-right) clip. On a minus-strand read it lies at
-                        // LOWER reference coordinates; the junction-adjacent
-                        // aligned base is then the first match, not the last.
-                        let ref_clip_is_left = read.minus;
-                        let junction_ref = if ref_clip_is_left {
-                            first_match_ref.expect("last match implies a first match")
-                        } else {
-                            pos
-                        };
+                        // Trailing clip of the stored sequence. SAM/BAM stores SEQ
+                        // reference-forward (minus-strand reads are reverse-
+                        // complemented), so a trailing clip lies at HIGHER
+                        // reference coordinates on BOTH strands and the
+                        // junction-adjacent aligned base is the last match.
+                        // (Measured, synth_is_mob 2371412: minus M+S reads ending
+                        // at 602 carry motif-prefix clips; keying them at the
+                        // first match scattered minus candidates over 517-580 and
+                        // stranded every junction single-strand.)
                         clips.push(SoftclipHint {
                             contig_idx: read.contig_idx,
                             minus: read.minus,
-                            aligned_pos_1: junction_ref as u64 + 1,
-                            clip_is_left: ref_clip_is_left,
+                            aligned_pos_1: pos as u64 + 1,
+                            clip_is_left: false,
                             clip_seq: clip,
                             aligned_q_len: last_match_qend,
                         });
@@ -269,20 +278,14 @@ pub fn apply_read(
     if let (Some(clip), Some(first)) = (pending_left_clip, first_match_ref) {
         let aligned_q_len = last_match_qend.saturating_sub(clip.len());
         if aligned_q_len >= MIN_CLIP_FOR_JC {
-            // 5′ (read-left) clip. On a minus-strand read it lies at HIGHER
-            // reference coordinates; the junction-adjacent aligned base is
-            // then the last match, not the first.
-            let ref_clip_is_left = !read.minus;
-            let junction_ref = if ref_clip_is_left {
-                first
-            } else {
-                last_match_ref.expect("left clip implies a match")
-            };
+            // Leading clip of the stored (reference-forward) sequence: lies
+            // at LOWER reference coordinates on both strands; the
+            // junction-adjacent aligned base is the first match.
             clips.push(SoftclipHint {
                 contig_idx: read.contig_idx,
                 minus: read.minus,
-                aligned_pos_1: junction_ref as u64 + 1,
-                clip_is_left: ref_clip_is_left,
+                aligned_pos_1: first as u64 + 1,
+                clip_is_left: true,
                 clip_seq: clip,
                 aligned_q_len,
             });
@@ -376,22 +379,31 @@ pub fn place_softclip(hint: &SoftclipHint, fasta: &[FastaRecord]) -> Vec<SplitCa
             if is_continuation(hint, idx, hit_0, clip.len()) {
                 continue;
             }
-            // content_rc_hit: the reference-oriented clip content reads along
-            // the REVERSE strand of the hit region. The junction-adjacent base
-            // is the hit start iff the clip side and the content orientation
-            // agree, otherwise the hit end.
-            let content_rc_hit = is_rc ^ hint.minus;
+            // content_rc_hit: the stored clip is reference-forward (SAM/BAM
+            // reverse-complements minus-strand reads), so the clip content
+            // reads along the REVERSE strand of the hit region iff the
+            // reverse-complement search matched — independent of read strand.
+            // The junction-adjacent base is the hit start iff the clip side
+            // and the content orientation agree, otherwise the hit end.
+            let content_rc_hit = is_rc;
             let side2_pos_1 = if hint.clip_is_left == content_rc_hit {
                 hit_0 as u64 + 1
             } else {
                 hit_0 as u64 + clip.len() as u64
             };
+            // Emitted side strands follow the breseq convention: a side's
+            // strand is the direction its sequence extends AWAY from the
+            // junction in reference coordinates. side1's aligned block
+            // extends opposite the clip side; side2 extends toward lower
+            // coordinates iff the junction-adjacent base is the hit end.
+            // (Reproduces the measured oracle strands of both synth_is_mob
+            // 2371412 junctions; inverted-hit placements are unmeasured.)
             out.push(SplitCandidate {
                 contig_idx: hint.contig_idx,
                 side2_contig_idx: idx,
                 minus: hint.minus,
-                side1_minus: hint.minus,
-                side2_minus: content_rc_hit,
+                side1_minus: !hint.clip_is_left,
+                side2_minus: hint.clip_is_left ^ content_rc_hit,
                 left: SubAlignment {
                     read_start: 0,
                     read_end: hint.aligned_q_len,
@@ -557,12 +569,16 @@ mod tests {
     }
 
     #[test]
-    fn minus_strand_left_clip_keys_at_last_match() {
-        // Minus read, 5′ clip on the read (CIGAR S+M): in reference
-        // orientation the clip lies at HIGHER coordinates, so the junction
-        // base is the LAST aligned reference base and clip_is_left = false.
+    fn minus_strand_leading_clip_keys_at_first_match() {
+        // SAM/BAM stores SEQ reference-forward (minus-strand reads are
+        // reverse-complemented), so a leading (5′-of-SEQ) softclip lies at
+        // LOWER reference coordinates on both strands and the junction
+        // base is the FIRST aligned reference base — the same rule as for
+        // plus reads. Models a minus read crossing an insert RIGHT
+        // boundary: stored SEQ = [motif suffix][right flank].
+        // (Measured: synth_is_mob 2371412 minus S+M reads start at 599.)
         let ref_seq = vec![b'C'; 160];
-        let mut seq = rc_dna(b"TGCAAGTCGATCGTTAGCCA");
+        let mut seq = b"TGCAAGTCGATCGTTAGCCA".to_vec();
         seq.extend(std::iter::repeat_n(b'C', 20));
         let read = AlignedRead {
             contig_idx: 0,
@@ -593,25 +609,32 @@ mod tests {
         );
         assert_eq!(clips.len(), 1);
         assert_eq!(
-            clips[0].aligned_pos_1, 30,
-            "minus 5′ clip must key at last_match_ref+1 (reference orientation)"
+            clips[0].aligned_pos_1, 11,
+            "leading clip keys at first_match_ref+1 on both strands"
         );
         assert!(
-            !clips[0].clip_is_left,
-            "minus 5′ clip lies at higher reference coordinates"
+            clips[0].clip_is_left,
+            "leading clip lies at lower reference coordinates"
         );
-        assert_eq!(clips[0].clip_seq, rc_dna(b"TGCAAGTCGATCGTTAGCCA"));
+        assert_eq!(
+            clips[0].clip_seq, b"TGCAAGTCGATCGTTAGCCA",
+            "stored SEQ is reference-forward, not reverse-complemented"
+        );
     }
 
     #[test]
-    fn minus_strand_right_clip_keys_at_first_match() {
-        // Minus read, 3′ clip on the read (CIGAR M+S): in reference
-        // orientation the clip lies at LOWER coordinates, so the junction
-        // base is the FIRST aligned reference base and clip_is_left = true.
-        // Models an insert right boundary: SEQ = rc([motif][ref 11..30]).
+    fn minus_strand_trailing_clip_keys_at_last_match() {
+        // Minus read, trailing (3′-of-SEQ) clip (CIGAR M+S): the stored SEQ
+        // is reference-forward, so the clip lies at HIGHER reference
+        // coordinates and the junction base is the LAST aligned reference
+        // base — the same rule as for plus reads. Models a minus read
+        // crossing an insert LEFT boundary: stored SEQ =
+        // [left flank][motif prefix]. (Measured: synth_is_mob 2371412 minus
+        // M+S reads end at 602 carrying motif-prefix clips; keying them at
+        // the first match was the zero-JC root cause.)
         let ref_seq = vec![b'C'; 160];
         let mut seq = vec![b'C'; 20];
-        seq.extend_from_slice(&rc_dna(b"TGCAAGTCGATCGTTAGCCA"));
+        seq.extend_from_slice(b"TGCAAGTCGATCGTTAGCCA");
         let read = AlignedRead {
             contig_idx: 0,
             ref_start_0: 10, // match spans ref 11..30 (1-based)
@@ -641,12 +664,12 @@ mod tests {
         );
         assert_eq!(clips.len(), 1);
         assert_eq!(
-            clips[0].aligned_pos_1, 11,
-            "minus 3′ clip must key at first_match_ref+1 (reference orientation)"
+            clips[0].aligned_pos_1, 30,
+            "trailing clip keys at last_match_ref+1 on both strands"
         );
         assert!(
-            clips[0].clip_is_left,
-            "minus 3′ clip lies at lower reference coordinates"
+            !clips[0].clip_is_left,
+            "trailing clip lies at higher reference coordinates"
         );
     }
 }
