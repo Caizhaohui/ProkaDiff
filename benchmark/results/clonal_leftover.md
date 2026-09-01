@@ -170,3 +170,49 @@ ProkDiff JC=0，故 ±5 bp 规范化帮不上。breseq JC 多为 unique 侧 × �
 
 - 用含 minus 键位修正 + ±5 bp 聚类的引擎重提 Clonal，再验 27 条 JC 的匹配数与 5 条 MOB 是否以 JC 形式出现。
 - 5 条 over SNP 的同坐标错分（`3289962` DEL 16 bp、`3894997` DEL 6934 IS150）仍待 JC/MOB 路径收口。
+
+# 2026-09-01: 作业 2372151（JC 聚类+折叠后）
+
+**关键 caveat（实测，非推测）：折叠提交未进入本轮二进制。** `target/release/prokdiff` mtime = 2026-09-01 13:51:08（提交脚本 `cargo build` 前置 / 作业 13:51:59 启动时为 no-op），包含 7043cca（13:26:54，minus 链 softclip 键位修正 + ±5 bp 聚类）；而 52c5256（13:52:21，反向与多拷贝 JC 折叠）提交于作业启动**之后**，本轮未被检验。且实测 `clonal_2372151/prokdiff/output.gd` 与 2371389 **md5 完全相同**（`0d48c2eb…`）——无论折叠是否在working tree，聚类改动在 Clonal 真实数据上**行为零变化**。
+
+## 作业元数据（2372151）
+
+| 项 | 值 |
+| --- | --- |
+| Slurm 作业 | **2372151**（`scripts/submit_parity_clonal.sh`，`pd_clonal`），State=FAILED 但 ExitCode=**2:0**（红线 leftover 非空的告警退出；csv 双行齐全，输出完整，非真失败） |
+| 分区 / 节点 / 线程 | `qcpu_18i` / `bnode6.tibhpc.net` / 8 |
+| Elapsed | 00:52:51 |
+| Oracle | breseq **0.40.2**（GD 头实测），bowtie2 2.5.4 |
+| ProkDiff 二进制 | mtime 13:51:08，含 7043cca 聚类；**不含** 52c5256 折叠（见上） |
+
+同作业实测（同节点、单次；wall-clock 为**非正式**记录，不作加速比宣传）：
+
+| 工具 | wall_s | peak RSS (KB) |
+| --- | --- | --- |
+| ProkDiff | 141.52 | 2974944 |
+| breseq 0.40.2 | 3022.03 | 1857008 |
+
+## 类型表（2372151，红线类型；UN/RA/MC 证据行不计）
+
+方向 `over` = rust−breseq（多报）；`under` = breseq−rust（漏报）。
+
+| 方向 | SNP | INS | DEL | MOB | JC unmatched |
+| --- | --- | --- | --- | --- | --- |
+| over | 5 | 0 | **0** | 0 | 0 |
+| under | 0 | 3 | 3 | 5 | 27（其中 9 条 oracle 自带 `reject=`） |
+
+- subtract 文件实测计数：`subtract_rust_minus_breseq.gd` = SNP 5 + MC 134（证据行）；`subtract_breseq_minus_rust.gd` = INS 3 + DEL 3 + MOB 5 + **JC 27**（另 RA 45 / UN 789 / MC 4 证据行不计）。
+- csv（2372151，vs 同机 breseq）：`over_red=5`、`under_red=11`、`over_jc_unmatched=0`、`under_jc_unmatched=27`、`under_jc_oracle_rejected=9`、`jc_matched_tol=0`。vs 官方 `Clonal_Output`：`over_red=5`、`under_red=11`、`under_jc_unmatched=26`、`oracle_rejected=8`、`jc_matched_tol=0`。
+
+## 验收四问的回答
+
+- **(a) MC→DEL 过报仍为 0？** 是，无回归。over DEL=0，`over_red`=5（全 SNP）；134 条 MC 仅以证据行存在，未提升为 DEL。
+- **(b) JC 恢复：27 条中几条 ±5 bp 匹配？** **0 条**（`jc_matched_tol=0`）。ProkDiff `output.gd` 的 JC 行数**仍为 0**（未变非零），且 output.gd 与 2371389 逐字节相同。oracle 侧 breseq output.gd 共 27 条 JC（9 条带 `reject=`），全部漏报。
+- **(c) over_jc_unmatched？** **0**——ProkDiff 未多发任何 JC，无坐标可抽查。
+- **(d) under_red 与 5 条 over SNP 是否不变？** 不变。under INS 3 + DEL 3 + MOB 5（IS150 ×4 + IS186 ×1）与基线逐条一致；over SNP 5 条（`2031736 G`、`2054876 G`、`2054924 A`、`3289962 C`、`3894997 T`）与 2369858 / 2371389 逐条一致。
+
+## 结论与下一步（2372151 之后）
+
+- JC 聚类（7043cca）在 Clonal 真实数据上**未产出任何 JC**；27 条 oracle JC 恢复数仍为 0/27。JC 通路根因未闭合，需回到 synth_is_mob 诊断继续定位（真实数据与合成 fixture 的 softclip 几何差异）。
+- 折叠（52c5256）尚未被任何 Clonal 作业检验；下次重提前确认二进制 mtime 晚于该提交。
+- 5 条 over SNP 的同坐标错分（`3289962`、`3894997`）依旧待 JC/MOB 路径收口。
