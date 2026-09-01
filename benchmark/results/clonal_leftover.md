@@ -84,3 +84,50 @@ ProkDiff JC=0，故 ±5 bp 规范化帮不上。breseq JC 多为 unique 侧 × �
 - **不要**重跑 2369858 / Example 6（2369859）来「证明」本轮引擎改动。
 - 升 breseq **0.40.x** 后用同一提交脚本新开作业，再写新的 leftover / wall / RSS。
 - 禁止把本表数字写成加速比或「对拍已过」。
+
+# 2026-09-01 复跑：作业 2371272（oracle breseq 0.40.2）
+
+**关键 caveat（实测，非推测）：本作业的 ProkDiff 侧跑的是旧二进制，引擎修复未生效。**
+`target/release/prokdiff` 构建于 2026-08-31 22:48:48，早于 a9f8e85（2026-09-01 10:52:41，MC→DEL 收紧 + 链合并 JC）与 f31503c（JC 链向规范化 + best-read 接受规则）。提交脚本只在二进制缺失时才 `cargo build`，Slurm 日志无 "building release prokdiff" 行。实测证据：`clonal_2371272/prokdiff/output.gd` 与 2369858 的 **md5 完全相同**（`fd529074…`）。因此本节数字 = **旧引擎 × 新 oracle**，不能用来回答引擎修复是否生效。
+
+## 作业元数据（2371272）
+
+| 项 | 值 |
+| --- | --- |
+| Slurm 作业 | **2371272**（同一 `scripts/submit_parity_clonal.sh`），退出码 2（红线 leftover 非空的告警退出，输出完整） |
+| 分区 / 节点 / 线程 | `qcpu_18i` / `bnode5.tibhpc.net` / 8 |
+| Oracle | breseq **0.40.2**（GD 头 `#=PROGRAM breseq 0.40.2` 实测），bowtie2 2.5.4 |
+| ProkDiff 二进制 | **旧**（2026-08-31 22:48 构建，pre-a9f8e85） |
+
+同作业实测（ProkDiff 侧为旧二进制，**不得**用于加速比宣传）：
+
+| 工具 | wall_s | peak RSS (KB) |
+| --- | --- | --- |
+| ProkDiff（旧二进制） | 181.55 | 2954852 |
+| breseq 0.40.2 | 2690.18 | 1856944 |
+
+## 类型表：0.39.0 基线 vs 2371272（红线类型；UN/RA/MC 证据行不计）
+
+方向 `over` = rust−breseq（多报）；`under` = breseq−rust（漏报）。
+
+| 方向 | 轮次 | SNP | INS | DEL | MOB | JC unmatched |
+| --- | --- | --- | --- | --- | --- | --- |
+| over | 2369858（0.39.0） | 5 | 0 | 134 | 0 | 0 |
+| over | 2371272（0.40.2） | 5 | 0 | 134 | 0 | 0 |
+| under | 2369858（0.39.0） | 0 | 3 | 3 | 5 | 27 |
+| under | 2371272（0.40.2） | 0 | 3 | 3 | 5 | 27 |
+
+- `subtract_rust_minus_breseq.gd` 两轮 **md5 相同**（`0ff6a93b…`）：134 DEL + 5 SNP 逐条一致。
+- `subtract_breseq_minus_rust.gd` 两轮仅 GD 头注释不同（`#=PROGRAM` 0.39.0→0.40.2、`#=MAPPED-READS` 6731944→6731945 等）；**突变条目逐行相同**。
+- 即对本样本，breseq 0.39.0→0.40.2 的 oracle 升级本身没有改变 leftover 集合。
+
+## 基线三问的回答（受 stale-binary caveat 限制）
+
+- **(a) 134 条 MC→DEL overcall 消失了吗？** 没有。2371272 的 over DEL 仍为 134 且逐条相同——但原因是 ProkDiff 侧跑了 pre-a9f8e85 旧二进制，**该问题本轮未被真正检验**。
+- **(b) JC 从 0 上来了吗（27 条中几条 ±5 bp 匹配）？** 没有。ProkDiff 仍报 0 条 JC，27 条 breseq JC 全部 unmatched（±5 bp 匹配 0 条）。同样是旧二进制所致，修复效果未检验。
+- **(c) 5 条 MOB 与 INS/SNP 小项？** 不变。under 侧 5 MOB（IS150 ×4 + IS186 ×1）、3 INS、3 DEL 与基线逐条一致；over 侧 5 SNP（含 3289962 / 3894997 同坐标错分 2 条）一致。
+
+## 下一步
+
+- 在计算节点重新 `cargo build --release -p prokdiff`（或删掉旧二进制让提交脚本自建）后重提 Clonal 作业；本轮 2371272 的 ProkDiff 侧数字作废，只保留 breseq 0.40.2 oracle 侧输出。
+- 提交脚本宜加「二进制mtime < 最新源码提交则重建」或显式 `cargo build` 防 stale；未修复前不得引用本轮引擎侧结果。

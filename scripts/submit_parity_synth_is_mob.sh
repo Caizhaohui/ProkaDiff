@@ -43,10 +43,8 @@ if (( ${#missing[@]} )); then
   exit 1
 fi
 
-if [[ ! -x "${ROOT}/target/release/prokdiff" ]]; then
-  echo "building release prokdiff on the compute node..."
-  cargo build --release -p prokdiff
-fi
+echo "building release prokdiff (incremental; no-op if fresh)..."
+cargo build --release -p prokdiff
 PROKDIFF="${ROOT}/target/release/prokdiff"
 
 bash "${ROOT}/testdata/generate.sh" synth_is_mob "${ROOT}/testdata/generated/synth_is_mob"

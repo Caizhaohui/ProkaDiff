@@ -200,10 +200,8 @@ dest.write_text(">" + name + "\n" + "\n".join(chunks) + "\n")
 print(f"wrote {dest} name={name} len={len(seq)}")
 PY
 
-if [[ ! -x "${ROOT}/target/release/prokdiff" ]]; then
-  echo "building release prokdiff on the compute node..."
-  cargo build --release -p prokdiff
-fi
+echo "building release prokdiff (incremental; no-op if fresh)..."
+cargo build --release -p prokdiff
 PROKDIFF="${ROOT}/target/release/prokdiff"
 
 JOBOUT="${ROOT}/benchmark/results/example6_${SLURM_JOB_ID}"

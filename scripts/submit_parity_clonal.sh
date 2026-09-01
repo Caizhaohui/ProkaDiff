@@ -120,10 +120,8 @@ echo "reference: ${REF}"
 echo "reads: ${FQS[*]}"
 echo "oracle gd: ${ORACLE_GD}"
 
-if [[ ! -x "${ROOT}/target/release/prokdiff" ]]; then
-  echo "building release prokdiff on the compute node..."
-  cargo build --release -p prokdiff
-fi
+echo "building release prokdiff (incremental; no-op if fresh)..."
+cargo build --release -p prokdiff
 PROKDIFF="${ROOT}/target/release/prokdiff"
 
 JOBOUT="${ROOT}/benchmark/results/clonal_${SLURM_JOB_ID}"
