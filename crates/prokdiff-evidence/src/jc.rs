@@ -9,9 +9,12 @@
 //!
 //! Accept (consensus):
 //! 1. Reads on both strands of the predicted junction.
-//! 2. ≥14 bp into each side of the reference.
-//! 3. Each strand extends ≥9 bp into each side.
-//! 4. Smallest reference overlap ≥3 bp on each side.
+//! 2. The best single read extends ≥14 bp into each side of the reference
+//!    (max over reads of min(side1, side2) extension).
+//! 3. Each strand has a read extending ≥9 bp into each side
+//!    (per-strand max of min(side1, side2)).
+//! 4. Smallest reference overlap ≥3 bp on each side (kept for documentation;
+//!    the engine clamps per-side extensions at ≥3, so this is vacuous).
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SubAlignment {
@@ -89,23 +92,28 @@ pub fn is_candidate_junction(read_len: usize, a: SubAlignment, b: SubAlignment) 
 pub struct JunctionSupport {
     pub plus_reads: usize,
     pub minus_reads: usize,
-    /// Minimum overlap (bp) of supporting reads into side 1 of the reference.
+    /// Best single read: max over supporting reads of min(side1, side2)
+    /// extension (bp) into the reference.
+    pub best_min_overlap: usize,
+    /// Per-strand best: max over plus-strand reads of min(side1, side2).
+    pub plus_best_min: usize,
+    /// Per-strand best: max over minus-strand reads of min(side1, side2).
+    pub minus_best_min: usize,
+    /// Smallest per-side extension across all reads (documentational; the
+    /// engine clamps per-side extensions at ≥3, so the accept check is
+    /// vacuous). A single unbalanced read must NOT kill the junction.
     pub min_overlap_side1: usize,
     pub min_overlap_side2: usize,
-    pub plus_side1: usize,
-    pub plus_side2: usize,
-    pub minus_side1: usize,
-    pub minus_side2: usize,
 }
 
 pub fn accept_junction(s: &JunctionSupport) -> bool {
     if s.plus_reads == 0 || s.minus_reads == 0 {
         return false;
     }
-    if s.min_overlap_side1 < 14 || s.min_overlap_side2 < 14 {
+    if s.best_min_overlap < 14 {
         return false;
     }
-    if s.plus_side1 < 9 || s.plus_side2 < 9 || s.minus_side1 < 9 || s.minus_side2 < 9 {
+    if s.plus_best_min < 9 || s.minus_best_min < 9 {
         return false;
     }
     if s.min_overlap_side1.min(s.min_overlap_side2) < 3 {
@@ -163,25 +171,56 @@ mod tests {
         let good = JunctionSupport {
             plus_reads: 4,
             minus_reads: 3,
+            best_min_overlap: 18,
+            plus_best_min: 18,
+            minus_best_min: 15,
             min_overlap_side1: 20,
             min_overlap_side2: 18,
-            plus_side1: 20,
-            plus_side2: 18,
-            minus_side1: 16,
-            minus_side2: 15,
         };
         assert!(accept_junction(&good));
 
         let one_strand = JunctionSupport {
             minus_reads: 0,
+            minus_best_min: 0,
             ..good
         };
         assert!(!accept_junction(&one_strand));
 
         let short = JunctionSupport {
-            min_overlap_side1: 10,
+            best_min_overlap: 10,
             ..good
         };
         assert!(!accept_junction(&short));
+    }
+
+    #[test]
+    fn accept_junction_best_read_rule_tolerates_unbalanced_read() {
+        // One unbalanced read (5 bp into side1) must not kill the junction:
+        // the best read extends ≥14 bp into each side and each strand has a
+        // read extending ≥9 bp into each side.
+        let good = JunctionSupport {
+            plus_reads: 2,
+            minus_reads: 1,
+            best_min_overlap: 14,
+            plus_best_min: 14,
+            minus_best_min: 9,
+            min_overlap_side1: 5,
+            min_overlap_side2: 3,
+        };
+        assert!(accept_junction(&good));
+
+        // Best read below 14 bp on one side → reject even with both strands.
+        let weak_best = JunctionSupport {
+            best_min_overlap: 13,
+            ..good
+        };
+        assert!(!accept_junction(&weak_best));
+
+        // A strand whose best read is below 9 bp on one side → reject.
+        let weak_strand = JunctionSupport {
+            minus_best_min: 8,
+            ..good
+        };
+        assert!(!accept_junction(&weak_strand));
     }
 }

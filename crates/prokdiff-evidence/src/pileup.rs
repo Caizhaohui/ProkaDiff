@@ -54,9 +54,14 @@ pub struct SplitCandidate {
 pub struct SoftclipHint {
     pub contig_idx: usize,
     pub minus: bool,
-    /// 1-based reference position of the aligned base next to the clip.
+    /// 1-based reference position of the aligned base next to the clip
+    /// (reference-oriented: for a minus-strand read the junction-adjacent
+    /// base is on the opposite read end).
     pub aligned_pos_1: u64,
+    /// Reference-oriented: true if the clip lies at LOWER reference
+    /// coordinates than the aligned block (`clip_on_read_left XOR minus`).
     pub clip_is_left: bool,
+    /// Clipped bases in READ orientation (`place_softclip` searches both strands).
     pub clip_seq: Vec<u8>,
     pub aligned_q_len: usize,
 }
@@ -233,11 +238,20 @@ pub fn apply_read(
                     if last_match_ref.is_none() {
                         pending_left_clip = Some(clip);
                     } else if let Some(pos) = last_match_ref {
+                        // 3′ (read-right) clip. On a minus-strand read it lies at
+                        // LOWER reference coordinates; the junction-adjacent
+                        // aligned base is then the first match, not the last.
+                        let ref_clip_is_left = read.minus;
+                        let junction_ref = if ref_clip_is_left {
+                            first_match_ref.expect("last match implies a first match")
+                        } else {
+                            pos
+                        };
                         clips.push(SoftclipHint {
                             contig_idx: read.contig_idx,
                             minus: read.minus,
-                            aligned_pos_1: pos as u64 + 1,
-                            clip_is_left: false,
+                            aligned_pos_1: junction_ref as u64 + 1,
+                            clip_is_left: ref_clip_is_left,
                             clip_seq: clip,
                             aligned_q_len: last_match_qend,
                         });
@@ -255,11 +269,20 @@ pub fn apply_read(
     if let (Some(clip), Some(first)) = (pending_left_clip, first_match_ref) {
         let aligned_q_len = last_match_qend.saturating_sub(clip.len());
         if aligned_q_len >= MIN_CLIP_FOR_JC {
+            // 5′ (read-left) clip. On a minus-strand read it lies at HIGHER
+            // reference coordinates; the junction-adjacent aligned base is
+            // then the last match, not the first.
+            let ref_clip_is_left = !read.minus;
+            let junction_ref = if ref_clip_is_left {
+                first
+            } else {
+                last_match_ref.expect("left clip implies a match")
+            };
             clips.push(SoftclipHint {
                 contig_idx: read.contig_idx,
                 minus: read.minus,
-                aligned_pos_1: first as u64 + 1,
-                clip_is_left: true,
+                aligned_pos_1: junction_ref as u64 + 1,
+                clip_is_left: ref_clip_is_left,
                 clip_seq: clip,
                 aligned_q_len,
             });
@@ -353,7 +376,12 @@ pub fn place_softclip(hint: &SoftclipHint, fasta: &[FastaRecord]) -> Vec<SplitCa
             if is_continuation(hint, idx, hit_0, clip.len()) {
                 continue;
             }
-            let side2_pos_1 = if hint.clip_is_left == is_rc {
+            // content_rc_hit: the reference-oriented clip content reads along
+            // the REVERSE strand of the hit region. The junction-adjacent base
+            // is the hit start iff the clip side and the content orientation
+            // agree, otherwise the hit end.
+            let content_rc_hit = is_rc ^ hint.minus;
+            let side2_pos_1 = if hint.clip_is_left == content_rc_hit {
                 hit_0 as u64 + 1
             } else {
                 hit_0 as u64 + clip.len() as u64
@@ -363,7 +391,7 @@ pub fn place_softclip(hint: &SoftclipHint, fasta: &[FastaRecord]) -> Vec<SplitCa
                 side2_contig_idx: idx,
                 minus: hint.minus,
                 side1_minus: hint.minus,
-                side2_minus: hint.minus ^ is_rc,
+                side2_minus: content_rc_hit,
                 left: SubAlignment {
                     read_start: 0,
                     read_end: hint.aligned_q_len,
@@ -517,12 +545,108 @@ mod tests {
             &mut clips,
         );
         assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0].aligned_pos_1, 90);
+        assert!(!clips[0].clip_is_left);
         let placed = place_softclip(&clips[0], &fasta);
         assert!(
             placed
                 .iter()
                 .any(|s| (41..=60).contains(&s.side2_pos_1) || (101..=120).contains(&s.side2_pos_1)),
             "expected a hit on an IS copy, got {placed:?}"
+        );
+    }
+
+    #[test]
+    fn minus_strand_left_clip_keys_at_last_match() {
+        // Minus read, 5′ clip on the read (CIGAR S+M): in reference
+        // orientation the clip lies at HIGHER coordinates, so the junction
+        // base is the LAST aligned reference base and clip_is_left = false.
+        let ref_seq = vec![b'C'; 160];
+        let mut seq = rc_dna(b"TGCAAGTCGATCGTTAGCCA");
+        seq.extend(std::iter::repeat_n(b'C', 20));
+        let read = AlignedRead {
+            contig_idx: 0,
+            ref_start_0: 10, // match spans ref 11..30 (1-based)
+            minus: true,
+            seq,
+            cigar: vec![
+                CigarOp {
+                    kind: CigarKind::SoftClip,
+                    len: 20,
+                },
+                CigarOp {
+                    kind: CigarKind::Match,
+                    len: 20,
+                },
+            ],
+            mapq: 40,
+        };
+        let mut columns = cols(&ref_seq);
+        let mut clips = Vec::new();
+        apply_read(
+            &read,
+            &mut columns,
+            &mut vec![0u32; 160],
+            &mut [0u32; 160],
+            &mut Vec::new(),
+            &mut clips,
+        );
+        assert_eq!(clips.len(), 1);
+        assert_eq!(
+            clips[0].aligned_pos_1, 30,
+            "minus 5′ clip must key at last_match_ref+1 (reference orientation)"
+        );
+        assert!(
+            !clips[0].clip_is_left,
+            "minus 5′ clip lies at higher reference coordinates"
+        );
+        assert_eq!(clips[0].clip_seq, rc_dna(b"TGCAAGTCGATCGTTAGCCA"));
+    }
+
+    #[test]
+    fn minus_strand_right_clip_keys_at_first_match() {
+        // Minus read, 3′ clip on the read (CIGAR M+S): in reference
+        // orientation the clip lies at LOWER coordinates, so the junction
+        // base is the FIRST aligned reference base and clip_is_left = true.
+        // Models an insert right boundary: SEQ = rc([motif][ref 11..30]).
+        let ref_seq = vec![b'C'; 160];
+        let mut seq = vec![b'C'; 20];
+        seq.extend_from_slice(&rc_dna(b"TGCAAGTCGATCGTTAGCCA"));
+        let read = AlignedRead {
+            contig_idx: 0,
+            ref_start_0: 10, // match spans ref 11..30 (1-based)
+            minus: true,
+            seq,
+            cigar: vec![
+                CigarOp {
+                    kind: CigarKind::Match,
+                    len: 20,
+                },
+                CigarOp {
+                    kind: CigarKind::SoftClip,
+                    len: 20,
+                },
+            ],
+            mapq: 40,
+        };
+        let mut columns = cols(&ref_seq);
+        let mut clips = Vec::new();
+        apply_read(
+            &read,
+            &mut columns,
+            &mut vec![0u32; 160],
+            &mut [0u32; 160],
+            &mut Vec::new(),
+            &mut clips,
+        );
+        assert_eq!(clips.len(), 1);
+        assert_eq!(
+            clips[0].aligned_pos_1, 11,
+            "minus 3′ clip must key at first_match_ref+1 (reference orientation)"
+        );
+        assert!(
+            clips[0].clip_is_left,
+            "minus 3′ clip lies at lower reference coordinates"
         );
     }
 }

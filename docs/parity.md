@@ -89,8 +89,9 @@ Clonal leftover（breseq **0.39.0**，见 `benchmark/results/clonal_leftover.md`
 - 长 CIGAR I/D（>2 bp）仍作 mosaic 候选；**聚合键不含 read strand**，正负链合并后再 `accept_junction`。
 - ≥14 bp softclip：在参考上精确匹配（含反向互补），跳过本比对的平凡延续；重复拷贝允许 unassigned JC。
 - **MOB：** 第一期不写 `IS150` 等注释名（无 GBK repeat 表）。Clonal 的 5 条 unique-mapping MOB **仍可能只以 JC 出现**；等 breseq **0.40.x** 层 2 再验。这落在上表「重复区 JC 拷贝歧义」白名单，**不**把 breseq `.gd` 抄进运行时。
-- 层 0 测例：`both_strand_long_deletion_emits_jc`、`softclip_onto_repeat_copy_emits_jc`、`jc_supported_cigar_gap_promotes_short_del`。
+- 层 0 测例：`both_strand_long_deletion_emits_jc`、`softclip_onto_repeat_copy_emits_jc`、`jc_supported_cigar_gap_promotes_short_del`、`synth_is_mob_geometry_both_strand_softclips_aggregate`。
 - **未在登录节点重跑 Clonal FASTQ。** 不得声称 27 条 JC 已与 0.39.0 leftover 对齐。
+- **Softclip 链向规范化 + best-read 接受规则（作业 2371258 收口）：** synth_is_mob 层 1 红线类型双向 leftover=0，但 ProkDiff 吐出 empty GD，breseq 报 4 JC（200→401、200→881、201→480、201→960；夹具在 201 处插入第三个 80 bp motif 拷贝，已有拷贝在 401-480、881-960）。根因二条：(1) softclip hint 的 `aligned_pos_1` / `clip_is_left` 此前按 **read 方向**记录，minus 链接合点键错位（5′ clip 键在 151 而非 200），正负链无法聚合；现统一为**参考方向**（`ref_clip_is_left = clip_on_read_left XOR minus`；left→`first_match_ref+1`，right→`last_match_ref+1`），`clip_seq` 仍保持 read 方向（`place_softclip` 双链搜索），side2 公式相应改为 `clip_is_left == (is_rc XOR minus)`。(2) `accept_junction` 的 ≥14 bp 规则此前取所有支持读段的 **min**，一条不平衡读段（如单侧 5 bp）即可杀死 junction；现按发表方法改为**最佳单读段**每侧 ≥14 bp（max over reads of min(ov1,ov2)），且**每链**有读段每侧 ≥9 bp（per-strand max-of-min），每侧最小延伸 ≥3 bp 保留为文档性检查（`.max(3)` 钳位使其恒真）。
 
 层 2 等 0.40.x 再重跑；不要重提作业 2369858。
 

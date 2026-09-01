@@ -185,10 +185,13 @@ def main():
     rust = parse_gd_muts(rust_gd)
     breseq = parse_gd_muts(breseq_gd)
     vs_node = compare(rust, breseq, args.jc_tol_bp)
+    node = socket.gethostname()
+    breseq_v = ver(["breseq", "--version"])
+    bt2_v = ver(["bowtie2", "--version"])
     notes = [
         f"jc_tol_bp={args.jc_tol_bp}",
         "red=SNP,INS,DEL,MOB,AMP,CON exact; JC greedy ±tol after side canonicalization; UN/RA/MC ignored",
-        "oracle_breseq_env=0.39.0_not_0.40.x",
+        f"oracle_breseq_env={breseq_v}",
         summarize("vs_samenode", vs_node),
     ]
     red_fail = vs_node["over_red_n"] or vs_node["under_red_n"]
@@ -204,9 +207,6 @@ def main():
 
     notes_s = ";".join(notes)
     csv_path = args.csv or (args.jobout.parent / f"{args.workload}.csv")
-    node = socket.gethostname()
-    breseq_v = ver(["breseq", "--version"])
-    bt2_v = ver(["bowtie2", "--version"])
     new_file = not csv_path.exists()
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with csv_path.open("a", newline="") as fh:

@@ -286,14 +286,16 @@ pub fn call_from_aligned(
                 .or_insert((sp.side1_minus, sp.side2_minus));
             let ov1 = sp.left.len().max(3);
             let ov2 = sp.right.len().max(3);
+            // Best-read semantics: one unbalanced read must not kill the
+            // junction (published accept rules are max-of-min per read).
+            let m = ov1.min(ov2);
+            e.best_min_overlap = e.best_min_overlap.max(m);
             if sp.minus {
                 e.minus_reads += 1;
-                e.minus_side1 = e.minus_side1.max(ov1);
-                e.minus_side2 = e.minus_side2.max(ov2);
+                e.minus_best_min = e.minus_best_min.max(m);
             } else {
                 e.plus_reads += 1;
-                e.plus_side1 = e.plus_side1.max(ov1);
-                e.plus_side2 = e.plus_side2.max(ov2);
+                e.plus_best_min = e.plus_best_min.max(m);
             }
             e.min_overlap_side1 = if e.min_overlap_side1 == 0 {
                 ov1
@@ -579,6 +581,19 @@ mod tests {
         );
     }
 
+    fn rc(seq: &[u8]) -> Vec<u8> {
+        seq.iter()
+            .rev()
+            .map(|&b| match b {
+                b'A' => b'T',
+                b'T' => b'A',
+                b'C' => b'G',
+                b'G' => b'C',
+                x => x,
+            })
+            .collect()
+    }
+
     #[test]
     fn softclip_onto_repeat_copy_emits_jc() {
         // Unique flanks + two identical 20 bp IS-like copies (first-period mosaic).
@@ -586,25 +601,51 @@ mod tests {
         let motif = *b"ACGTACGTACGTACGTACGT";
         seq[40..60].copy_from_slice(&motif);
         seq[100..120].copy_from_slice(&motif);
+        // Plus read crossing the insert left boundary: match ref 71..90, 3′ clip.
+        let mut plus_seq = vec![b'C'; 20];
+        plus_seq.extend_from_slice(&motif);
+        // Minus read crossing the SAME boundary: SEQ = rc([match][clip]) =
+        // [rc(clip)][rc(match)], so the clip leads and the CIGAR is S+M over
+        // the same reference match span (biologically consistent minus read).
+        let mut minus_seq = rc(&motif);
+        minus_seq.extend(std::iter::repeat_n(b'C', 20));
         let mut reads = Vec::new();
-        let mut clip_seq = vec![b'C'; 20];
-        clip_seq.extend_from_slice(&motif);
         for minus in [false, false, false, true, true, true] {
+            let (s, cigar) = if minus {
+                (
+                    minus_seq.clone(),
+                    vec![
+                        CigarOp {
+                            kind: CigarKind::SoftClip,
+                            len: 20,
+                        },
+                        CigarOp {
+                            kind: CigarKind::Match,
+                            len: 20,
+                        },
+                    ],
+                )
+            } else {
+                (
+                    plus_seq.clone(),
+                    vec![
+                        CigarOp {
+                            kind: CigarKind::Match,
+                            len: 20,
+                        },
+                        CigarOp {
+                            kind: CigarKind::SoftClip,
+                            len: 20,
+                        },
+                    ],
+                )
+            };
             reads.push(AlignedRead {
                 contig_idx: 0,
                 ref_start_0: 70,
                 minus,
-                seq: clip_seq.clone(),
-                cigar: vec![
-                    CigarOp {
-                        kind: CigarKind::Match,
-                        len: 20,
-                    },
-                    CigarOp {
-                        kind: CigarKind::SoftClip,
-                        len: 20,
-                    },
-                ],
+                seq: s,
+                cigar,
                 mapq: UNIQUE_MAPQ,
             });
         }
@@ -622,6 +663,88 @@ mod tests {
         assert!(
             (41..=60).contains(&side2) || (101..=120).contains(&side2),
             "side2 should land in an IS copy, got {side2}"
+        );
+    }
+
+    #[test]
+    fn synth_is_mob_geometry_both_strand_softclips_aggregate() {
+        // Regression for the synth_is_mob empty-GD failure (job 2371258):
+        // plus reads with 3′ softclips and minus reads with 5′ softclips cross
+        // the SAME insert left boundary. Before strand normalization the minus
+        // hints keyed at first_match_ref+1 (e.g. 11) instead of the junction
+        // base (30), so plus/minus never aggregated and no JC was accepted.
+        let motif = *b"TGCAAGTCGATCGTTAGCCA";
+        let mut seq = vec![b'C'; 160];
+        seq[40..60].copy_from_slice(&motif);
+        seq[100..120].copy_from_slice(&motif);
+        // Junction: unique flank up to ref 30 (1-based), then motif content.
+        let mut plus_seq = vec![b'C'; 20];
+        plus_seq.extend_from_slice(&motif);
+        let mut minus_seq = rc(&motif);
+        minus_seq.extend(std::iter::repeat_n(b'C', 20));
+        let mut reads = Vec::new();
+        for _ in 0..3 {
+            reads.push(AlignedRead {
+                contig_idx: 0,
+                ref_start_0: 10, // 20M covers ref 11..30 (1-based)
+                minus: false,
+                seq: plus_seq.clone(),
+                cigar: vec![
+                    CigarOp {
+                        kind: CigarKind::Match,
+                        len: 20,
+                    },
+                    CigarOp {
+                        kind: CigarKind::SoftClip,
+                        len: 20,
+                    },
+                ],
+                mapq: UNIQUE_MAPQ,
+            });
+            reads.push(AlignedRead {
+                contig_idx: 0,
+                ref_start_0: 10, // same reference match span, minus strand
+                minus: true,
+                seq: minus_seq.clone(),
+                cigar: vec![
+                    CigarOp {
+                        kind: CigarKind::SoftClip,
+                        len: 20,
+                    },
+                    CigarOp {
+                        kind: CigarKind::Match,
+                        len: 20,
+                    },
+                ],
+                mapq: UNIQUE_MAPQ,
+            });
+        }
+        let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
+        let jcs = gd_jcs(&gd);
+        assert_eq!(
+            jcs.len(),
+            2,
+            "one aggregated JC per motif copy; entries={:?}",
+            gd.entries
+                .iter()
+                .map(|e| (e.kind, e.fields.clone()))
+                .collect::<Vec<_>>()
+        );
+        let mut side2s = Vec::new();
+        for jc in &jcs {
+            let side1: u64 = jc.fields[1].parse().unwrap();
+            let side2: u64 = jc.fields[4].parse().unwrap();
+            assert_eq!(
+                side1, 30,
+                "both strands must key side1 at the junction base"
+            );
+            side2s.push(side2);
+        }
+        side2s.sort_unstable();
+        assert_eq!(
+            side2s,
+            vec![41, 101],
+            "side2 must be the two motif copy starts"
         );
     }
 
