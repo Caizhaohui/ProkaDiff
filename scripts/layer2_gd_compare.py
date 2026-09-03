@@ -183,17 +183,17 @@ def main():
     p.add_argument("--jobout", required=True, type=Path)
     p.add_argument("--workload", required=True)
     p.add_argument("--threads", required=True)
-    p.add_argument("--prokdiff-gd", required=True, type=Path)
+    p.add_argument("--prokadiff-gd", required=True, type=Path)
     p.add_argument("--breseq-gd", required=True, type=Path)
     p.add_argument("--oracle-gd", type=Path, default=None)
     p.add_argument("--csv", type=Path, default=None)
     p.add_argument("--jc-tol-bp", type=int, default=JC_TOL_BP)
     args = p.parse_args()
 
-    rust_gd = args.prokdiff_gd
+    rust_gd = args.prokadiff_gd
     breseq_gd = args.breseq_gd
     if not rust_gd.is_file():
-        print(f"error: missing ProkDiff GD {rust_gd}", file=sys.stderr)
+        print(f"error: missing ProkaDiff GD {rust_gd}", file=sys.stderr)
         return 1
     if not breseq_gd.is_file():
         print(f"error: missing breseq GD {breseq_gd}", file=sys.stderr)
@@ -245,7 +245,7 @@ def main():
                 ]
             )
         for tool, tfile in (
-            ("prokdiff", args.jobout / "prokdiff.time"),
+            ("prokadiff", args.jobout / "prokadiff.time"),
             ("breseq", args.jobout / "breseq.time"),
         ):
             wall, rss = parse_time(tfile)

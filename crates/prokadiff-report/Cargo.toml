@@ -1,13 +1,14 @@
 [package]
-name = "prokdiff-gd"
+name = "prokadiff-report"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Genome Diff I/O and SUBTRACT-style set difference"
+description = "unintended.tsv and run summary writers"
 readme.workspace = true
 
 [dependencies]
-thiserror = { workspace = true }
+prokadiff-gd = { workspace = true }
+prokadiff-classify = { workspace = true }

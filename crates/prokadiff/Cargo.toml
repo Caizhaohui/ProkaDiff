@@ -1,21 +1,21 @@
 [package]
-name = "prokdiff"
+name = "prokadiff"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "ProkDiff CLI"
+description = "ProkaDiff CLI"
 readme.workspace = true
 
 [[bin]]
-name = "prokdiff"
+name = "prokadiff"
 path = "src/main.rs"
 
 [dependencies]
-prokdiff-gd = { workspace = true }
-prokdiff-evidence = { workspace = true }
-prokdiff-classify = { workspace = true }
-prokdiff-report = { workspace = true }
+prokadiff-gd = { workspace = true }
+prokadiff-evidence = { workspace = true }
+prokadiff-classify = { workspace = true }
+prokadiff-report = { workspace = true }
 clap = { workspace = true }

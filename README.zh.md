@@ -1,4 +1,4 @@
-# ProkDiff
+# ProkaDiff
 
 [English README](README.md)
 
@@ -13,7 +13,7 @@
 
 | 项 | 说明 |
 | --- | --- |
-| 展示名 | **ProkDiff**（CLI：`prokdiff`） |
+| 展示名 | **ProkaDiff**（CLI：`prokadiff`） |
 | 第一期读长 | Illumina 短读，克隆 consensus |
 | 引擎 | 外部 **Bowtie2** + Rust 实现 RA / MC / JC（清洁室对标 [breseq methods](https://breseq.barricklab.org/0.40.1/methods/)）。系统 `breseq` **仅作 oracle**，不是运行时引擎。 |
 | 差分 | `M_edited \ M_parent \ {intended}` |
@@ -40,7 +40,7 @@
 产品入口（两株必填；差分后再分类）：
 
 ```bash
-prokdiff \
+prokadiff \
   --starter starter_R1.fastq.gz --starter starter_R2.fastq.gz \
   --edited  edited_R1.fastq.gz  --edited  edited_R2.fastq.gz \
   --ref     NC_000913.3.fa \
@@ -48,7 +48,7 @@ prokdiff \
   --editor cas9 \
   --spacer  NNNNNNNNNNNNNNNNNNNN \
   --threads 8 \
-  --outdir  results/prokdiff
+  --outdir  results/prokadiff
 ```
 
 写出 `starter.gd`、`edited.gd`、`unintended.tsv`、`summary.txt`。
@@ -58,7 +58,7 @@ prokdiff \
 单样本引擎（oracle / 对拍任务）：
 
 ```bash
-prokdiff evidence \
+prokadiff evidence \
   --ref genome.fa \
   --fastq sample_R1.fastq --fastq sample_R2.fastq \
   --threads 8 \
@@ -78,7 +78,7 @@ prokdiff evidence \
 
 ## 当前进度
 
-阶段 4 报告层：`summary.txt` 含目的编辑声明/观察/状态；`unintended.tsv` 写出 SNP 参考碱基与 JC 第二端坐标。引擎 MVP（`prokdiff evidence`）不变。层 0 测试为纯内存。层 1 / 层 2 引擎作业必须提交 Slurm **`qcpu_18i`**。
+阶段 4 报告层：`summary.txt` 含目的编辑声明/观察/状态；`unintended.tsv` 写出 SNP 参考碱基与 JC 第二端坐标。引擎 MVP（`prokadiff evidence`）不变。层 0 测试为纯内存。层 1 / 层 2 引擎作业必须提交 Slurm **`qcpu_18i`**。
 
 ## 许可
 

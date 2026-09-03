@@ -8,8 +8,8 @@ use thiserror::Error;
 pub enum EvidenceError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
-    #[error("Genome Diff error: {0}")]
-    Gd(#[from] prokdiff_gd::GdError),
+    #[error("genome diff error: {0}")]
+    Gd(#[from] prokadiff_gd::GdError),
     #[error("bowtie2 failed ({status}): {stderr}")]
     Bowtie2 { status: ExitStatus, stderr: String },
     #[error("bowtie2-build failed ({status}): {stderr}")]

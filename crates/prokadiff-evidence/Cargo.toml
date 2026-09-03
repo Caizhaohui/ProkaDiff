@@ -1,5 +1,5 @@
 [package]
-name = "prokdiff-evidence"
+name = "prokadiff-evidence"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,7 @@ description = "RA / MC / JC consensus evidence (clean-room vs breseq methods)"
 readme.workspace = true
 
 [dependencies]
-prokdiff-gd = { workspace = true }
+prokadiff-gd = { workspace = true }
 thiserror = { workspace = true }
 # BAM/SAM I/O only (AGENTS Rule 9). FASTA uses a tiny local parser so we do not
 # pull noodles-fasta into the pileup path.

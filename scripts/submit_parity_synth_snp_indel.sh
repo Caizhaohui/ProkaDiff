@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Layer-1 synth_snp_indel: ProkDiff evidence vs breseq on qcpu_18i.
+# Layer-1 synth_snp_indel: ProkaDiff evidence vs breseq on qcpu_18i.
 # Do not run on a login node. Submit with:
 #   mkdir -p benchmark/logs
 #   sbatch scripts/submit_parity_synth_snp_indel.sh
@@ -43,27 +43,27 @@ if (( ${#missing[@]} )); then
   exit 1
 fi
 
-echo "building release prokdiff (incremental; no-op if fresh)..."
-cargo build --release -p prokdiff
-PROKDIFF="${ROOT}/target/release/prokdiff"
+echo "building release prokadiff (incremental; no-op if fresh)..."
+cargo build --release -p prokadiff
+PROKDIFF="${ROOT}/target/release/prokadiff"
 
 bash "${ROOT}/testdata/generate.sh" "${ROOT}/testdata/generated/synth_snp_indel"
 GEN="${ROOT}/testdata/generated/synth_snp_indel"
 JOBOUT="${ROOT}/benchmark/results/synth_snp_indel_${SLURM_JOB_ID}"
-mkdir -p "${JOBOUT}/prokdiff" "${JOBOUT}/breseq"
+mkdir -p "${JOBOUT}/prokadiff" "${JOBOUT}/breseq"
 
 TIME=(/usr/bin/time -v)
 
-echo "=== ProkDiff evidence ==="
-"${TIME[@]}" -o "${JOBOUT}/prokdiff.time" \
+echo "=== ProkaDiff evidence ==="
+"${TIME[@]}" -o "${JOBOUT}/prokadiff.time" \
   "${PROKDIFF}" evidence \
     --ref "${GEN}/ref.fa" \
     --fastq "${GEN}/edited_R1.fastq" \
     --fastq "${GEN}/edited_R2.fastq" \
     --threads "${THREADS}" \
-    --outdir "${JOBOUT}/prokdiff" \
+    --outdir "${JOBOUT}/prokadiff" \
     --keep-bam \
-  | tee "${JOBOUT}/prokdiff.stdout"
+  | tee "${JOBOUT}/prokadiff.stdout"
 
 echo "=== breseq oracle ==="
 "${TIME[@]}" -o "${JOBOUT}/breseq.time" \
@@ -73,10 +73,10 @@ echo "=== breseq oracle ==="
     "${GEN}/edited_R2.fastq" \
   | tee "${JOBOUT}/breseq.stdout"
 
-RUST_GD="${JOBOUT}/prokdiff/output.gd"
+RUST_GD="${JOBOUT}/prokadiff/output.gd"
 BRESEQ_GD="${JOBOUT}/breseq/output/output.gd"
 if [[ ! -f "${RUST_GD}" ]]; then
-  echo "error: ProkDiff did not write ${RUST_GD}" >&2
+  echo "error: ProkaDiff did not write ${RUST_GD}" >&2
   exit 1
 fi
 if [[ ! -f "${BRESEQ_GD}" ]]; then
@@ -187,11 +187,11 @@ with csv_path.open("a", newline="") as fh:
                 "notes",
             ]
         )
-    wall, rss = parse_time(jobout / "prokdiff.time")
+    wall, rss = parse_time(jobout / "prokadiff.time")
     w.writerow(
         [
             "synth_snp_indel",
-            "prokdiff",
+            "prokadiff",
             threads,
             wall,
             rss,

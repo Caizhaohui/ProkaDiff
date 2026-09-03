@@ -418,47 +418,47 @@ dependencies = [
 ]
 
 [[package]]
-name = "prokdiff"
+name = "prokadiff"
 version = "0.1.0"
 dependencies = [
  "clap",
- "prokdiff-classify",
- "prokdiff-evidence",
- "prokdiff-gd",
- "prokdiff-report",
+ "prokadiff-classify",
+ "prokadiff-evidence",
+ "prokadiff-gd",
+ "prokadiff-report",
 ]
 
 [[package]]
-name = "prokdiff-classify"
+name = "prokadiff-classify"
 version = "0.1.0"
 dependencies = [
- "prokdiff-gd",
+ "prokadiff-gd",
  "thiserror",
 ]
 
 [[package]]
-name = "prokdiff-evidence"
+name = "prokadiff-evidence"
 version = "0.1.0"
 dependencies = [
  "noodles",
- "prokdiff-gd",
+ "prokadiff-gd",
  "rayon",
  "thiserror",
 ]
 
 [[package]]
-name = "prokdiff-gd"
+name = "prokadiff-gd"
 version = "0.1.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
-name = "prokdiff-report"
+name = "prokadiff-report"
 version = "0.1.0"
 dependencies = [
- "prokdiff-classify",
- "prokdiff-gd",
+ "prokadiff-classify",
+ "prokadiff-gd",
 ]
 
 [[package]]

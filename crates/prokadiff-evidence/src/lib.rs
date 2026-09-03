@@ -10,10 +10,12 @@ pub mod engine;
 pub mod error;
 pub mod fasta;
 pub mod jc;
+pub mod jc_seq;
 pub mod mc;
 pub mod normalize;
 pub mod pileup;
 pub mod ra;
+pub mod split_seed;
 
 pub use align::FastqInput;
 pub use engine::{call_from_aligned, run_sample, EngineOptions};

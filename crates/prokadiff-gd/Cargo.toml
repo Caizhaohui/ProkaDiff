@@ -1,14 +1,13 @@
 [package]
-name = "prokdiff-classify"
+name = "prokadiff-gd"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Starter-strain subtract, intended-edit mask, three-class labels"
+description = "Genome Diff I/O and SUBTRACT-style set difference"
 readme.workspace = true
 
 [dependencies]
-prokdiff-gd = { workspace = true }
 thiserror = { workspace = true }

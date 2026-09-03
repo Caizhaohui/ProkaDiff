@@ -1,4 +1,4 @@
-# ProkDiff
+# ProkaDiff
 
 **Prokaryotic genome diff for gene-editing QC — starter vs edited WGS**
 
@@ -13,7 +13,7 @@ This is not mammalian GUIDE-seq, and it is not “every SNP versus MG1655.”
 
 | | |
 | --- | --- |
-| Name | **ProkDiff** (`prokdiff` CLI) |
+| Name | **ProkaDiff** (`prokadiff` CLI) |
 | Reads (v0.1) | Illumina short reads, clonal consensus |
 | Engine | External **Bowtie2** + Rust RA / MC / JC (clean-room vs [breseq methods](https://breseq.barricklab.org/0.40.1/methods/)). System `breseq` is **oracle only**, never the runtime engine. |
 | Diff | `M_edited \ M_parent \ {intended}` |
@@ -40,7 +40,7 @@ Assignment order is locked: **structural (3) → near_homolog (1) → scattered_
 Product (both strains required; classify after subtract):
 
 ```bash
-prokdiff \
+prokadiff \
   --starter starter_R1.fastq.gz --starter starter_R2.fastq.gz \
   --edited  edited_R1.fastq.gz  --edited  edited_R2.fastq.gz \
   --ref     NC_000913.3.fa \
@@ -48,7 +48,7 @@ prokdiff \
   --editor cas9 \
   --spacer  NNNNNNNNNNNNNNNNNNNN \
   --threads 8 \
-  --outdir  results/prokdiff
+  --outdir  results/prokadiff
 ```
 
 Writes `starter.gd`, `edited.gd`, `unintended.tsv`, and `summary.txt`.
@@ -58,7 +58,7 @@ Writes `starter.gd`, `edited.gd`, `unintended.tsv`, and `summary.txt`.
 Single-sample engine (oracle / parity jobs):
 
 ```bash
-prokdiff evidence \
+prokadiff evidence \
   --ref genome.fa \
   --fastq sample_R1.fastq --fastq sample_R2.fastq \
   --threads 8 \
@@ -78,7 +78,7 @@ I/O contract: [docs/schema.md](docs/schema.md). Oracle rules (output + wall-cloc
 
 ## Status
 
-Stage 4 report layer: `summary.txt` includes declared / observed / status for intended edits; `unintended.tsv` writes SNP reference bases and JC side-2 coordinates. Engine MVP (`prokdiff evidence`) is unchanged. Layer-0 tests are in-memory. Layer-1 / layer-2 engine jobs must run on Slurm **`qcpu_18i`**.
+Stage 4 report layer: `summary.txt` includes declared / observed / status for intended edits; `unintended.tsv` writes SNP reference bases and JC side-2 coordinates. Engine MVP (`prokadiff evidence`) is unchanged. Layer-0 tests are in-memory. Layer-1 / layer-2 engine jobs must run on Slurm **`qcpu_18i`**.
 
 ## License
 

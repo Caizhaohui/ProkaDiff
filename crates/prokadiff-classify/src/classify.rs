@@ -1,4 +1,4 @@
-use prokdiff_gd::{GdEntry, GdKind, GenomeDiff};
+use prokadiff_gd::{GdEntry, GdKind, GenomeDiff};
 
 use crate::homolog::{scan_homologs, HomologSite};
 use crate::intended::{entry_intervals, mask_intended, IntendedEdit};

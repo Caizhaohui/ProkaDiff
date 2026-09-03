@@ -1,11 +1,11 @@
-# ProkDiff 输入 / 输出契约
+# ProkaDiff 输入 / 输出契约
 
 本文是 CLI / Genome Diff / TSV 的落地契约。实现与测试以本文件为准。
 
 **引擎子命令（单样本，oracle / 对拍）：**
 
 ```text
-prokdiff evidence --ref genome.fa --fastq R1.fastq --fastq R2.fastq --threads 8 --outdir out/
+prokadiff evidence --ref genome.fa --fastq R1.fastq --fastq R2.fastq --threads 8 --outdir out/
 ```
 
 写出 `out/output.gd`。产品层分类走无子命令的入口（两株 FASTQ 必填）。
@@ -13,7 +13,7 @@ prokdiff evidence --ref genome.fa --fastq R1.fastq --fastq R2.fastq --threads 8 
 ## CLI（第一期）
 
 ```text
-prokdiff \
+prokadiff \
   --starter starter_R1.fastq.gz --starter starter_R2.fastq.gz \
   --edited  edited_R1.fastq.gz  --edited  edited_R2.fastq.gz \
   --ref     NC_000913.3.gbk \
@@ -23,7 +23,7 @@ prokdiff \
   --spacer  NNNNNNNNNNNNNNNNNNNN \
   --pam     NGG \
   --threads 8 \
-  --outdir  results/prokdiff
+  --outdir  results/prokadiff
 ```
 
 | 选项 | 必填 | 说明 |
@@ -54,7 +54,7 @@ prokdiff \
 
 掩码规则：`M_edited` 中与某一行坐标重叠且等位基因匹配（或 JC 落在 cassette 预期连接上）的条目从非预期列表去掉，改记入「目的编辑已观察到」。
 
-实现（`prokdiff-classify`）：
+实现（`prokadiff-classify`）：
 
 - `snp` / `ins`：坐标重叠且 `alt` 匹配（`alt` 为 `.` 或空则只按坐标）。SNP 的 GD `ref` 不另加校验。
 - `del` / `indel`：仅匹配 GD `DEL`，且观测大小必须等于声明的 `end - start + 1`；GD 的 `DEL` 不带 alt，因此该行的 `alt` 必须为空或 `.`（否则不掩码）。不校验 `ref` / 具体序列。
@@ -88,7 +88,7 @@ gdtools SUBTRACT edited.gd starter.gd
 
 再减去 intended（若有），与 `unintended.tsv` 的变异集合一致（允许 [parity.md](parity.md) 中列出的规范化差异）。
 
-集合差语义（`prokdiff-gd`）：匹配键为 **坐标 + GD 类型 + 等位基因**（与 `gdtools SUBTRACT` 一致的可测行为）。JC 键含双端坐标、链向与 overlap，**精确匹配**；出发株与编辑株各自调用时若 junction 坐标抖动 ±1 bp，该 JC **不会**被减去，可能以 class (3) 进入非预期列表。第一期保持与 `gdtools SUBTRACT` 对齐，不做模糊匹配；层 3 真实配对若出现此类假阳性，再在 [parity.md](parity.md) 写容差阈值。大 DEL（MC 衍生）同理：边界差 1 bp 即视为不同事件。
+集合差语义（`prokadiff-gd`）：匹配键为 **坐标 + GD 类型 + 等位基因**（与 `gdtools SUBTRACT` 一致的可测行为）。JC 键含双端坐标、链向与 overlap，**精确匹配**；出发株与编辑株各自调用时若 junction 坐标抖动 ±1 bp，该 JC **不会**被减去，可能以 class (3) 进入非预期列表。第一期保持与 `gdtools SUBTRACT` 对齐，不做模糊匹配；层 3 真实配对若出现此类假阳性，再在 [parity.md](parity.md) 写容差阈值。大 DEL（MC 衍生）同理：边界差 1 bp 即视为不同事件。
 
 ## `unintended.tsv`（产品输出）
 

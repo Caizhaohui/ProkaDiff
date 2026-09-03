@@ -35,18 +35,18 @@ if ! command -v wgsim >/dev/null 2>&1; then
   echo "error: wgsim not found. Stop layer-1; do not invent results." >&2
   exit 1
 fi
-if [[ ! -x "${ROOT}/target/release/prokdiff" ]]; then
-  echo "building release prokdiff on the compute node..."
-  cargo build --release -p prokdiff
+if [[ ! -x "${ROOT}/target/release/prokadiff" ]]; then
+  echo "building release prokadiff on the compute node..."
+  cargo build --release -p prokadiff
 fi
-PROKDIFF="${ROOT}/target/release/prokdiff"
+PROKDIFF="${ROOT}/target/release/prokadiff"
 
 bash "${ROOT}/testdata/generate.sh" synth_parent_child "${ROOT}/testdata/generated/synth_parent_child"
 GEN="${ROOT}/testdata/generated/synth_parent_child"
 JOBOUT="${ROOT}/benchmark/results/synth_parent_child_${SLURM_JOB_ID}"
 mkdir -p "${JOBOUT}"
 
-/usr/bin/time -v -o "${JOBOUT}/prokdiff.time" \
+/usr/bin/time -v -o "${JOBOUT}/prokadiff.time" \
   "${PROKDIFF}" \
     --starter "${GEN}/starter_R1.fastq" --starter "${GEN}/starter_R2.fastq" \
     --edited "${GEN}/edited_R1.fastq" --edited "${GEN}/edited_R2.fastq" \
@@ -54,8 +54,8 @@ mkdir -p "${JOBOUT}"
     --editor dsb \
     --intended "${GEN}/intended.tsv" \
     --threads "${THREADS}" \
-    --outdir "${JOBOUT}/prokdiff" \
-  | tee "${JOBOUT}/prokdiff.stdout"
+    --outdir "${JOBOUT}/prokadiff" \
+  | tee "${JOBOUT}/prokadiff.stdout"
 
 python3 - "${GEN}" "${JOBOUT}" <<'PY'
 import sys
@@ -63,7 +63,7 @@ from pathlib import Path
 
 gen = Path(sys.argv[1])
 job = Path(sys.argv[2])
-tsv = job / "prokdiff" / "unintended.tsv"
+tsv = job / "prokadiff" / "unintended.tsv"
 if not tsv.is_file():
     print("error: missing", tsv)
     sys.exit(1)

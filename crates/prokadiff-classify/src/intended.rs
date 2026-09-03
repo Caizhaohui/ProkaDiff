@@ -1,4 +1,4 @@
-use prokdiff_gd::{GdEntry, GdKind};
+use prokadiff_gd::{GdEntry, GdKind};
 
 #[derive(Debug, thiserror::Error)]
 pub enum IntendedError {

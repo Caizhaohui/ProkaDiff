@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Layer-1 synth_is_mob: ProkDiff evidence vs breseq on qcpu_18i.
+# Layer-1 synth_is_mob: ProkaDiff evidence vs breseq on qcpu_18i.
 # Do not run on a login node. Submit with:
 #   mkdir -p benchmark/logs
 #   sbatch scripts/submit_parity_synth_is_mob.sh
@@ -43,27 +43,27 @@ if (( ${#missing[@]} )); then
   exit 1
 fi
 
-echo "building release prokdiff (incremental; no-op if fresh)..."
-cargo build --release -p prokdiff
-PROKDIFF="${ROOT}/target/release/prokdiff"
+echo "building release prokadiff (incremental; no-op if fresh)..."
+cargo build --release -p prokadiff
+PROKDIFF="${ROOT}/target/release/prokadiff"
 
 bash "${ROOT}/testdata/generate.sh" synth_is_mob "${ROOT}/testdata/generated/synth_is_mob"
 GEN="${ROOT}/testdata/generated/synth_is_mob"
 JOBOUT="${ROOT}/benchmark/results/synth_is_mob_${SLURM_JOB_ID}"
-mkdir -p "${JOBOUT}/prokdiff" "${JOBOUT}/breseq"
+mkdir -p "${JOBOUT}/prokadiff" "${JOBOUT}/breseq"
 
 TIME=(/usr/bin/time -v)
 
-echo "=== ProkDiff evidence ==="
-"${TIME[@]}" -o "${JOBOUT}/prokdiff.time" \
+echo "=== ProkaDiff evidence ==="
+"${TIME[@]}" -o "${JOBOUT}/prokadiff.time" \
   "${PROKDIFF}" evidence \
     --ref "${GEN}/ref.fa" \
     --fastq "${GEN}/edited_R1.fastq" \
     --fastq "${GEN}/edited_R2.fastq" \
     --threads "${THREADS}" \
-    --outdir "${JOBOUT}/prokdiff" \
+    --outdir "${JOBOUT}/prokadiff" \
     --keep-bam \
-  | tee "${JOBOUT}/prokdiff.stdout"
+  | tee "${JOBOUT}/prokadiff.stdout"
 
 echo "=== breseq oracle ==="
 "${TIME[@]}" -o "${JOBOUT}/breseq.time" \
@@ -73,10 +73,10 @@ echo "=== breseq oracle ==="
     "${GEN}/edited_R2.fastq" \
   | tee "${JOBOUT}/breseq.stdout"
 
-RUST_GD="${JOBOUT}/prokdiff/output.gd"
+RUST_GD="${JOBOUT}/prokadiff/output.gd"
 BRESEQ_GD="${JOBOUT}/breseq/output/output.gd"
 if [[ ! -f "${RUST_GD}" ]]; then
-  echo "error: ProkDiff did not write ${RUST_GD}" >&2
+  echo "error: ProkaDiff did not write ${RUST_GD}" >&2
   exit 1
 fi
 if [[ ! -f "${BRESEQ_GD}" ]]; then
@@ -97,7 +97,7 @@ python3 "${ROOT}/scripts/layer2_gd_compare.py" \
   --workload synth_is_mob \
   --csv "${ROOT}/benchmark/results/synth_is_mob.csv" \
   --threads "${THREADS}" \
-  --prokdiff-gd "${RUST_GD}" \
+  --prokadiff-gd "${RUST_GD}" \
   --breseq-gd "${BRESEQ_GD}" \
   || true
 

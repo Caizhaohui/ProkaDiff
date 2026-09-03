@@ -7,15 +7,15 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
-use prokdiff_classify::{
+use prokadiff_classify::{
     classify, parse_intended_path, ClassifyOptions, EditorKind, RefContig, DEFAULT_MAX_MISMATCHES,
     DEFAULT_NEAR_DISTANCE,
 };
-use prokdiff_evidence::align::FastqInput;
-use prokdiff_evidence::engine::{run_sample, EngineOptions};
-use prokdiff_evidence::fasta::{read_reference, write_combined_fasta};
-use prokdiff_gd::GenomeDiff;
-use prokdiff_report::{write_summary, write_unintended_tsv};
+use prokadiff_evidence::align::FastqInput;
+use prokadiff_evidence::engine::{run_sample, EngineOptions};
+use prokadiff_evidence::fasta::{read_reference, write_combined_fasta};
+use prokadiff_gd::GenomeDiff;
+use prokadiff_report::{write_summary, write_unintended_tsv};
 
 use cli::{
     validate_evidence, validate_product, Cli, CliError, Commands, Editor, EvidenceArgs, ProductJob,
@@ -34,9 +34,9 @@ fn main() -> ExitCode {
 
 enum RunError {
     Cli(CliError),
-    Evidence(prokdiff_evidence::EvidenceError),
-    Gd(prokdiff_gd::GdError),
-    Intended(prokdiff_classify::IntendedError),
+    Evidence(prokadiff_evidence::EvidenceError),
+    Gd(prokadiff_gd::GdError),
+    Intended(prokadiff_classify::IntendedError),
     Io(std::io::Error),
 }
 
@@ -46,20 +46,20 @@ impl From<CliError> for RunError {
     }
 }
 
-impl From<prokdiff_evidence::EvidenceError> for RunError {
-    fn from(e: prokdiff_evidence::EvidenceError) -> Self {
+impl From<prokadiff_evidence::EvidenceError> for RunError {
+    fn from(e: prokadiff_evidence::EvidenceError) -> Self {
         Self::Evidence(e)
     }
 }
 
-impl From<prokdiff_gd::GdError> for RunError {
-    fn from(e: prokdiff_gd::GdError) -> Self {
+impl From<prokadiff_gd::GdError> for RunError {
+    fn from(e: prokadiff_gd::GdError) -> Self {
         Self::Gd(e)
     }
 }
 
-impl From<prokdiff_classify::IntendedError> for RunError {
-    fn from(e: prokdiff_classify::IntendedError) -> Self {
+impl From<prokadiff_classify::IntendedError> for RunError {
+    fn from(e: prokadiff_classify::IntendedError) -> Self {
         Self::Intended(e)
     }
 }

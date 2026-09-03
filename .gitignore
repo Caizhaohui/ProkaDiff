@@ -45,6 +45,7 @@ __pycache__/
 # IDE / OS
 .idea/
 .vscode/
+.omo/
 *.swp
 .DS_Store
 

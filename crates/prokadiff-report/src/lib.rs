@@ -6,8 +6,8 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use prokdiff_classify::{ClassifiedMutation, ClassifyResult, MutationClass, RefContig};
-use prokdiff_gd::{GdEntry, GdKind};
+use prokadiff_classify::{ClassifiedMutation, ClassifyResult, MutationClass, RefContig};
+use prokadiff_gd::{GdEntry, GdKind};
 
 /// Write classified post-subtract mutations. `hypothesis` column omitted when `include_hypothesis` is false.
 ///
@@ -189,8 +189,8 @@ fn side2(e: &GdEntry) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prokdiff_classify::{ClassifiedMutation, MutationClass, RefContig};
-    use prokdiff_gd::GdEntry;
+    use prokadiff_classify::{ClassifiedMutation, MutationClass, RefContig};
+    use prokadiff_gd::GdEntry;
 
     const TSV_HEAD_NO_HYP: &str = "seq_id\tposition\tend\tgd_type\tref\talt\tclass\teditor\tpam_profile\tofftarget_mismatch\tdistance_to_site\tside2_seq_id\tside2_position";
     const TSV_HEAD_WITH_HYP: &str = "seq_id\tposition\tend\tgd_type\tref\talt\tclass\teditor\tpam_profile\tofftarget_mismatch\tdistance_to_site\tside2_seq_id\tside2_position\thypothesis";

@@ -35,11 +35,11 @@ if ! command -v wgsim >/dev/null 2>&1; then
   echo "error: wgsim not found. Stop layer-1; do not invent results." >&2
   exit 1
 fi
-if [[ ! -x "${ROOT}/target/release/prokdiff" ]]; then
-  echo "building release prokdiff on the compute node..."
-  cargo build --release -p prokdiff
+if [[ ! -x "${ROOT}/target/release/prokadiff" ]]; then
+  echo "building release prokadiff on the compute node..."
+  cargo build --release -p prokadiff
 fi
-PROKDIFF="${ROOT}/target/release/prokdiff"
+PROKDIFF="${ROOT}/target/release/prokadiff"
 
 bash "${ROOT}/testdata/generate.sh" synth_cas9_near "${ROOT}/testdata/generated/synth_cas9_near"
 GEN="${ROOT}/testdata/generated/synth_cas9_near"

@@ -222,3 +222,184 @@ ProkDiff JC=0，故 ±5 bp 规范化帮不上。breseq JC 多为 unique 侧 × �
 Clonal 读长 **36 bp**。整 BAM 实测：mapped **7,195,511**；含任意 S **625,062**；S 长度 1–5: **582,007**，6–13: **43,055**，**≥14: 0**。H≥14 / `SA:Z` / supplementary: **0**。27 条 oracle JC 窗口均有 mapped 覆盖与短 S（maxS 峰值 **12**），**可放置 S≥14 = 0**。引擎 `MIN_CLIP_FOR_JC=14` 因此输入为空。窗口 MAPQ 36–44（「低 MAPQ 滤掉长 clip」为假）。本样本 breseq JC 来自二次比对候选接合点（`04_candidate_junction_alignment/*.sam`），不是主 BAM 长 softclip。synth_is_mob 能报是因为那份 BAM 确实有 S≥14。
 
 下一步 JC 工作是发表方法中的 **candidate-junction 二次比对**，不是再为折叠重提 Clonal。详见 [docs/parity.md](../../docs/parity.md) 第一期 JC / MOB。
+
+# 2026-09-02: 作业 2372539（candidate-junction 二次比对；9/1 15:21 启动跨夜，无 GD 产出后被取消）
+
+**本作业未完成 ProkDiff evidence，没有 leftover 可数。** 终态 **CANCELLED**（`sacct`：`CANCELLED by 105002647`，即提交用户 `caizhh`；`.batch` ExitCode **0:15** = SIGTERM）。无 `output.gd`、无 `work/jc/`、`prokdiff.time` 空文件、`clonal.csv` 无 2372539 行。下列类型表 / 四问全部记为**缺失**，不编造 leftover、不把 sacct 数字写成 `/usr/bin/time` 的 wall/RSS、不作对拍或加速比宣传。
+
+## 作业元数据（2372539）
+
+| 项 | 值 |
+| --- | --- |
+| Slurm 作业 | **2372539**（`scripts/submit_parity_clonal.sh`，`pd_clonal`） |
+| 分区 / 节点 / 线程 / 申请内存 | `qcpu_18i` / `bnode6` / 8 / 60G |
+| TimeLimit | `1-00:00:00`（计划 EndTime 2026-09-02T15:21:37；取消时距墙钟上限约 4h48m） |
+| Start / End / Elapsed | 2026-09-01T15:21:37 → 2026-09-02T10:33:26 / **19:11:49**（跨夜） |
+| State / ExitCode | 作业：`CANCELLED by 105002647` **0:0**；`.batch`：`CANCELLED` **0:15** |
+| `.batch` MaxRSS / MaxVMSize（sacct） | **8388460K** / 10776268K（作业步记账，**不是** `prokdiff.time`） |
+| Oracle / 比对器 | 未跑到 breseq 段；日志未写出 oracle 版本行。上一轮同脚本钉死 breseq 0.40.2 + bowtie2 2.5.4，本作业**未验证** |
+| ProkDiff 二进制 | `target/release/prokdiff` mtime **2026-09-01 15:20:52**（早于作业启动 15:21:37 约 45s） |
+| 源码相对 `1b4f41c` | HEAD=`1b4f41c`（2026-09-01 15:08:20）；二次比对在**未提交 working tree**：`engine.rs` / `fasta.rs` / `lib.rs` / `pileup.rs` 已改，`jc_seq.rs` 未跟踪。源码 mtime 均早于二进制（`engine.rs` 15:19:30 最晚），作业内 `cargo build --release -p prokdiff` 日志 `Finished ... in 2.17s`（增量 no-op） |
+
+同作业 **`/usr/bin/time` 文件**：
+
+| 工具 | wall_s | peak RSS (KB) |
+| --- | --- | --- |
+| ProkDiff（`prokdiff.time`） | **缺失**（0 字节空文件；进程在 time 收尾前被 SIGTERM） | **缺失** |
+| breseq（`breseq.time`） | **缺失**（目录空，未启动） | **缺失** |
+
+取消前只读 `sstat`（2026-09-02 10:04 左右）：`.batch` AveCPU 与 Elapsed 接近（约 18h37m vs 18h43m）、AveRSS≈MaxRSS≈8382316K，说明 evidence 段**单核持续占用**而非空转；仍无新文件写出。
+
+## 日志与产出（实测路径，无 GD）
+
+日志 `benchmark/logs/pd_clonal-2372539.out` mtime 停在 2026-09-01 15:21:40，末行：
+
+- `building release prokdiff (incremental; no-op if fresh)...`
+- `=== ProkDiff evidence (clonal) ===`
+
+`.err`：`Finished release profile ... in 2.17s`；取消时 `slurmstepd: error: *** JOB 2372539 ON bnode6 CANCELLED AT 2026-09-02T10:33:26 ***`。
+
+`benchmark/results/clonal_2372539/`：
+
+- 有：`prokdiff/aligned.bam`（mtime 2026-09-01 15:23:41，278813785 B）、`prokdiff/work/aligned.sam` + bt2 索引 / `reference.fa`
+- 无：`prokdiff/output.gd`、`prokdiff/work/jc/`、任何 `*.gd` / `subtract_*.gd` / `parity_notes.txt`
+- `prokdiff.stdout` / `prokdiff.time` 均为 0 字节；`breseq/` 空目录
+- `benchmark/results/clonal.csv`：**无 2372539 双行**（文件仍止于 2372151）
+
+与启动前观察一致：主比对 BAM 写出后卡在 evidence（先前诊断为 43k 短 softclip 的全基因组 `place_softclip`）；二次比对未留下 `work/jc/`，无法用本作业检验 candidate-junction 路径。
+
+## 类型表（2372539）
+
+方向 `over` = rust−breseq；`under` = breseq−rust。红线 SNP/INS/DEL/MOB/AMP/CON；JC 单独；UN/RA/MC 忽略。
+
+| 方向 | SNP | INS | DEL | MOB | JC unmatched |
+| --- | --- | --- | --- | --- | --- |
+| over | **缺失** | **缺失** | **缺失** | **缺失** | **缺失** |
+| under | **缺失** | **缺失** | **缺失** | **缺失** | **缺失** |
+
+csv：`over_red` / `under_red` / `jc_matched_tol` / `over_jc_unmatched` / `under_jc_unmatched` / `under_jc_oracle_rejected` 全部**缺失**（无比较脚本输出）。over SNP 与 under INS/DEL/MOB 坐标清单**无法列出**。
+
+## 验收四问的回答
+
+- **(a) over DEL 是否仍 0？** **缺失。** 无 `subtract_rust_minus_breseq.gd` / `output.gd`，不能回答 2372151 的 over DEL=0 是否保持。
+- **(b) `jc_matched_tol` / ProkDiff JC 行数？** **缺失。** 无 `output.gd`，JC 行数未知；csv 无 `jc_matched_tol`。
+- **(c) `over_jc_unmatched`？** **缺失。**
+- **(d) 5 SNP / 3 INS / 3 DEL / 5 MOB 是否稳定？** **缺失。** 下列坐标均未在本作业文件中复核：over SNP `2031736 G`、`2054876 G`、`2054924 A`、`3289962 C`、`3894997 T`；under MOB `16972 IS150 -1 3`、`1733647 IS150 -1 3`、`1821525 IS150 -1 3`、`3015771 IS150 -1 4`、`4524522 IS186 1 6`；under INS `475292 G`、`3875632 T`、`3893551 G`；under DEL `3289962` 16bp、`3894997` 6934 IS150、`4126706` size 1。
+
+## 结论（2372539）
+
+- candidate-junction 二次比对（未提交树，相对 `1b4f41c`）已编进作业启动前的 release 二进制，但 Clonal 在写出 `aligned.bam` 后 **19h+** 未产出 JC/GD，随后被取消。
+- **不要**把本作业写成 leftover 改善或恶化；没有计数。
+- 本文件只记录终态与缺失项；不重提作业、不改引擎。
+
+# 2026-09-02: 作业 2387259（放置 S≥12 + clip/未比对二次比对）
+
+相对 HEAD `1b4f41c` 的未提交引擎（放置 S≥12、clip 去重、二次比对只送 softclip+未比对）在作业内 `cargo build --release -p prokdiff` 编进本轮二进制。二次比对**跑完**（与 2372539 的 19h 无 GD 取消不同），但 `prokdiff/output.gd` 与 2372151 **md5 完全相同**（`0d48c2eb9e6ae43453e990c72a0c06ab`）：GD 仍无 JC 行。本节只记实测 leftover / wall / RSS，**不声称 parity，不作加速比**。
+
+## 作业元数据（2387259）
+
+| 项 | 值 |
+| --- | --- |
+| Slurm 作业 | **2387259**（`scripts/submit_parity_clonal.sh`，`pd_clonal`），State=FAILED 但 ExitCode=**2:0**（红线 leftover 非空的告警退出；csv 双行齐全，`.gd` / subtract 完整，按成功分析） |
+| 分区 / 节点 / 线程 / 申请内存 | `qcpu_18i` / `bnode12` / 8 / 60G |
+| TimeLimit | `1-00:00:00` |
+| Start / End / Elapsed | 2026-09-02T10:47:03 → 2026-09-02T11:35:16 / **00:48:13**（ElapsedRaw 2893） |
+| State / ExitCode | 作业与 `.batch`：`FAILED` **2:0**；`.extern`：`COMPLETED` **0:0** |
+| `.batch` MaxRSS / MaxVMSize（sacct，作业步记账） | **2988608K** / 3614960K |
+| Oracle / 比对器 | breseq **0.40.2**（GD 头 `#=PROGRAM breseq 0.40.2` 实测），bowtie2 2.5.4 |
+| ProkDiff 二进制 | `target/release/prokdiff` mtime **2026-09-02 10:47:27**（作业启动 10:47:03 之后；`.err` `Finished release profile ... in 23.20s`，**不是** no-op） |
+| 源码相对 `1b4f41c` | HEAD=`1b4f41c`（2026-09-01 15:08:20）；未提交：`align.rs` / `engine.rs` / `fasta.rs` / `lib.rs` / `pileup.rs`（已改）+ `jc_seq.rs`（未跟踪） |
+
+sacct `-P`（实测全行，字段以本集群 `sacct --helpformat` 可用者为准）：
+
+```
+2387259|pd_clonal|qcpu_18i|FAILED|2:0|00:48:13|2893|2026-09-02T10:47:03|2026-09-02T11:35:16|2026-09-02T10:47:03|||||8|8|1|8|60G|bnode12|1-00:00:00|06:25:44|04:06:01|03:56:49|09:11.693|||caizhh|/hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkDiff
+2387259.batch|batch||FAILED|2:0|00:48:13|2893|2026-09-02T10:47:03|2026-09-02T11:35:16|2026-09-02T10:47:03|2988608K|3614960K|2988608K|00:18:33|8|8|1|8||bnode12||06:25:44|04:06:01|03:56:49|09:11.692|37380.14M|27162.01M||
+2387259.extern|extern||COMPLETED|0:0|00:48:13|2893|2026-09-02T10:47:03|2026-09-02T11:35:16|2026-09-02T10:47:03|1920K|5584K|1920K|00:00:00|8|8|1|8||bnode12||06:25:44|00:00.001|00:00:00|00:00.001|0.01M|0.00M||
+```
+
+同作业实测（`/usr/bin/time` → `clonal.csv` 2387259 双行；同节点、单次；**不作加速比**）：
+
+| 工具 | wall_s | peak RSS (KB) |
+| --- | --- | --- |
+| ProkDiff | **180.04** | **2985644** |
+| breseq 0.40.2 | 2688.23 | 1857012 |
+
+对照（只列先前实测，不比快慢）：2372151 无二次比对 ProkDiff wall_s=141.52、RSS=2974944；2372539 未优化二次比对跑 **19:11:49** 后取消、无 `prokdiff.time`。本轮 ProkDiff wall 为 **180.04 s**。
+
+## 日志与二次比对产物（实测）
+
+`.err` 阶段行（均有）：
+
+- `prokdiff: primary alignment`
+- `prokdiff: pileup + junction seeds (place S>=12)`
+- `prokdiff: candidate-junction second pass`
+- `prokdiff: second-pass 946 junction constructs; filtering clip/unmapped reads`
+- `prokdiff: second-pass 568714 FASTQ records after clip/unmapped filter`
+- `wrote .../clonal_2387259/prokdiff/output.gd`
+
+`work/jc/` **存在**：`junctions.fa` 946 条 `>` 头（75570 B）；`reads/pass_0.fastq` 与 `pass_1.fastq` 各 1137428 行（= 284357 条/文件 ×2 = 568714，与日志一致）；`aligned.sam` 1249 条比对行（全部 mapped，其中 MAPQ=0 为 343）；`aligned.bam` 65337 B。
+
+## 类型表（2387259，红线类型；UN/RA/MC 证据行不计）
+
+方向 `over` = rust−breseq（多报）；`under` = breseq−rust（漏报）。
+
+| 方向 | SNP | INS | DEL | MOB | JC unmatched |
+| --- | --- | --- | --- | --- | --- |
+| over | 5 | 0 | **0** | 0 | 0 |
+| under | 0 | 3 | 3 | 5 | 27（其中 9 条 oracle 自带 `reject=`） |
+
+- subtract 文件实测计数：`subtract_rust_minus_breseq.gd` = SNP 5 + MC 134（证据行）；无 DEL/INS/MOB/JC。`subtract_breseq_minus_rust.gd` = INS 3 + DEL 3 + MOB 5 + **JC 27**（另 RA 45 / UN 789 / MC 4 证据行不计）。
+- ProkDiff `output.gd`：SNP **33**、MC 134、**JC/INS/DEL/MOB 全 0**（与 2372151 逐字节相同）。
+- csv（2387259，vs 同机 breseq）：`over_red=5`、`under_red=11`、`over_jc_unmatched=0`、`under_jc_unmatched=27`、`under_jc_oracle_rejected=9`、`jc_matched_tol=0`。vs 官方 `Clonal_Output`：`over_red=5`、`under_red=11`、`under_jc_unmatched=26`、`oracle_rejected=8`、`jc_matched_tol=0`。
+
+## 验收四问的回答
+
+- **(a) over DEL 是否仍 0？** **是。** `subtract_rust_minus_breseq.gd` 无 DEL；`over_red`=5 全为 SNP。134 条 MC 仅以证据行存在，未提升为 DEL。
+- **(b) 27 条 oracle JC 中几条 ±5 匹配？** **0 条**（`jc_matched_tol=0`）。ProkDiff `output.gd` **JC 行数 = 0**。同机 breseq 27 条 JC 全部 unmatched；其中 9 条带 `reject=`（`COVERAGE_EVENNESS_SKEW,FREQUENCY_CUTOFF` ×5 + `COVERAGE_EVENNESS_SKEW` ×4）。
+- **(c) `over_jc_unmatched` / extra JC？** **0**——ProkDiff 未多发任何 JC。
+- **(d) 5 SNP / 3 INS / 3 DEL / 5 MOB 是否稳定？** **是，与 2372151 / 基线逐条一致。** over SNP：`2031736 G`、`2054876 G`、`2054924 A`、`3289962 C`、`3894997 T`。under MOB：`16972 IS150 -1 3`、`1733647 IS150 -1 3`、`1821525 IS150 -1 3`、`3015771 IS150 -1 4`、`4524522 IS186 1 6`。under INS：`475292 G`、`3875632 T`、`3893551 G`。under DEL：`3289962` 16 bp、`3894997` 6934 `mediated=IS150`、`4126706` size 1。
+
+## 结论（2387259）
+
+- 优化后的二次比对在 Clonal 上**跑完**（pileup / second-pass 日志齐全，`work/jc/` 有 946 constructs），ProkDiff wall **180.04 s**（对照：无二次比对约 141 s；未优化 2372539 为 19h 取消）。不作加速比。
+- leftover 与 2372151 **同集合**：over DEL 仍 0；JC 匹配仍 0/27；5 MOB 仍全在 under；`output.gd` md5 未变。二次比对 SAM 有比对行，但**没有**变成 GD 里的 JC。
+- **不要**把本轮写成 JC/MOB parity 或 leftover 改善。
+
+# 2026-09-03: 作业 2408541（Stage 2 `-L 9` + 二次比对 `-L 10`；PLACE=6 聚类挂起后取消）
+
+先跑层 1 `synth_is_mob` **2408540**（`qcpu_18i` / `bnode1`，Elapsed **00:00:49**，Exit **0:0**）。csv：`over_red=0` `under_red=0` `jc_matched_tol=2`。`/usr/bin/time`：ProkDiff **2.98 s / 110204 KB**，breseq 0.40.2 **17.74 s / 97692 KB**。Stage 2 已执行（`.err`：`primary stage-2 unmatched PE (-L 9)`）。**然后**才提交本 Clonal；两次 `cargo build --release` 未并行。
+
+Clonal 在 `prokdiff: candidate-junction second pass` 之后**没有**写出 `work/jc/` 或 `output.gd`（与 2408357 同形态）。对照：健康路径 2387259 在该日志后立刻有 `second-pass 946 junction constructs`，ProkDiff wall **180 s**。本作业在该日志后 CPU 仍涨（AveCPU 11 min）但 RSS 钉在 **8076140K**、无 constructs，按「墙钟过长即失败」于 **00:12:44** `scancel`。**无 leftover 计数；不得写成 parity / 加速比。**
+
+## 作业元数据（2408541）
+
+| 项 | 值 |
+| --- | --- |
+| Slurm 作业 | **2408541**（`scripts/submit_parity_clonal.sh`，`pd_clonal`） |
+| 分区 / 节点 / 线程 / 申请内存 | `qcpu_18i` / `bnode1` / 8 / 60G |
+| Start / End / Elapsed | 2026-09-03T11:02:54 → 2026-09-03T11:15:38 / **00:12:44** |
+| State / ExitCode | 作业：`CANCELLED by 105002647` **0:0**；`.batch`：`CANCELLED` **0:15** |
+| `.batch` MaxRSS | **8076140K**（sstat 同时 MaxVMSize 8773312K） |
+| Oracle / 比对器 | 未跑到 breseq 段。上一成功同脚本钉死 breseq 0.40.2 + bowtie2 2.5.4，本作业**未验证** |
+| ProkDiff `output.gd` / `work/jc/` | **不存在** |
+| 主 BAM | `aligned.bam` **269M**（11:05 已写出） |
+| Stage 2 产物 | `unconc.1.fastq` / `unconc.2.fastq` 各 32M；`stage2_pe.sam` 21M（Stage 2 **有**未比对读段被超敏比对） |
+
+`.err` 停在：
+
+- `prokdiff: primary alignment`
+- `prokdiff: primary stage-2 unmatched PE (-L 9)`
+- `prokdiff: pileup + junction seeds (place S>=6)`
+- `prokdiff: candidate-junction second pass`
+- （无 `second-pass N junction constructs`）
+
+## 验收四问（2408541）
+
+- **(a–d)** 全部**缺失**：无 GD、无 subtract、无 csv。不得沿用 2387259 的 5 SNP / 0 JC 数字冒充本作业。
+
+## 结论（2408541）
+
+- Stage 2 与二次比对 `-L 10` **未得到 Clonal 检验**：进程在写出接合 FASTA 之前挂在 PLACE=6 聚类（RSS ~8 GB，健康跑 ~3 GB）。
+- 墙钟 **12 min 无 GD** 已超过 2387259 全流程 ProkDiff **180 s**，按失败处理并取消。本墙钟**不得**当正式加速比。
+- 下一刀是聚类/放置上限，不是再盲提 Clonal。

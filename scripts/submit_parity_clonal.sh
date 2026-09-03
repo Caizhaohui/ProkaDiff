@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Layer-2 Clonal_Sample: ProkDiff evidence vs official Clonal_Output.gd AND same-node breseq.
+# Layer-2 Clonal_Sample: ProkaDiff evidence vs official Clonal_Output.gd AND same-node breseq.
 # Engine single-sample only (not product dual-sample). Submit with:
 #   mkdir -p benchmark/logs testdata/layer2
 #   sbatch scripts/submit_parity_clonal.sh
@@ -120,12 +120,12 @@ echo "reference: ${REF}"
 echo "reads: ${FQS[*]}"
 echo "oracle gd: ${ORACLE_GD}"
 
-echo "building release prokdiff (incremental; no-op if fresh)..."
-cargo build --release -p prokdiff
-PROKDIFF="${ROOT}/target/release/prokdiff"
+echo "building release prokadiff (incremental; no-op if fresh)..."
+cargo build --release -p prokadiff
+PROKDIFF="${ROOT}/target/release/prokadiff"
 
 JOBOUT="${ROOT}/benchmark/results/clonal_${SLURM_JOB_ID}"
-mkdir -p "${JOBOUT}/prokdiff" "${JOBOUT}/breseq"
+mkdir -p "${JOBOUT}/prokadiff" "${JOBOUT}/breseq"
 TIME=(/usr/bin/time -v)
 
 FQ_ARGS=()
@@ -133,15 +133,15 @@ for f in "${FQS[@]}"; do
   FQ_ARGS+=(--fastq "${f}")
 done
 
-echo "=== ProkDiff evidence (clonal) ==="
-"${TIME[@]}" -o "${JOBOUT}/prokdiff.time" \
+echo "=== ProkaDiff evidence (clonal) ==="
+"${TIME[@]}" -o "${JOBOUT}/prokadiff.time" \
   "${PROKDIFF}" evidence \
     --ref "${REF}" \
     "${FQ_ARGS[@]}" \
     --threads "${THREADS}" \
-    --outdir "${JOBOUT}/prokdiff" \
+    --outdir "${JOBOUT}/prokadiff" \
     --keep-bam \
-  | tee "${JOBOUT}/prokdiff.stdout"
+  | tee "${JOBOUT}/prokadiff.stdout"
 
 echo "=== breseq oracle (same node; env is breseq 0.40.2) ==="
 "${TIME[@]}" -o "${JOBOUT}/breseq.time" \
@@ -150,10 +150,10 @@ echo "=== breseq oracle (same node; env is breseq 0.40.2) ==="
     "${FQS[@]}" \
   | tee "${JOBOUT}/breseq.stdout"
 
-RUST_GD="${JOBOUT}/prokdiff/output.gd"
+RUST_GD="${JOBOUT}/prokadiff/output.gd"
 BRESEQ_GD="${JOBOUT}/breseq/output/output.gd"
 if [[ ! -f "${RUST_GD}" ]]; then
-  echo "error: ProkDiff did not write ${RUST_GD}" >&2
+  echo "error: ProkaDiff did not write ${RUST_GD}" >&2
   exit 1
 fi
 if [[ ! -f "${BRESEQ_GD}" ]]; then
@@ -177,7 +177,7 @@ python3 "${ROOT}/scripts/layer2_gd_compare.py" \
   --jobout "${JOBOUT}" \
   --workload clonal \
   --threads "${THREADS}" \
-  --prokdiff-gd "${RUST_GD}" \
+  --prokadiff-gd "${RUST_GD}" \
   --breseq-gd "${BRESEQ_GD}" \
   --oracle-gd "${ORACLE_GD}" \
   --csv "${ROOT}/benchmark/results/clonal.csv" \

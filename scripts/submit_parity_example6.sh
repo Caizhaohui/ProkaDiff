@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Layer-2 Example 6 (A. baylyi cassette / JC): ProkDiff evidence vs official workshop
-# output.gd AND same-node breseq. Mode = Example 6b (both refs as -r; ProkDiff has no
+# Layer-2 Example 6 (A. baylyi cassette / JC): ProkaDiff evidence vs official workshop
+# output.gd AND same-node breseq. Mode = Example 6b (both refs as -r; ProkaDiff has no
 # --junction-only-reference). Submit with:
 #   mkdir -p benchmark/logs testdata/layer2
 #   sbatch scripts/submit_parity_example6.sh
@@ -160,7 +160,7 @@ if [[ ! -s "${R1}" || ! -s "${R2}" ]]; then
   exit 1
 fi
 
-# GFF3 has ##FASTA (seq id ADP1-WT). ProkDiff evidence reads FASTA/GBK, not GFF3.
+# GFF3 has ##FASTA (seq id ADP1-WT). ProkaDiff evidence reads FASTA/GBK, not GFF3.
 python3 - "${DATA}/Acinetobacter-baylyi-ADP1-WT.gff3" "${DATA}/ADP1-WT.fa" <<'PY'
 import sys
 from pathlib import Path
@@ -169,7 +169,7 @@ text = gff.read_text()
 marker = "##FASTA"
 idx = text.find(marker)
 if idx < 0:
-    raise SystemExit(f"error: {gff} has no ##FASTA; cannot build ProkDiff reference. Do not invent results.")
+    raise SystemExit(f"error: {gff} has no ##FASTA; cannot build ProkaDiff reference. Do not invent results.")
 dest.write_text(text[idx + len(marker) :].lstrip())
 print(f"wrote {dest}")
 PY
@@ -200,28 +200,28 @@ dest.write_text(">" + name + "\n" + "\n".join(chunks) + "\n")
 print(f"wrote {dest} name={name} len={len(seq)}")
 PY
 
-echo "building release prokdiff (incremental; no-op if fresh)..."
-cargo build --release -p prokdiff
-PROKDIFF="${ROOT}/target/release/prokdiff"
+echo "building release prokadiff (incremental; no-op if fresh)..."
+cargo build --release -p prokadiff
+PROKDIFF="${ROOT}/target/release/prokadiff"
 
 JOBOUT="${ROOT}/benchmark/results/example6_${SLURM_JOB_ID}"
-mkdir -p "${JOBOUT}/prokdiff" "${JOBOUT}/breseq"
+mkdir -p "${JOBOUT}/prokadiff" "${JOBOUT}/breseq"
 TIME=(/usr/bin/time -v)
 ORACLE_GD="${DATA}/official_example6b.gd"
 GFF="${DATA}/Acinetobacter-baylyi-ADP1-WT.gff3"
 CAS_GBK="${DATA}/pBTK622_tdk-kanR_cassette_for_Golden_Transformation.gbk"
 
-echo "=== ProkDiff evidence (example6b: both refs) ==="
-"${TIME[@]}" -o "${JOBOUT}/prokdiff.time" \
+echo "=== ProkaDiff evidence (example6b: both refs) ==="
+"${TIME[@]}" -o "${JOBOUT}/prokadiff.time" \
   "${PROKDIFF}" evidence \
     --ref "${DATA}/ADP1-WT.fa" \
     --ref "${DATA}/cassette.fa" \
     --fastq "${R1}" \
     --fastq "${R2}" \
     --threads "${THREADS}" \
-    --outdir "${JOBOUT}/prokdiff" \
+    --outdir "${JOBOUT}/prokadiff" \
     --keep-bam \
-  | tee "${JOBOUT}/prokdiff.stdout"
+  | tee "${JOBOUT}/prokadiff.stdout"
 
 echo "=== breseq oracle example 6b (same node; env is breseq 0.40.2) ==="
 "${TIME[@]}" -o "${JOBOUT}/breseq.time" \
@@ -232,10 +232,10 @@ echo "=== breseq oracle example 6b (same node; env is breseq 0.40.2) ==="
     "${R2}" \
   | tee "${JOBOUT}/breseq.stdout"
 
-RUST_GD="${JOBOUT}/prokdiff/output.gd"
+RUST_GD="${JOBOUT}/prokadiff/output.gd"
 BRESEQ_GD="${JOBOUT}/breseq/output/output.gd"
 if [[ ! -f "${RUST_GD}" ]]; then
-  echo "error: ProkDiff did not write ${RUST_GD}" >&2
+  echo "error: ProkaDiff did not write ${RUST_GD}" >&2
   exit 1
 fi
 if [[ ! -f "${BRESEQ_GD}" ]]; then
@@ -259,7 +259,7 @@ python3 "${ROOT}/scripts/layer2_gd_compare.py" \
   --jobout "${JOBOUT}" \
   --workload example6 \
   --threads "${THREADS}" \
-  --prokdiff-gd "${RUST_GD}" \
+  --prokadiff-gd "${RUST_GD}" \
   --breseq-gd "${BRESEQ_GD}" \
   --oracle-gd "${ORACLE_GD}" \
   --csv "${ROOT}/benchmark/results/example6.csv" \

@@ -29,7 +29,7 @@ if [[ -f "${CONDA_ENV}/bin/activate" ]]; then
 fi
 export PATH="${CONDA_ENV}/bin:${PATH:-}"
 
-BAM="${1:-${ROOT}/benchmark/results/clonal_2372151/prokdiff/aligned.bam}"
+BAM="${1:-${ROOT}/benchmark/results/clonal_2372151/prokadiff/aligned.bam}"
 GD="${2:-${ROOT}/benchmark/results/clonal_2372151/breseq/output/output.gd}"
 LABEL="$(basename "$(dirname "$(dirname "${BAM}")")")/$(basename "$(dirname "${BAM}")")"
 

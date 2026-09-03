@@ -1,18 +1,18 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/prokdiff",
-    "crates/prokdiff-gd",
-    "crates/prokdiff-evidence",
-    "crates/prokdiff-classify",
-    "crates/prokdiff-report",
+    "crates/prokadiff",
+    "crates/prokadiff-gd",
+    "crates/prokadiff-evidence",
+    "crates/prokadiff-classify",
+    "crates/prokadiff-report",
 ]
 default-members = [
-    "crates/prokdiff",
-    "crates/prokdiff-gd",
-    "crates/prokdiff-evidence",
-    "crates/prokdiff-classify",
-    "crates/prokdiff-report",
+    "crates/prokadiff",
+    "crates/prokadiff-gd",
+    "crates/prokadiff-evidence",
+    "crates/prokadiff-classify",
+    "crates/prokadiff-report",
 ]
 
 [workspace.package]
@@ -20,16 +20,16 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
 license = "MIT"
-repository = "https://github.com/Caizhaohui/ProkDiff"
+repository = "https://github.com/Caizhaohui/ProkaDiff"
 authors = ["Caizhaohui"]
 description = "Prokaryotic genome diff for gene-editing QC — starter vs edited WGS"
 readme = "README.md"
 
 [workspace.dependencies]
-prokdiff-gd = { path = "crates/prokdiff-gd", version = "0.1.0" }
-prokdiff-evidence = { path = "crates/prokdiff-evidence", version = "0.1.0" }
-prokdiff-classify = { path = "crates/prokdiff-classify", version = "0.1.0" }
-prokdiff-report = { path = "crates/prokdiff-report", version = "0.1.0" }
+prokadiff-gd = { path = "crates/prokadiff-gd", version = "0.1.0" }
+prokadiff-evidence = { path = "crates/prokadiff-evidence", version = "0.1.0" }
+prokadiff-classify = { path = "crates/prokadiff-classify", version = "0.1.0" }
+prokadiff-report = { path = "crates/prokadiff-report", version = "0.1.0" }
 # clap: CLI parsing for the prokdiff binary.
 clap = { version = "4.5", features = ["derive"] }
 thiserror = "2.0"

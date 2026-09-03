@@ -129,6 +129,14 @@ pub fn write_combined_fasta(paths: &[impl AsRef<Path>], dest: &Path) -> Result<(
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    write_records(&recs, dest)
+}
+
+/// Write FASTA records (Bowtie2 index input).
+pub fn write_records(recs: &[FastaRecord], dest: &Path) -> Result<()> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let mut out = File::create(dest)?;
     for rec in recs {
         writeln!(out, ">{}", rec.name)?;

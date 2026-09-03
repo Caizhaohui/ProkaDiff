@@ -1,14 +1,14 @@
 [package]
-name = "prokdiff-report"
+name = "prokadiff-classify"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "unintended.tsv and run summary writers"
+description = "Starter-strain subtract, intended-edit mask, three-class labels"
 readme.workspace = true
 
 [dependencies]
-prokdiff-gd = { workspace = true }
-prokdiff-classify = { workspace = true }
+prokadiff-gd = { workspace = true }
+thiserror = { workspace = true }

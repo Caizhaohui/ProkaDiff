@@ -12,7 +12,7 @@ pub use intended::{
     mask_intended, parse_intended, parse_intended_path, IntendedEdit, IntendedError,
 };
 
-use prokdiff_gd::GdKind;
+use prokadiff_gd::GdKind;
 
 /// First-period editor. CAST / IS110 are rejected in the CLI, not here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,7 +73,7 @@ pub fn is_structural(kind: GdKind, del_size: Option<u64>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prokdiff_gd::{GdEntry, GenomeDiff};
+    use prokadiff_gd::{GdEntry, GenomeDiff};
 
     fn gd(entries: Vec<GdEntry>) -> GenomeDiff {
         GenomeDiff {

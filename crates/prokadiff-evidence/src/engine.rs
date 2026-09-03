@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 
 use noodles::bam;
 use noodles::sam::alignment::record::cigar::op::Kind as NoodlesKind;
-use prokdiff_gd::{GdEntry, GenomeDiff};
+use prokadiff_gd::{GdEntry, GdKind, GenomeDiff};
 use rayon::prelude::*;
 
-use crate::align::{align_to_bam, FastqInput};
+use crate::align::{align_to_bam, AlignKind, FastqInput};
 use crate::error::{EvidenceError, Result};
 use crate::fasta::{read_reference, FastaRecord};
 use crate::jc::{accept_junction, JunctionSupport};
@@ -18,7 +18,7 @@ use crate::mc::{
 };
 use crate::normalize::{right_align_del, right_align_ins};
 use crate::pileup::{
-    apply_read, place_softclip, AlignedRead, CigarKind, CigarOp, SplitCandidate, SplitOrigin,
+    apply_read, place_softclips, AlignedRead, CigarKind, CigarOp, SplitCandidate, SplitOrigin,
 };
 use crate::ra::{call_consensus, ConsensusCall, PileupColumn, RaOptions};
 
@@ -59,10 +59,11 @@ struct JcCluster {
     rep_side1_minus: bool,
     rep_side2_minus: bool,
     support: JunctionSupport,
-    /// (hint contig, hint index) of each supporting softclip placement.
-    /// Members from the same underlying read share their id even when the
-    /// clip placed onto several repeat copies.
-    ids: HashSet<(usize, usize)>,
+    /// (hint contig, origin) of each supporting read. Members from the same
+    /// underlying read share their id even when the clip placed onto several
+    /// repeat copies. The origin variant is part of the key so a
+    /// second-pass qname hash can never alias a first-pass hint index.
+    ids: HashSet<(usize, SplitOrigin)>,
     /// True if any member came from a long CIGAR I/D. Such clusters have
     /// unique identity and are never folded by the multi-copy rule.
     has_cigar: bool,
@@ -87,12 +88,15 @@ impl JcCluster {
     fn add(&mut self, sp: &SplitCandidate) {
         match sp.origin {
             SplitOrigin::Cigar => self.has_cigar = true,
-            SplitOrigin::Softclip(id) => {
-                self.ids.insert((sp.contig_idx, id));
+            SplitOrigin::Softclip(_) | SplitOrigin::SecondPass(_) => {
+                self.ids.insert((sp.contig_idx, sp.origin));
             }
         }
-        let ov1 = sp.left.len().max(3);
-        let ov2 = sp.right.len().max(3);
+        // Real per-side extensions. Do NOT clamp: `jc::accept_junction`
+        // rule 4 rejects a junction whose smallest per-side extension is
+        // below 3 bp, and a floor here would make that rule vacuous.
+        let ov1 = sp.left.len();
+        let ov2 = sp.right.len();
         // Best-read semantics: one unbalanced read must not kill the
         // junction (published accept rules are max-of-min per read).
         let m = ov1.min(ov2);
@@ -129,9 +133,9 @@ struct AcceptedJc {
     m2: bool,
     overlap: i64,
     support: JunctionSupport,
-    /// (hint contig, hint index) of each supporting softclip; CIGAR-split
-    /// members contribute no id and set `has_cigar` instead.
-    ids: HashSet<(usize, usize)>,
+    /// (hint contig, origin) of each supporting read; CIGAR-split members
+    /// contribute no id and set `has_cigar` instead.
+    ids: HashSet<(usize, SplitOrigin)>,
     has_cigar: bool,
 }
 
@@ -238,15 +242,13 @@ fn fold_reverse_duplicates(mut accepted: Vec<AcceptedJc>) -> Vec<AcceptedJc> {
     folded
 }
 
-/// One shared junction side (same contig and strand, within
-/// JC_CLUSTER_TOL_BP), in either emitted orientation.
+/// One shared junction side (same contig, coordinate within 10 bp tolerance),
+/// in either emitted orientation.
 fn shares_one_side(a: &AcceptedJc, b: &AcceptedJc) -> bool {
-    let sa = [(a.c1, a.p1, a.m1), (a.c2, a.p2, a.m2)];
-    let sb = [(b.c1, b.p1, b.m1), (b.c2, b.p2, b.m2)];
-    sa.iter().any(|x| {
-        sb.iter()
-            .any(|y| x.0 == y.0 && x.2 == y.2 && x.1.abs_diff(y.1) <= JC_CLUSTER_TOL_BP)
-    })
+    let sa = [(a.c1, a.p1), (a.c2, a.p2)];
+    let sb = [(b.c1, b.p1), (b.c2, b.p2)];
+    sa.iter()
+        .any(|x| sb.iter().any(|y| x.0 == y.0 && x.1.abs_diff(y.1) <= 10))
 }
 
 /// Fold multi-copy placement duplicates: a read whose clipped bases have
@@ -312,9 +314,33 @@ pub fn run_sample(
     let work = outdir.join("work");
     std::fs::create_dir_all(&work)?;
     let bam_path = outdir.join("aligned.bam");
-    align_to_bam(ref_fa, reads, &bam_path, opts.threads, &work)?;
+    eprintln!("prokadiff: primary alignment");
+    align_to_bam(
+        ref_fa,
+        reads,
+        &bam_path,
+        opts.threads,
+        &work,
+        AlignKind::Primary,
+    )?;
     let fasta = read_reference(ref_fa)?;
-    let gd = call_from_bam(&bam_path, &fasta, opts)?;
+    eprintln!(
+        "prokadiff: pileup + junction seeds (place S>={})",
+        crate::jc_seq::MIN_CLIP_FOR_PLACE
+    );
+    let aligned = read_aligned_bam(&bam_path, &fasta)?;
+    let contig_results = pileup_contigs(&fasta, &aligned, opts);
+    eprintln!("prokadiff: candidate-junction second pass");
+    let extra = second_pass_splits(
+        &fasta,
+        reads,
+        &bam_path,
+        &contig_results,
+        &aligned,
+        opts,
+        &work,
+    )?;
+    let gd = emit_from_pileup(&fasta, contig_results, opts, &extra);
     let gd_path = outdir.join("output.gd");
     gd.write_path(&gd_path)?;
     if !opts.keep_bam {
@@ -375,25 +401,7 @@ fn read_aligned_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result<Vec<Aligne
                 seq.push(b);
             }
         }
-        let mut cigar = Vec::new();
-        for op in rec.cigar().iter() {
-            let op = op.map_err(|e| EvidenceError::Alignment(e.to_string()))?;
-            let kind = match op.kind() {
-                NoodlesKind::Match | NoodlesKind::SequenceMatch | NoodlesKind::SequenceMismatch => {
-                    CigarKind::Match
-                }
-                NoodlesKind::Insertion => CigarKind::Ins,
-                NoodlesKind::Deletion => CigarKind::Del,
-                NoodlesKind::SoftClip => CigarKind::SoftClip,
-                NoodlesKind::HardClip => CigarKind::HardClip,
-                NoodlesKind::Skip => CigarKind::Skip,
-                _ => continue,
-            };
-            cigar.push(CigarOp {
-                kind,
-                len: op.len(),
-            });
-        }
+        let cigar = noodles_cigar(&rec)?;
         aligned.push(AlignedRead {
             contig_idx,
             ref_start_0: start.get() as i64 - 1,
@@ -406,12 +414,517 @@ fn read_aligned_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result<Vec<Aligne
     Ok(aligned)
 }
 
+fn second_pass_read_names(bam_path: &Path) -> Result<(HashSet<String>, HashSet<String>)> {
+    use crate::align::{keep_for_second_pass, normalize_qname};
+
+    let mut reader = File::open(bam_path).map(bam::io::Reader::new)?;
+    let _header = reader
+        .read_header()
+        .map_err(|e| EvidenceError::Alignment(e.to_string()))?;
+    let mut keep = HashSet::new();
+    let mut seen = HashSet::new();
+    for rec in reader.records() {
+        let rec = rec.map_err(|e| EvidenceError::Alignment(e.to_string()))?;
+        if rec.flags().is_secondary() {
+            continue;
+        }
+        let name = rec.name().map(|n| n.to_string()).unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        let q = normalize_qname(&name).to_string();
+        seen.insert(q.clone());
+        let cigar = noodles_cigar(&rec)?;
+        let max_s = cigar
+            .iter()
+            .filter(|op| op.kind == CigarKind::SoftClip)
+            .map(|op| op.len)
+            .max()
+            .unwrap_or(0);
+        if keep_for_second_pass(
+            rec.flags().is_unmapped(),
+            rec.flags().is_mate_unmapped(),
+            max_s,
+        ) {
+            keep.insert(q);
+        }
+    }
+    Ok((keep, seen))
+}
+
+fn cigar_counts(cigar: &[CigarOp]) -> (usize, usize, usize, usize) {
+    let mut n_match = 0usize;
+    let mut n_ins = 0usize;
+    let mut n_del = 0usize;
+    for op in cigar {
+        match op.kind {
+            CigarKind::Match => n_match += op.len,
+            CigarKind::Ins => n_ins += op.len,
+            CigarKind::Del => n_del += op.len,
+            _ => {}
+        }
+    }
+    let q_cover = n_match + n_ins;
+    (n_match, n_ins, n_del, q_cover)
+}
+
+fn construct_span(ref_start_0: i64, cigar: &[CigarOp]) -> (usize, usize) {
+    let mut pos = ref_start_0.max(0) as usize;
+    let start = pos;
+    for op in cigar {
+        match op.kind {
+            CigarKind::Match | CigarKind::Del | CigarKind::Skip => pos += op.len,
+            CigarKind::Ins | CigarKind::SoftClip | CigarKind::HardClip => {}
+        }
+    }
+    (start, pos)
+}
+
+fn noodles_cigar(rec: &noodles::bam::Record) -> Result<Vec<CigarOp>> {
+    let mut cigar = Vec::new();
+    for op in rec.cigar().iter() {
+        let op = op.map_err(|e| EvidenceError::Alignment(e.to_string()))?;
+        let kind = match op.kind() {
+            NoodlesKind::Match | NoodlesKind::SequenceMatch | NoodlesKind::SequenceMismatch => {
+                CigarKind::Match
+            }
+            NoodlesKind::Insertion => CigarKind::Ins,
+            NoodlesKind::Deletion => CigarKind::Del,
+            NoodlesKind::SoftClip => CigarKind::SoftClip,
+            NoodlesKind::HardClip => CigarKind::HardClip,
+            NoodlesKind::Skip => CigarKind::Skip,
+            _ => continue,
+        };
+        cigar.push(CigarOp {
+            kind,
+            len: op.len(),
+        });
+    }
+    Ok(cigar)
+}
+
+fn primary_alignment_scores(bam_path: &Path) -> Result<HashMap<String, i32>> {
+    let mut reader = File::open(bam_path).map(bam::io::Reader::new)?;
+    let _header = reader
+        .read_header()
+        .map_err(|e| EvidenceError::Alignment(e.to_string()))?;
+    let mut scores = HashMap::new();
+    for rec in reader.records() {
+        let rec = rec.map_err(|e| EvidenceError::Alignment(e.to_string()))?;
+        if rec.flags().is_unmapped() || rec.flags().is_secondary() {
+            continue;
+        }
+        let name = rec.name().map(|n| n.to_string()).unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        let norm_name = crate::align::normalize_qname(&name).to_string();
+        let cigar = noodles_cigar(&rec)?;
+        let (m, i, d, _) = cigar_counts(&cigar);
+        let score = crate::jc_seq::cigar_match_indel_score(m, i, d);
+        scores
+            .entry(norm_name)
+            .and_modify(|s: &mut i32| *s = (*s).max(score))
+            .or_insert(score);
+    }
+    Ok(scores)
+}
+
+/// Minimum construct bases a second-pass alignment must place on EACH side
+/// of the breakpoint to count as junction evidence at all.
+///
+/// Matched to `jc::accept_junction` rule 4 (smallest per-side extension
+/// ≥3 bp), which is a min over ALL supporting reads while rules 2 and 3 are
+/// max-of-min (best read / best per strand). A read placing 1–2 bp past the
+/// breakpoint is noise, so it is excluded here rather than admitted and then
+/// allowed to drag the cluster minimum under 3 and reject a junction that a
+/// dozen well-balanced reads support. The engine used to admit such reads and
+/// clamp their extensions up to 3, which fabricated evidence and made rule 4
+/// unreachable; excluding them keeps the rule live without inventing bases.
+const JC_MIN_SPAN_EACH_SIDE: usize = 3;
+
+/// Why a second-pass alignment did not become junction support. Counted so a
+/// single Clonal job can tell "no spanning reads" from "the score gate ate
+/// them" without guessing (JC=0 root-cause work, `benchmark/results/`).
+#[derive(Clone, Copy, Debug, Default)]
+struct SecondPassReject {
+    considered: usize,
+    short_cover: usize,
+    not_spanning: usize,
+    worse_than_primary: usize,
+    kept: usize,
+}
+
+/// Hash of a read name, used as second-pass supporting-read identity.
+fn qname_id(qname: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    qname.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Promote spanning second-pass alignments to `SplitCandidate`s.
+///
+/// `candidates` pairs each retained candidate junction with the breakpoint
+/// offset of ITS construct (`JunctionConstruct::breakpoint`), which is below
+/// `flank` whenever a flank was clamped at a contig boundary.
+fn parse_junction_bam(
+    bam_path: &Path,
+    candidates: &[(crate::jc_seq::CandidateJunction, usize)],
+    ref_scores: &HashMap<String, i32>,
+) -> Result<(Vec<SplitCandidate>, SecondPassReject)> {
+    use crate::jc::SubAlignment;
+    use crate::jc_seq::{spans_breakpoint, JC_MIN_COVER_BASES};
+
+    let mut stats = SecondPassReject::default();
+    let mut reader = File::open(bam_path).map(bam::io::Reader::new)?;
+    let header = reader
+        .read_header()
+        .map_err(|e| EvidenceError::Alignment(e.to_string()))?;
+    let ref_names: Vec<String> = header
+        .reference_sequences()
+        .iter()
+        .map(|(n, _)| n.to_string())
+        .collect();
+    let mut extra = Vec::new();
+    for rec in reader.records() {
+        let rec = rec.map_err(|e| EvidenceError::Alignment(e.to_string()))?;
+        if rec.flags().is_unmapped() {
+            continue;
+        }
+        let Some(Ok(rid)) = rec.reference_sequence_id() else {
+            continue;
+        };
+        let Some(name) = ref_names.get(rid) else {
+            continue;
+        };
+        let Some(idx_str) = name.strip_prefix("jc") else {
+            continue;
+        };
+        let Ok(ci) = idx_str.parse::<usize>() else {
+            continue;
+        };
+        let Some((cand, breakpoint)) = candidates.get(ci) else {
+            continue;
+        };
+        let breakpoint = *breakpoint;
+        let Some(Ok(start)) = rec.alignment_start() else {
+            continue;
+        };
+        stats.considered += 1;
+        let cigar = noodles_cigar(&rec)?;
+        let (n_match, n_ins, n_del, q_cover) = cigar_counts(&cigar);
+        if q_cover < JC_MIN_COVER_BASES {
+            stats.short_cover += 1;
+            continue;
+        }
+        let (cstart, cend) = construct_span(start.get() as i64 - 1, &cigar);
+        if !spans_breakpoint(cstart, cend, breakpoint, JC_MIN_SPAN_EACH_SIDE) {
+            stats.not_spanning += 1;
+            continue;
+        }
+        let jc_score = crate::jc_seq::cigar_match_indel_score(n_match, n_ins, n_del);
+        let qname = rec.name().map(|n| n.to_string()).unwrap_or_default();
+        let norm_qname = crate::align::normalize_qname(&qname);
+        if let Some(&rs) = ref_scores.get(norm_qname) {
+            if jc_score < rs {
+                stats.worse_than_primary += 1;
+                continue;
+            }
+        }
+        // Real per-side extension. Do NOT clamp: `jc::accept_junction` rule 4
+        // requires ≥3 bp on the smallest side, and a floor here would make
+        // that rule vacuous.
+        let ov1 = breakpoint.saturating_sub(cstart);
+        let ov2 = cend.saturating_sub(breakpoint);
+        stats.kept += 1;
+        extra.push(SplitCandidate {
+            contig_idx: cand.side1_contig,
+            side2_contig_idx: cand.side2_contig,
+            minus: rec.flags().is_reverse_complemented(),
+            side1_minus: cand.side1_minus,
+            side2_minus: cand.side2_minus,
+            left: SubAlignment {
+                read_start: 0,
+                read_end: ov1,
+            },
+            right: SubAlignment {
+                read_start: ov1,
+                read_end: ov1 + ov2,
+            },
+            side1_pos_1: cand.side1_pos_1,
+            side2_pos_1: cand.side2_pos_1,
+            overlap: cand.overlap,
+            origin: SplitOrigin::SecondPass(qname_id(&qname)),
+        });
+    }
+    Ok((extra, stats))
+}
+
+fn cluster_key_splits(splits: &[SplitCandidate]) -> Vec<((usize, usize, i8), JcCluster)> {
+    let mut groups: HashMap<(usize, usize, i8), Vec<&SplitCandidate>> = HashMap::new();
+    for sp in splits {
+        groups
+            .entry((
+                sp.contig_idx,
+                sp.side2_contig_idx,
+                sp.overlap.signum() as i8,
+            ))
+            .or_default()
+            .push(sp);
+    }
+    let mut group_keys: Vec<(usize, usize, i8)> = groups.keys().copied().collect();
+    group_keys.sort_unstable();
+    let mut out = Vec::new();
+    for gk in group_keys {
+        let mut members: Vec<&SplitCandidate> = groups[&gk].clone();
+        members.sort_by_key(|sp| (sp.side1_pos_1, sp.side2_pos_1));
+        let mut clusters: Vec<JcCluster> = Vec::new();
+        for sp in members {
+            // Clusters are appended in non-decreasing order of rep_side1.
+            // Any cluster with c.rep_side1 + JC_CLUSTER_TOL_BP < sp.side1_pos_1 can never match
+            // this or any future member; prune them from the search.
+            let start_idx = clusters.partition_point(|c| {
+                c.rep_side1.saturating_add(JC_CLUSTER_TOL_BP) < sp.side1_pos_1
+            });
+            let mut hit = None;
+            for (rel_i, c) in clusters[start_idx..].iter().enumerate() {
+                if sp.side1_pos_1.abs_diff(c.rep_side1) <= JC_CLUSTER_TOL_BP
+                    && sp.side2_pos_1.abs_diff(c.rep_side2) <= JC_CLUSTER_TOL_BP
+                {
+                    hit = Some(start_idx + rel_i);
+                    break;
+                }
+            }
+            match hit {
+                Some(i) => clusters[i].add(sp),
+                None => clusters.push(JcCluster::new(sp)),
+            }
+        }
+        for c in clusters {
+            out.push((gk, c));
+        }
+    }
+    out
+}
+
+fn seed_candidates_from_pileup(
+    contig_results: &[ContigPileup],
+) -> Vec<crate::jc_seq::CandidateJunction> {
+    let mut cands = Vec::new();
+    for (_, _, _, splits) in contig_results {
+        for (gk, c) in cluster_key_splits(splits) {
+            let n = support_total(&c.support);
+            if n == 0 {
+                continue;
+            }
+            cands.push(crate::jc_seq::CandidateJunction {
+                side1_contig: gk.0,
+                side1_pos_1: c.rep_side1,
+                side1_minus: c.rep_side1_minus,
+                side2_contig: gk.1,
+                side2_pos_1: c.rep_side2,
+                side2_minus: c.rep_side2_minus,
+                overlap: c.rep_overlap,
+                seed_reads: n,
+            });
+        }
+    }
+    cands
+}
+
+fn second_pass_splits(
+    fasta: &[FastaRecord],
+    reads: &FastqInput,
+    primary_bam: &Path,
+    contig_results: &[ContigPileup],
+    aligned: &[AlignedRead],
+    opts: &EngineOptions,
+    work: &Path,
+) -> Result<Vec<SplitCandidate>> {
+    use crate::fasta::write_records;
+    use crate::jc_seq::{junction_construct, rank_and_cap, CandidateJunction, JC_MIN_COVER_BASES};
+
+    let flank = aligned
+        .iter()
+        .map(|r| r.seq.len())
+        .max()
+        .unwrap_or(36)
+        .max(28);
+    let mut all_cands = seed_candidates_from_pileup(contig_results);
+
+    // Extract split-read candidates from Stage 2 sensitive alignments if present
+    let contig_names: Vec<String> = fasta.iter().map(|r| r.name.clone()).collect();
+    for (sam_name, default_mate) in [
+        ("stage2_r1.sam", 1),
+        ("stage2_r2.sam", 2),
+        ("stage2_pe.sam", 0),
+        ("stage2_se.sam", 0),
+        ("stage2.sam", 0),
+    ] {
+        let sam_path = work.join(sam_name);
+        if sam_path.is_file() {
+            if let Ok(split_cands) = crate::split_seed::extract_candidate_junctions_from_sam(
+                &sam_path,
+                &contig_names,
+                default_mate,
+            ) {
+                eprintln!(
+                    "prokadiff: extracted {} split-read candidate junctions from {}",
+                    split_cands.len(),
+                    sam_name
+                );
+                all_cands.extend(split_cands);
+            }
+        }
+    }
+
+    // Merge duplicate candidate junctions across sources (R1, R2, pileup clips)
+    // Canonicalize key so (A, B) and (B, A) aggregate their seed_reads.
+    type JcMergeKey = (usize, u64, bool, usize, u64, bool, i64);
+    let mut merged_cands: HashMap<JcMergeKey, CandidateJunction> = HashMap::new();
+    for cand in all_cands {
+        let (c1, p1, m1, c2, p2, m2) =
+            if (cand.side1_contig, cand.side1_pos_1) <= (cand.side2_contig, cand.side2_pos_1) {
+                (
+                    cand.side1_contig,
+                    cand.side1_pos_1,
+                    cand.side1_minus,
+                    cand.side2_contig,
+                    cand.side2_pos_1,
+                    cand.side2_minus,
+                )
+            } else {
+                (
+                    cand.side2_contig,
+                    cand.side2_pos_1,
+                    !cand.side2_minus,
+                    cand.side1_contig,
+                    cand.side1_pos_1,
+                    !cand.side1_minus,
+                )
+            };
+        let key = (c1, p1, m1, c2, p2, m2, cand.overlap);
+        merged_cands
+            .entry(key)
+            .and_modify(|e| e.seed_reads += cand.seed_reads)
+            .or_insert(CandidateJunction {
+                side1_contig: c1,
+                side1_pos_1: p1,
+                side1_minus: m1,
+                side2_contig: c2,
+                side2_pos_1: p2,
+                side2_minus: m2,
+                overlap: cand.overlap,
+                seed_reads: cand.seed_reads,
+            });
+    }
+    let all_cands: Vec<CandidateJunction> = merged_cands.into_values().collect();
+
+    let ref_len: usize = fasta.iter().map(|r| r.seq.len()).sum();
+    let cands = rank_and_cap(all_cands, ref_len, flank);
+    if cands.is_empty() {
+        eprintln!("prokadiff: second-pass skipped (no seed junctions)");
+        return Ok(Vec::new());
+    }
+    let mut recs = Vec::new();
+    // Each construct carries its OWN breakpoint: `junction_flank` clamps at
+    // contig boundaries, so a construct seeded near a contig end has its
+    // breakpoint below `flank`. Using `flank` there mislocates the junction
+    // and corrupts the spanning / per-side-overlap checks downstream.
+    let mut kept: Vec<(CandidateJunction, usize)> = Vec::new();
+    for cand in &cands {
+        let construct = junction_construct(fasta, cand, flank);
+        if construct.len() < JC_MIN_COVER_BASES {
+            continue;
+        }
+        recs.push(FastaRecord {
+            name: format!("jc{}", kept.len()),
+            seq: construct.sequence(),
+        });
+        kept.push((cand.clone(), construct.breakpoint()));
+    }
+    if recs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let jc_dir = work.join("jc");
+    std::fs::create_dir_all(&jc_dir)?;
+    let fa = jc_dir.join("junctions.fa");
+    write_records(&recs, &fa)?;
+    eprintln!(
+        "prokadiff: second-pass {} junction constructs; filtering clip/unmapped reads",
+        recs.len()
+    );
+    let gzip = reads.files.iter().any(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".gz"))
+    });
+    let filtered_owner;
+    let pass_reads: &FastqInput = if gzip {
+        eprintln!("prokadiff: gzip FASTQ; second-pass uses all reads (no clip/unmapped filter)");
+        reads
+    } else {
+        let (keep, seen) = second_pass_read_names(primary_bam)?;
+        let pass_dir = jc_dir.join("reads");
+        let (filtered, nkeep) = crate::align::filter_fastq_input(reads, &keep, &seen, &pass_dir)?;
+        eprintln!("prokadiff: second-pass {nkeep} FASTQ records after clip/unmapped filter");
+        if nkeep == 0 {
+            return Ok(Vec::new());
+        }
+        filtered_owner = filtered;
+        &filtered_owner
+    };
+    let jc_bam = jc_dir.join("aligned.bam");
+    align_to_bam(
+        &fa,
+        pass_reads,
+        &jc_bam,
+        opts.threads,
+        &jc_dir,
+        AlignKind::Junction,
+    )?;
+    let ref_scores = primary_alignment_scores(primary_bam)?;
+    let (extra, stats) = parse_junction_bam(&jc_bam, &kept, &ref_scores)?;
+    eprintln!(
+        "prokadiff: second-pass records considered={} kept={} \
+         rejected(short_cover={} not_spanning={} worse_than_primary={})",
+        stats.considered,
+        stats.kept,
+        stats.short_cover,
+        stats.not_spanning,
+        stats.worse_than_primary
+    );
+    Ok(extra)
+}
+
 /// In-memory consensus (no BAM). Used by `call_from_bam` and layer-0 tests.
 pub fn call_from_aligned(
     fasta: &[FastaRecord],
     aligned: &[AlignedRead],
     opts: &EngineOptions,
 ) -> GenomeDiff {
+    call_from_aligned_extra(fasta, aligned, opts, &[])
+}
+
+/// Like `call_from_aligned`, then merge extra split candidates (second-pass
+/// junction hits) before clustering and `accept_junction`.
+pub fn call_from_aligned_extra(
+    fasta: &[FastaRecord],
+    aligned: &[AlignedRead],
+    opts: &EngineOptions,
+    extra_splits: &[SplitCandidate],
+) -> GenomeDiff {
+    let contig_results = pileup_contigs(fasta, aligned, opts);
+    emit_from_pileup(fasta, contig_results, opts, extra_splits)
+}
+
+fn pileup_contigs(
+    fasta: &[FastaRecord],
+    aligned: &[AlignedRead],
+    opts: &EngineOptions,
+) -> Vec<ContigPileup> {
     let pool = if opts.threads > 1 {
         rayon::ThreadPoolBuilder::new()
             .num_threads(opts.threads)
@@ -450,21 +963,32 @@ pub fn call_from_aligned(
                         &mut clips,
                     );
                 }
-                for (hint_id, hint) in clips.iter().enumerate() {
-                    splits.extend(place_softclip(hint, fasta, hint_id));
-                }
+                splits.extend(place_softclips(&clips, fasta));
                 (columns, unique_depth, total_depth, splits)
             })
             .collect()
     };
-    let contig_results: Vec<ContigPileup> = match &pool {
+    match &pool {
         Some(p) => p.install(call_contigs),
         None => call_contigs(),
-    };
+    }
+}
+
+fn emit_from_pileup(
+    fasta: &[FastaRecord],
+    mut contig_results: Vec<ContigPileup>,
+    opts: &EngineOptions,
+    extra_splits: &[SplitCandidate],
+) -> GenomeDiff {
+    for sp in extra_splits {
+        if sp.contig_idx < contig_results.len() {
+            contig_results[sp.contig_idx].3.push(sp.clone());
+        }
+    }
 
     let mut gd = GenomeDiff::new();
     gd.metadata
-        .push(("PROGRAM".into(), "prokdiff-evidence".into()));
+        .push(("PROGRAM".into(), "prokadiff-evidence".into()));
     let mut next_id = 1u32;
     // Accepted junctions are collected across ALL contigs and emitted only
     // after redundancy folding: a reverse-direction duplicate keyed on
@@ -537,64 +1061,29 @@ pub fn call_from_aligned(
         // first cluster whose FIRST member is within JC_CLUSTER_TOL_BP on
         // both sides (single-pass against the first member is deterministic;
         // documented in docs/parity.md).
-        let mut groups: HashMap<(usize, usize, i8), Vec<&SplitCandidate>> = HashMap::new();
-        for sp in splits {
-            groups
-                .entry((
-                    sp.contig_idx,
-                    sp.side2_contig_idx,
-                    sp.overlap.signum() as i8,
-                ))
-                .or_default()
-                .push(sp);
-        }
-        let mut group_keys: Vec<(usize, usize, i8)> = groups.keys().copied().collect();
-        group_keys.sort_unstable();
         let mut jc_endpoints_1 = Vec::new();
-        for gk in group_keys {
-            let mut members: Vec<&SplitCandidate> = groups[&gk].clone();
-            // Stable sort: read order breaks ties, keeping the first member
-            // (hence the representative) deterministic.
-            members.sort_by_key(|sp| (sp.side1_pos_1, sp.side2_pos_1));
-            let mut clusters: Vec<JcCluster> = Vec::new();
-            for sp in members {
-                let mut hit = None;
-                for (i, c) in clusters.iter().enumerate() {
-                    if sp.side1_pos_1.abs_diff(c.rep_side1) <= JC_CLUSTER_TOL_BP
-                        && sp.side2_pos_1.abs_diff(c.rep_side2) <= JC_CLUSTER_TOL_BP
-                    {
-                        hit = Some(i);
-                        break;
-                    }
-                }
-                match hit {
-                    Some(i) => clusters[i].add(sp),
-                    None => clusters.push(JcCluster::new(sp)),
-                }
+        for (gk, c) in cluster_key_splits(splits) {
+            if !accept_junction(&c.support) {
+                continue;
             }
-            for c in clusters {
-                if !accept_junction(&c.support) {
-                    continue;
-                }
-                if gk.0 == idx {
-                    jc_endpoints_1.push(c.rep_side1);
-                }
-                if gk.1 == idx {
-                    jc_endpoints_1.push(c.rep_side2);
-                }
-                accepted_all.push(AcceptedJc {
-                    c1: gk.0,
-                    p1: c.rep_side1,
-                    m1: c.rep_side1_minus,
-                    c2: gk.1,
-                    p2: c.rep_side2,
-                    m2: c.rep_side2_minus,
-                    overlap: c.rep_overlap,
-                    support: c.support,
-                    ids: c.ids,
-                    has_cigar: c.has_cigar,
-                });
+            if gk.0 == idx {
+                jc_endpoints_1.push(c.rep_side1);
             }
+            if gk.1 == idx {
+                jc_endpoints_1.push(c.rep_side2);
+            }
+            accepted_all.push(AcceptedJc {
+                c1: gk.0,
+                p1: c.rep_side1,
+                m1: c.rep_side1_minus,
+                c2: gk.1,
+                p2: c.rep_side2,
+                m2: c.rep_side2_minus,
+                overlap: c.rep_overlap,
+                support: c.support,
+                ids: c.ids,
+                has_cigar: c.has_cigar,
+            });
         }
 
         for span in call_missing_coverage(unique_depth, opts.mc_min_len) {
@@ -628,9 +1117,41 @@ pub fn call_from_aligned(
                 crate::mc::coverage_cutoff(unique_depth),
             )
             .unwrap_or(span);
-            let del_start = core.start_1();
-            let del_end = core.end_1();
+            let mut del_start = core.start_1();
+            let mut del_end = core.end_1();
+            // If an accepted JC flanks this missing coverage span,
+            // the JC breakpoint defines the exact deletion boundary:
+            for j in &accepted_all {
+                if j.c1 == idx && j.c2 == idx {
+                    let (jp1, jp2) = if j.p1 <= j.p2 {
+                        (j.p1, j.p2)
+                    } else {
+                        (j.p2, j.p1)
+                    };
+                    // Shift jp1/jp2 if overlap > 0 (assign exclusively to one side)
+                    let (norm_jp1, norm_jp2) = if j.overlap > 0 {
+                        let k = j.overlap as u64;
+                        if j.m1 {
+                            (jp1.saturating_sub(k), jp2)
+                        } else if !j.m2 {
+                            (jp1, jp2.saturating_add(k))
+                        } else {
+                            (jp1, jp2)
+                        }
+                    } else {
+                        (jp1, jp2)
+                    };
+                    if norm_jp1.abs_diff(span.start_1().saturating_sub(1)) <= 50
+                        && norm_jp2.abs_diff(span.end_1().saturating_add(1)) <= 50
+                    {
+                        del_start = norm_jp1 + 1;
+                        del_end = norm_jp2.saturating_sub(1);
+                        break;
+                    }
+                }
+            }
             let size = del_end.saturating_sub(del_start) + 1;
+            let del_start = right_align_del(&rec.seq, del_start, size);
             gd.entries
                 .push(GdEntry::del(next_id, rec.name.clone(), del_start, size));
             if let Some(last) = gd.entries.last_mut() {
@@ -647,8 +1168,18 @@ pub fn call_from_aligned(
     // physical event, in deterministic coordinate order.
     let mut folded = fold_multicopy_placements(fold_reverse_duplicates(accepted_all));
     folded.sort_by_key(|j| (j.c1, j.p1, j.m1, j.c2, j.p2, j.m2));
-    for j in folded {
-        // breseq GD convention: side strands are 1 / -1.
+    for mut j in folded {
+        // breseq GD convention: normalize overlap into endpoints when microhomology exists
+        if j.overlap > 0 {
+            let k = j.overlap as u64;
+            if j.m1 {
+                j.p1 = j.p1.saturating_sub(k);
+                j.overlap = 0;
+            } else if !j.m2 {
+                j.p2 = j.p2.saturating_add(k);
+                j.overlap = 0;
+            }
+        }
         let s1 = if j.m1 { "-1" } else { "1" };
         let s2 = if j.m2 { "-1" } else { "1" };
         let n1 = fasta[j.c1].name.clone();
@@ -658,12 +1189,43 @@ pub fn call_from_aligned(
         next_id += 1;
     }
 
+    // Subsume/mask any SNP that falls inside a called DEL
+    let dels: Vec<(String, u64, u64)> = gd
+        .entries
+        .iter()
+        .filter(|e| e.kind == GdKind::Del)
+        .filter_map(|e| {
+            let seq_id = e.fields.first()?.clone();
+            let pos: u64 = e.fields.get(1)?.parse().ok()?;
+            let sz: u64 = e.fields.get(2)?.parse().ok()?;
+            Some((seq_id, pos, pos + sz.saturating_sub(1)))
+        })
+        .collect();
+    if !dels.is_empty() {
+        gd.entries.retain(|e| {
+            if e.kind == GdKind::Snp {
+                let Some(seq_id) = e.fields.first() else {
+                    return true;
+                };
+                let Some(pos) = e.fields.get(1).and_then(|p| p.parse::<u64>().ok()) else {
+                    return true;
+                };
+                !dels
+                    .iter()
+                    .any(|(d_seq, start, end)| d_seq == seq_id && pos >= *start && pos <= *end)
+            } else {
+                true
+            }
+        });
+    }
+
     gd
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jc::SubAlignment;
     use crate::pileup::{apply_read, UNIQUE_MAPQ};
 
     #[test]
@@ -746,10 +1308,10 @@ mod tests {
         out
     }
 
-    fn gd_dels(gd: &GenomeDiff) -> Vec<&prokdiff_gd::GdEntry> {
+    fn gd_dels(gd: &GenomeDiff) -> Vec<&prokadiff_gd::GdEntry> {
         gd.entries
             .iter()
-            .filter(|e| e.kind == prokdiff_gd::GdKind::Del)
+            .filter(|e| e.kind == prokadiff_gd::GdKind::Del)
             .collect()
     }
 
@@ -816,10 +1378,10 @@ mod tests {
         );
     }
 
-    fn gd_jcs(gd: &GenomeDiff) -> Vec<&prokdiff_gd::GdEntry> {
+    fn gd_jcs(gd: &GenomeDiff) -> Vec<&prokadiff_gd::GdEntry> {
         gd.entries
             .iter()
-            .filter(|e| e.kind == prokdiff_gd::GdKind::Jc)
+            .filter(|e| e.kind == prokadiff_gd::GdKind::Jc)
             .collect()
     }
 
@@ -1415,5 +1977,286 @@ mod tests {
                 .map(|e| (e.kind, e.fields.clone()))
                 .collect::<Vec<_>>()
         );
+    }
+
+    fn short_clip_is_seed_reads() -> (Vec<u8>, Vec<AlignedRead>) {
+        let mut seq = vec![b'C'; 160];
+        let motif = *b"ACGTACGTAC";
+        seq[40..50].copy_from_slice(&motif);
+        seq[100..110].copy_from_slice(&motif);
+        let mut read_seq = vec![b'C'; 20];
+        read_seq.extend_from_slice(&motif);
+        let mut reads = Vec::new();
+        for minus in [false, false, false, true, true, true] {
+            reads.push(AlignedRead {
+                contig_idx: 0,
+                ref_start_0: 70,
+                minus,
+                seq: read_seq.clone(),
+                cigar: vec![
+                    CigarOp {
+                        kind: CigarKind::Match,
+                        len: 20,
+                    },
+                    CigarOp {
+                        kind: CigarKind::SoftClip,
+                        len: 10,
+                    },
+                ],
+                mapq: UNIQUE_MAPQ,
+            });
+        }
+        (seq, reads)
+    }
+
+    #[test]
+    fn ten_bp_clips_seed_but_do_not_accept_without_second_pass() {
+        let (seq, reads) = short_clip_is_seed_reads();
+        let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
+        assert!(
+            gd_jcs(&gd).is_empty(),
+            "10 bp clips are below the 14 bp accept floor; got {:?}",
+            gd_jcs(&gd).iter().map(|e| &e.fields).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn second_pass_hits_promote_short_clip_seed_to_jc() {
+        let (seq, reads) = short_clip_is_seed_reads();
+        // Seed keys side1 at last match (90). Extra hits model spanning
+        // second-pass alignments (18 bp into each side, both strands).
+        let extra: Vec<SplitCandidate> = [false, false, false, true, true, true]
+            .into_iter()
+            .map(|minus| SplitCandidate {
+                contig_idx: 0,
+                side2_contig_idx: 0,
+                minus,
+                side1_minus: true,
+                side2_minus: false,
+                left: SubAlignment {
+                    read_start: 0,
+                    read_end: 18,
+                },
+                right: SubAlignment {
+                    read_start: 18,
+                    read_end: 36,
+                },
+                side1_pos_1: 90,
+                side2_pos_1: 41,
+                overlap: 0,
+                origin: SplitOrigin::Softclip(10_000),
+            })
+            .collect();
+        let gd = call_from_aligned_extra(&fasta_chr(&seq), &reads, &opts_single_thread(), &extra);
+        assert!(
+            !gd_jcs(&gd).is_empty(),
+            "second-pass spanning hits must lift the seed past accept_junction; entries={:?}",
+            gd.entries
+                .iter()
+                .map(|e| (e.kind, e.fields.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // --- candidate-junction second pass (`parse_junction_bam`) ---------------
+    //
+    // Fixture BAMs are authored as SAM text and converted with the production
+    // `sam_to_sorted_bam`, so these cover the real decode path.
+
+    fn write_fixture_bam(dir: &str, sq: &[(&str, usize)], recs: &[String]) -> PathBuf {
+        let d = std::env::temp_dir().join(dir);
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut text = String::from("@HD\tVN:1.6\n");
+        for (name, len) in sq {
+            text.push_str(&format!("@SQ\tSN:{name}\tLN:{len}\n"));
+        }
+        for r in recs {
+            text.push_str(r);
+            text.push('\n');
+        }
+        let sam = d.join("in.sam");
+        std::fs::write(&sam, text).unwrap();
+        let bam = d.join("in.bam");
+        crate::align::sam_to_sorted_bam(&sam, &bam).unwrap();
+        bam
+    }
+
+    fn sam_rec(
+        qname: &str,
+        flag: u16,
+        rname: &str,
+        pos: usize,
+        cigar: &str,
+        qlen: usize,
+    ) -> String {
+        format!(
+            "{qname}\t{flag}\t{rname}\t{pos}\t44\t{cigar}\t*\t0\t0\t{}\t{}",
+            "A".repeat(qlen),
+            "I".repeat(qlen)
+        )
+    }
+
+    /// Candidate paired with the breakpoint of ITS construct.
+    fn jc_cand(breakpoint: usize) -> (crate::jc_seq::CandidateJunction, usize) {
+        (
+            crate::jc_seq::CandidateJunction {
+                side1_contig: 0,
+                side1_pos_1: 90,
+                side1_minus: true,
+                side2_contig: 0,
+                side2_pos_1: 41,
+                side2_minus: false,
+                overlap: 0,
+                seed_reads: 3,
+            },
+            breakpoint,
+        )
+    }
+
+    #[test]
+    fn second_pass_uses_per_construct_breakpoint_not_flank() {
+        // Construct seeded at a contig start: left flank clamped to 10 bp, so
+        // the breakpoint is 10 even though `flank` was 36. A 30M hit at
+        // construct pos 1 puts 10 bp left and 20 bp right of the true
+        // breakpoint — genuine spanning evidence.
+        let bam = write_fixture_bam(
+            "prokdiff-jcbam-breakpoint",
+            &[("jc0", 30)],
+            &[sam_rec("r1", 0, "jc0", 1, "30M", 30)],
+        );
+        let scores = HashMap::new();
+
+        let (extra, stats) = parse_junction_bam(&bam, &[jc_cand(10)], &scores).unwrap();
+        assert_eq!(stats.considered, 1);
+        assert_eq!(stats.kept, 1);
+        assert_eq!(extra.len(), 1);
+        assert_eq!(
+            extra[0].left.len(),
+            10,
+            "side 1 extension is breakpoint-cstart"
+        );
+        assert_eq!(extra[0].right.len(), 20);
+
+        // Same record against the pre-fix constant breakpoint (`flank` = 36):
+        // the whole hit looks left-of-breakpoint and the read is discarded.
+        // This is the JC=0 mechanism for every construct near a contig edge.
+        let (extra_flank, stats_flank) = parse_junction_bam(&bam, &[jc_cand(36)], &scores).unwrap();
+        assert!(extra_flank.is_empty());
+        assert_eq!(stats_flank.not_spanning, 1);
+    }
+
+    #[test]
+    fn second_pass_rejects_two_bp_overhang_instead_of_clamping_it_up() {
+        // 36M at construct pos 35 lands 2 bp past a breakpoint of 36. The
+        // engine used to admit this and clamp both extensions to >=3, which
+        // fabricated evidence and made `accept_junction` rule 4 unreachable.
+        let bam = write_fixture_bam(
+            "prokdiff-jcbam-overhang",
+            &[("jc0", 72)],
+            &[sam_rec("r1", 0, "jc0", 35, "36M", 36)],
+        );
+        let (extra, stats) = parse_junction_bam(&bam, &[jc_cand(36)], &HashMap::new()).unwrap();
+        assert!(extra.is_empty(), "2 bp past the breakpoint is not evidence");
+        assert_eq!(stats.not_spanning, 1);
+        assert_eq!(stats.kept, 0);
+    }
+
+    #[test]
+    fn second_pass_reports_real_overlaps_with_no_floor() {
+        // Exactly 3 bp on the short side: admitted, and reported as 3 — not
+        // rounded, not clamped.
+        let bam = write_fixture_bam(
+            "prokdiff-jcbam-exact3",
+            &[("jc0", 72)],
+            &[sam_rec("r1", 0, "jc0", 34, "36M", 36)],
+        );
+        let (extra, stats) = parse_junction_bam(&bam, &[jc_cand(36)], &HashMap::new()).unwrap();
+        assert_eq!(stats.kept, 1);
+        assert_eq!(extra[0].left.len(), 3);
+        assert_eq!(extra[0].right.len(), 33);
+    }
+
+    #[test]
+    fn second_pass_counts_short_cover_rejects() {
+        // 20 aligned query bases is below JC_MIN_COVER_BASES (28).
+        let bam = write_fixture_bam(
+            "prokdiff-jcbam-shortcover",
+            &[("jc0", 72)],
+            &[sam_rec("r1", 0, "jc0", 25, "20M16S", 36)],
+        );
+        let (extra, stats) = parse_junction_bam(&bam, &[jc_cand(36)], &HashMap::new()).unwrap();
+        assert!(extra.is_empty());
+        assert_eq!(stats.short_cover, 1);
+        assert_eq!(stats.not_spanning, 0, "cover is checked before spanning");
+    }
+
+    #[test]
+    fn second_pass_counts_primary_score_gate_separately_from_spanning() {
+        // A spanning 36M hit scores 36. The gate keeps it against a weaker
+        // primary alignment and drops it against a stronger one; the counter
+        // distinguishes the two so a Clonal job can tell which gate ate the
+        // reads without re-running.
+        let bam = write_fixture_bam(
+            "prokdiff-jcbam-scoregate",
+            &[("jc0", 72)],
+            &[sam_rec("r1", 0, "jc0", 19, "36M", 36)],
+        );
+        let cands = [jc_cand(36)];
+
+        let weaker = HashMap::from([("r1".to_string(), 30)]);
+        let (extra, stats) = parse_junction_bam(&bam, &cands, &weaker).unwrap();
+        assert_eq!(stats.kept, 1);
+        assert_eq!(stats.worse_than_primary, 0);
+        assert_eq!(extra.len(), 1);
+
+        let stronger = HashMap::from([("r1".to_string(), 40)]);
+        let (extra, stats) = parse_junction_bam(&bam, &cands, &stronger).unwrap();
+        assert!(extra.is_empty());
+        assert_eq!(stats.worse_than_primary, 1);
+        assert_eq!(stats.not_spanning, 0);
+    }
+
+    #[test]
+    fn second_pass_origins_are_per_read_and_never_alias_softclip_ids() {
+        let bam = write_fixture_bam(
+            "prokdiff-jcbam-origins",
+            &[("jc0", 72)],
+            &[
+                sam_rec("r1", 0, "jc0", 19, "36M", 36),
+                sam_rec("r2", 16, "jc0", 20, "36M", 36),
+            ],
+        );
+        let (extra, stats) = parse_junction_bam(&bam, &[jc_cand(36)], &HashMap::new()).unwrap();
+        assert_eq!(stats.kept, 2);
+        // Two reads, two identities: the multi-copy fold must be able to tell
+        // them apart.
+        let ids: HashSet<SplitOrigin> = extra.iter().map(|c| c.origin).collect();
+        assert_eq!(ids.len(), 2);
+        // Variant-tagged, so a qname hash can never collide with a first-pass
+        // `SoftclipHint` index in the supporting-read identity set.
+        assert!(extra
+            .iter()
+            .all(|c| matches!(c.origin, SplitOrigin::SecondPass(_))));
+        // Read strand is carried through; side strands come from the candidate.
+        assert!(extra.iter().any(|c| c.minus));
+        assert!(extra.iter().any(|c| !c.minus));
+    }
+
+    #[test]
+    fn second_pass_ignores_records_on_unknown_constructs() {
+        // A reference name that is not `jc<idx>`, and an index past the end of
+        // the retained candidate list: neither may be counted or promoted.
+        let bam = write_fixture_bam(
+            "prokdiff-jcbam-unknown",
+            &[("chr", 72), ("jc7", 72)],
+            &[
+                sam_rec("r1", 0, "chr", 19, "36M", 36),
+                sam_rec("r2", 0, "jc7", 19, "36M", 36),
+            ],
+        );
+        let (extra, stats) = parse_junction_bam(&bam, &[jc_cand(36)], &HashMap::new()).unwrap();
+        assert!(extra.is_empty());
+        assert_eq!(stats.considered, 0);
     }
 }

@@ -14,7 +14,7 @@ pub const EDITOR_ROADMAP: &str =
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "prokdiff",
+    name = "prokadiff",
     version,
     about = "Prokaryotic genome diff for gene-editing QC — starter vs edited WGS",
     subcommand_negates_reqs = true
