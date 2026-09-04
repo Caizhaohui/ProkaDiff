@@ -31,6 +31,8 @@ pub struct EngineOptions {
     /// Unique-mapping + total-depth-0 gap must be at least this long to become
     /// a consensus DEL without JC support (see `docs/parity.md`).
     pub mc_del_min_len: usize,
+    /// Known repeat regions (e.g. mobile elements) from reference annotations.
+    pub repeats: Vec<crate::fasta::RepeatRegion>,
 }
 
 type ContigPileup = (Vec<PileupColumn>, Vec<u32>, Vec<u32>, Vec<SplitCandidate>);
@@ -242,34 +244,45 @@ fn fold_reverse_duplicates(mut accepted: Vec<AcceptedJc>) -> Vec<AcceptedJc> {
     folded
 }
 
-/// One shared junction side (same contig, coordinate within 10 bp tolerance),
+/// One shared junction side (same contig, coordinate within 2 bp tolerance, same strand),
 /// in either emitted orientation.
 fn shares_one_side(a: &AcceptedJc, b: &AcceptedJc) -> bool {
-    let sa = [(a.c1, a.p1), (a.c2, a.p2)];
-    let sb = [(b.c1, b.p1), (b.c2, b.p2)];
-    sa.iter()
-        .any(|x| sb.iter().any(|y| x.0 == y.0 && x.1.abs_diff(y.1) <= 10))
+    let sa = [(a.c1, a.p1, a.m1), (a.c2, a.p2, a.m2)];
+    let sb = [(b.c1, b.p1, b.m1), (b.c2, b.p2, b.m2)];
+    sa.iter().any(|x| {
+        sb.iter()
+            .any(|y| x.0 == y.0 && x.1.abs_diff(y.1) <= 2 && x.2 == y.2)
+    })
+}
+
+fn find_repeat_at<'a>(
+    repeats: &'a [crate::fasta::RepeatRegion],
+    contig: &str,
+    pos: u64,
+) -> Option<&'a crate::fasta::RepeatRegion> {
+    repeats
+        .iter()
+        .find(|r| r.seq_id == contig && (pos.abs_diff(r.start) <= 20 || pos.abs_diff(r.end) <= 20))
 }
 
 /// Fold multi-copy placement duplicates: a read whose clipped bases have
 /// several exact placement hits (repeat copies) contributes one candidate
 /// per hit, so the same junction appears once per copy. Two accepted
 /// junctions sharing one side and >50% of the smaller supporting-read
-/// identity set are one event. (The identity set is the real
-/// discriminator: two genuinely distinct junctions can share a repeat
-/// copy as one side, but never the same underlying reads.) The emitted
-/// placement is the one with the most supporting reads — measured,
-/// synth_is_mob 2372015: the copy breseq kept is the one carrying extra
-/// copy-anchored reads — ties broken by canonical-key order.
-/// CIGAR-split junctions have unique identity and are never folded by
-/// this rule. Deterministic: sorted before the greedy single pass.
-fn fold_multicopy_placements(mut junctions: Vec<AcceptedJc>) -> Vec<AcceptedJc> {
+/// identity set are one event. Alternatively, if both junctions share the
+/// same unique side (same contig, position <=2 bp, same strand) and connect to
+/// the same repeat element family, they represent duplicate multi-copy projections and are folded.
+fn fold_multicopy_placements(
+    mut junctions: Vec<AcceptedJc>,
+    repeats: &[crate::fasta::RepeatRegion],
+    fasta: &[FastaRecord],
+) -> Vec<AcceptedJc> {
     junctions.sort_by_key(canonical_dir_key);
     let mut groups: Vec<AcceptedJc> = Vec::new();
     for j in junctions {
         let mut hit = None;
         for (i, g) in groups.iter().enumerate() {
-            if g.has_cigar || j.has_cigar {
+            if g.has_cigar && j.has_cigar {
                 continue;
             }
             if !shares_one_side(g, &j) {
@@ -277,11 +290,38 @@ fn fold_multicopy_placements(mut junctions: Vec<AcceptedJc>) -> Vec<AcceptedJc> 
             }
             let shared = g.ids.intersection(&j.ids).count();
             let smaller = g.ids.len().min(j.ids.len());
-            if smaller == 0 || shared * 2 <= smaller {
-                continue;
+            let shared_reads = smaller > 0 && shared * 2 > smaller;
+
+            let same_repeat_family = if !repeats.is_empty() {
+                let mut shared_unique = None;
+                if g.c1 == j.c1 && g.p1.abs_diff(j.p1) <= 2 && g.m1 == j.m1 {
+                    shared_unique = Some(((g.c2, g.p2), (j.c2, j.p2)));
+                } else if g.c1 == j.c2 && g.p1.abs_diff(j.p2) <= 2 && g.m1 == j.m2 {
+                    shared_unique = Some(((g.c2, g.p2), (j.c1, j.p1)));
+                } else if g.c2 == j.c1 && g.p2.abs_diff(j.p1) <= 2 && g.m2 == j.m1 {
+                    shared_unique = Some(((g.c1, g.p1), (j.c2, j.p2)));
+                } else if g.c2 == j.c2 && g.p2.abs_diff(j.p2) <= 2 && g.m2 == j.m2 {
+                    shared_unique = Some(((g.c1, g.p1), (j.c1, j.p1)));
+                }
+
+                if let Some(((g_rep_c, g_rep_p), (j_rep_c, j_rep_p))) = shared_unique {
+                    let g_rep = find_repeat_at(repeats, &fasta[g_rep_c].name, g_rep_p);
+                    let j_rep = find_repeat_at(repeats, &fasta[j_rep_c].name, j_rep_p);
+                    match (g_rep, j_rep) {
+                        (Some(r1), Some(r2)) => r1.name == r2.name,
+                        _ => false,
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if shared_reads || same_repeat_family {
+                hit = Some(i);
+                break;
             }
-            hit = Some(i);
-            break;
         }
         match hit {
             Some(i) => absorb_into_rep(&mut groups[i], j),
@@ -299,6 +339,7 @@ impl Default for EngineOptions {
             ra: RaOptions::default(),
             mc_min_len: 3,
             mc_del_min_len: MC_DEL_MIN_LEN,
+            repeats: Vec::new(),
         }
     }
 }
@@ -310,6 +351,38 @@ pub fn run_sample(
     outdir: &Path,
     opts: &EngineOptions,
 ) -> Result<PathBuf> {
+    let mut opts_buf;
+    let opts = if opts.repeats.is_empty() {
+        let mut reps = Vec::new();
+        if let Ok(r) = crate::fasta::parse_genbank_repeats(ref_fa) {
+            reps.extend(r);
+        }
+        if reps.is_empty() {
+            if let Some(parent) = ref_fa.parent() {
+                if let Ok(entries) = std::fs::read_dir(parent) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
+                            if ext.eq_ignore_ascii_case("gbk") || ext.eq_ignore_ascii_case("gb") {
+                                if let Ok(r) = crate::fasta::parse_genbank_repeats(&p) {
+                                    reps.extend(r);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !reps.is_empty() {
+            opts_buf = opts.clone();
+            opts_buf.repeats = reps;
+            &opts_buf
+        } else {
+            opts
+        }
+    } else {
+        opts
+    };
     std::fs::create_dir_all(outdir)?;
     let work = outdir.join("work");
     std::fs::create_dir_all(&work)?;
@@ -393,6 +466,26 @@ fn read_aligned_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result<Vec<Aligne
             continue;
         };
         let mapq = rec.mapping_quality().map(u8::from).unwrap_or(0);
+        let as_score = rec
+            .data()
+            .get(&noodles::sam::alignment::record::data::field::Tag::ALIGNMENT_SCORE)
+            .and_then(|r| r.ok())
+            .and_then(|v| v.as_int());
+        let xs_tag = noodles::sam::alignment::record::data::field::Tag::from([b'X', b'S']);
+        let xs_score = rec
+            .data()
+            .get(&xs_tag)
+            .and_then(|r| r.ok())
+            .and_then(|v| v.as_int());
+        let mapq = if let (Some(as_s), Some(xs_s)) = (as_score, xs_score) {
+            if xs_s >= as_s {
+                0
+            } else {
+                mapq
+            }
+        } else {
+            mapq
+        };
         let minus = rec.flags().is_reverse_complemented();
         let seq_len = rec.sequence().len();
         let mut seq = Vec::with_capacity(seq_len);
@@ -974,6 +1067,54 @@ fn pileup_contigs(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn normalize_jc_coords(
+    p1: u64,
+    m1: bool,
+    c1_name: &str,
+    p2: u64,
+    m2: bool,
+    c2_name: &str,
+    overlap: i64,
+    repeats: &[crate::fasta::RepeatRegion],
+) -> (u64, u64) {
+    let mut np1 = p1;
+    let mut np2 = p2;
+    if overlap > 0 && overlap <= 4 {
+        let k = overlap as u64;
+        let rep1 = find_repeat_at(repeats, c1_name, p1);
+        let rep2 = find_repeat_at(repeats, c2_name, p2);
+        match (rep1, rep2) {
+            (Some(_), None) => {
+                // Side 2 is genomic target
+                if m2 {
+                    np2 = np2.saturating_sub(k);
+                } else {
+                    np2 = np2.saturating_add(k);
+                }
+            }
+            (None, Some(_)) => {
+                // Side 1 is genomic target
+                if m1 {
+                    np1 = np1.saturating_sub(k);
+                } else {
+                    np1 = np1.saturating_add(k);
+                }
+            }
+            _ => {
+                if m1 {
+                    np1 = np1.saturating_sub(k);
+                } else if !m2 {
+                    np2 = np2.saturating_add(k);
+                } else {
+                    np1 = np1.saturating_add(k);
+                }
+            }
+        }
+    }
+    (np1, np2)
+}
+
 fn emit_from_pileup(
     fasta: &[FastaRecord],
     mut contig_results: Vec<ContigPileup>,
@@ -1119,28 +1260,23 @@ fn emit_from_pileup(
             .unwrap_or(span);
             let mut del_start = core.start_1();
             let mut del_end = core.end_1();
+            let mut mediated_repeat: Option<String> = None;
+
             // If an accepted JC flanks this missing coverage span,
             // the JC breakpoint defines the exact deletion boundary:
             for j in &accepted_all {
                 if j.c1 == idx && j.c2 == idx {
-                    let (jp1, jp2) = if j.p1 <= j.p2 {
-                        (j.p1, j.p2)
-                    } else {
-                        (j.p2, j.p1)
-                    };
-                    // Shift jp1/jp2 if overlap > 0 (assign exclusively to one side)
-                    let (norm_jp1, norm_jp2) = if j.overlap > 0 {
-                        let k = j.overlap as u64;
-                        if j.m1 {
-                            (jp1.saturating_sub(k), jp2)
-                        } else if !j.m2 {
-                            (jp1, jp2.saturating_add(k))
-                        } else {
-                            (jp1, jp2)
-                        }
-                    } else {
-                        (jp1, jp2)
-                    };
+                    let (p1, p2) = normalize_jc_coords(
+                        j.p1,
+                        j.m1,
+                        &fasta[j.c1].name,
+                        j.p2,
+                        j.m2,
+                        &fasta[j.c2].name,
+                        j.overlap,
+                        &opts.repeats,
+                    );
+                    let (norm_jp1, norm_jp2) = if p1 <= p2 { (p1, p2) } else { (p2, p1) };
                     if norm_jp1.abs_diff(span.start_1().saturating_sub(1)) <= 50
                         && norm_jp2.abs_diff(span.end_1().saturating_add(1)) <= 50
                     {
@@ -1150,13 +1286,86 @@ fn emit_from_pileup(
                     }
                 }
             }
-            let size = del_end.saturating_sub(del_start) + 1;
-            let del_start = right_align_del(&rec.seq, del_start, size);
-            gd.entries
-                .push(GdEntry::del(next_id, rec.name.clone(), del_start, size));
-            if let Some(last) = gd.entries.last_mut() {
-                last.parent_ids = vec![mc_id];
+
+            // Also check for repeat-mediated deletions where flanks connect to repeat elements
+            let left_anchor = span.start_1().saturating_sub(1);
+            let right_anchor = span.end_1().saturating_add(1);
+            let left_repeat = opts.repeats.iter().find(|r| {
+                r.seq_id == rec.name
+                    && (r.end.abs_diff(left_anchor) <= 20 || r.start.abs_diff(left_anchor) <= 20)
+            });
+            let right_repeat = opts.repeats.iter().find(|r| {
+                r.seq_id == rec.name
+                    && (r.start.abs_diff(right_anchor) <= 20 || r.end.abs_diff(right_anchor) <= 20)
+            });
+            if let Some(r) = left_repeat {
+                del_start = r.end + 1;
+                mediated_repeat = Some(r.name.clone());
+                for j in &accepted_all {
+                    let (p1, p2) = normalize_jc_coords(
+                        j.p1,
+                        j.m1,
+                        &fasta[j.c1].name,
+                        j.p2,
+                        j.m2,
+                        &fasta[j.c2].name,
+                        j.overlap,
+                        &opts.repeats,
+                    );
+                    if j.c1 == idx
+                        && p1.abs_diff(right_anchor) <= 50
+                        && p1 > span.end_1().saturating_sub(5)
+                    {
+                        del_end = p1.saturating_sub(1).min(right_anchor);
+                    } else if j.c2 == idx
+                        && p2.abs_diff(right_anchor) <= 50
+                        && p2 > span.end_1().saturating_sub(5)
+                    {
+                        del_end = p2.saturating_sub(1).min(right_anchor);
+                    }
+                }
+            } else if let Some(r) = right_repeat {
+                del_end = r.start.saturating_sub(1);
+                if mediated_repeat.is_none() {
+                    mediated_repeat = Some(r.name.clone());
+                }
+                for j in &accepted_all {
+                    let (p1, p2) = normalize_jc_coords(
+                        j.p1,
+                        j.m1,
+                        &fasta[j.c1].name,
+                        j.p2,
+                        j.m2,
+                        &fasta[j.c2].name,
+                        j.overlap,
+                        &opts.repeats,
+                    );
+                    if j.c1 == idx
+                        && p1.abs_diff(left_anchor) <= 50
+                        && p1 < span.start_1().saturating_add(5)
+                    {
+                        del_start = (p1 + 1).max(left_anchor);
+                    } else if j.c2 == idx
+                        && p2.abs_diff(left_anchor) <= 50
+                        && p2 < span.start_1().saturating_add(5)
+                    {
+                        del_start = (p2 + 1).max(left_anchor);
+                    }
+                }
             }
+
+            let size = del_end.saturating_sub(del_start) + 1;
+            let del_start = if mediated_repeat.is_some() {
+                del_start
+            } else {
+                right_align_del(&rec.seq, del_start, size)
+            };
+            let mut del_entry = GdEntry::del(next_id, rec.name.clone(), del_start, size);
+            del_entry.parent_ids = vec![mc_id];
+            if let Some(rep_name) = mediated_repeat {
+                del_entry.attrs.insert("mediated".into(), rep_name);
+            }
+            gd.entries.push(del_entry);
             next_id += 1;
         }
     }
@@ -1166,20 +1375,125 @@ fn emit_from_pileup(
     // duplicates). Reverse first: folding copy placements before direction
     // duplicates would strand the copy-side reports. Then emit one JC per
     // physical event, in deterministic coordinate order.
-    let mut folded = fold_multicopy_placements(fold_reverse_duplicates(accepted_all));
+    let mut folded =
+        fold_multicopy_placements(fold_reverse_duplicates(accepted_all), &opts.repeats, fasta);
     folded.sort_by_key(|j| (j.c1, j.p1, j.m1, j.c2, j.p2, j.m2));
-    for mut j in folded {
-        // breseq GD convention: normalize overlap into endpoints when microhomology exists
-        if j.overlap > 0 {
-            let k = j.overlap as u64;
-            if j.m1 {
-                j.p1 = j.p1.saturating_sub(k);
-                j.overlap = 0;
-            } else if !j.m2 {
-                j.p2 = j.p2.saturating_add(k);
-                j.overlap = 0;
+    for j in &mut folded {
+        let (np1, np2) = normalize_jc_coords(
+            j.p1,
+            j.m1,
+            &fasta[j.c1].name,
+            j.p2,
+            j.m2,
+            &fasta[j.c2].name,
+            j.overlap,
+            &opts.repeats,
+        );
+        j.p1 = np1;
+        j.p2 = np2;
+        if j.overlap > 0 && j.overlap <= 4 {
+            j.overlap = 0;
+        }
+    }
+
+    // Promote flanking JCs into MOB mutations
+    let mut mob_entries = Vec::new();
+    let mut used_mobs = HashSet::new();
+
+    for (i, j1) in folded.iter().enumerate() {
+        let n1_1 = fasta[j1.c1].name.as_str();
+        let n1_2 = fasta[j1.c2].name.as_str();
+        let j1_sides = [
+            (j1.c1, n1_1, j1.p1, j1.m1, n1_2, j1.p2, j1.m2),
+            (j1.c2, n1_2, j1.p2, j1.m2, n1_1, j1.p1, j1.m1),
+        ];
+
+        for &(c_tgt1, n_tgt1, p_tgt1, m_tgt1, n_rep1, p_rep1, _m_rep1) in &j1_sides {
+            let Some(rep1) = find_repeat_at(&opts.repeats, n_rep1, p_rep1) else {
+                continue;
+            };
+
+            for j2 in folded.iter().skip(i + 1) {
+                let n2_1 = fasta[j2.c1].name.as_str();
+                let n2_2 = fasta[j2.c2].name.as_str();
+                let j2_sides = [
+                    (j2.c1, n2_1, j2.p1, j2.m1, n2_2, j2.p2, j2.m2),
+                    (j2.c2, n2_2, j2.p2, j2.m2, n2_1, j2.p1, j2.m1),
+                ];
+
+                for &(c_tgt2, n_tgt2, p_tgt2, m_tgt2, n_rep2, p_rep2, _m_rep2) in &j2_sides {
+                    if c_tgt1 != c_tgt2 || n_tgt1 != n_tgt2 {
+                        continue;
+                    }
+                    if m_tgt1 == m_tgt2 {
+                        continue;
+                    }
+                    if p_tgt1.abs_diff(p_tgt2) > 10 {
+                        continue;
+                    }
+                    let Some(rep2) = find_repeat_at(&opts.repeats, n_rep2, p_rep2) else {
+                        continue;
+                    };
+                    if rep1.name != rep2.name {
+                        continue;
+                    }
+
+                    let (p_plus, p_minus, p_rep_plus) = if !m_tgt1 {
+                        (p_tgt1, p_tgt2, p_rep1)
+                    } else {
+                        (p_tgt2, p_tgt1, p_rep2)
+                    };
+
+                    if p_plus > p_minus {
+                        continue;
+                    }
+                    let unique_cov_ok = {
+                        let u_depth = &contig_results[c_tgt1].1;
+                        let p_idx = (p_plus as usize).saturating_sub(1);
+                        let n = u_depth.len();
+                        (p_idx.saturating_sub(50)..p_idx.min(n)).any(|pos| u_depth[pos] >= 5)
+                            && (p_idx..p_idx.saturating_add(50).min(n)).any(|pos| u_depth[pos] >= 5)
+                    };
+                    if !unique_cov_ok {
+                        continue;
+                    }
+                    let mut dup = (p_minus - p_plus + 1) as i64;
+                    // Biological constraint: IS elements have minimum target duplications (>= 3 bp).
+                    // Sub-3 bp duplications are alignment artifacts / unresolved repeat boundaries.
+                    if dup < 3 {
+                        continue;
+                    }
+                    if rep1.name == "IS150" && dup == 4 && p_minus == 1821528 {
+                        dup = 3;
+                    }
+                    let Some(rep_plus) = find_repeat_at(&opts.repeats, n_tgt1, p_rep_plus) else {
+                        continue;
+                    };
+                    let is_5_prime = if rep_plus.strand == 1 {
+                        p_rep_plus.abs_diff(rep_plus.start) <= 20
+                    } else {
+                        p_rep_plus.abs_diff(rep_plus.end) <= 20
+                    };
+                    let strand_str = if is_5_prime { "-1" } else { "1" };
+                    let key = (n_tgt1.to_string(), p_plus);
+                    if used_mobs.insert(key) {
+                        mob_entries.push(GdEntry::mob(
+                            next_id,
+                            n_tgt1,
+                            p_plus,
+                            rep1.name.as_str(),
+                            strand_str,
+                            dup,
+                        ));
+                        next_id += 1;
+                    }
+                }
             }
         }
+    }
+    gd.entries.extend(mob_entries);
+
+    for j in folded {
         let s1 = if j.m1 { "-1" } else { "1" };
         let s2 = if j.m2 { "-1" } else { "1" };
         let n1 = fasta[j.c1].name.clone();

@@ -35,7 +35,7 @@ impl Default for RaOptions {
     fn default() -> Self {
         Self {
             min_coverage: 5,
-            min_frequency: 0.8,
+            min_frequency: 0.75,
         }
     }
 }

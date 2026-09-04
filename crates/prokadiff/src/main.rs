@@ -92,6 +92,16 @@ fn run(cli: Cli) -> Result<(), RunError> {
     }
 }
 
+fn load_repeats(refs: &[PathBuf]) -> Vec<prokadiff_evidence::fasta::RepeatRegion> {
+    let mut repeats = Vec::new();
+    for r in refs {
+        if let Ok(reps) = prokadiff_evidence::fasta::parse_genbank_repeats(r) {
+            repeats.extend(reps);
+        }
+    }
+    repeats
+}
+
 fn run_evidence(args: EvidenceArgs) -> Result<(), RunError> {
     validate_evidence(&args)?;
     let work = args.outdir.join("work");
@@ -100,9 +110,11 @@ fn run_evidence(args: EvidenceArgs) -> Result<(), RunError> {
     let reads = FastqInput {
         files: args.fastq.clone(),
     };
+    let repeats = load_repeats(&args.refs);
     let opts = EngineOptions {
         threads: args.threads.max(1),
         keep_bam: args.keep_bam,
+        repeats,
         ..EngineOptions::default()
     };
     let gd = run_sample(&ref_fa, &reads, &args.outdir, &opts)?;
@@ -115,9 +127,11 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
     let work = job.outdir.join("work");
     std::fs::create_dir_all(&work)?;
     let ref_fa = materialize_ref(&job.refs, &work)?;
+    let repeats = load_repeats(&job.refs);
     let opts = EngineOptions {
         threads: job.threads,
         keep_bam: job.keep_bam,
+        repeats,
         ..EngineOptions::default()
     };
 

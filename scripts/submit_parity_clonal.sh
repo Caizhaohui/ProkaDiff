@@ -6,7 +6,7 @@
 #
 #SBATCH -p qcpu_18i
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=60G
+#SBATCH --mem=16G
 #SBATCH -t 24:00:00
 #SBATCH -J pd_clonal
 #SBATCH -o benchmark/logs/%x-%j.out

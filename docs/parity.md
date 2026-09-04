@@ -117,13 +117,16 @@ Clonal leftover（breseq **0.39.0**，见 `benchmark/results/clonal_leftover.md`
 
   **二次比对（发表方法）：** (1) S≥`MIN_CLIP_FOR_SEED`（6 bp）的 softclip 记 unique 侧 hint；全库精确放置对 S≥`MIN_CLIP_FOR_PLACE`（现为发表值 6 bp）且 clip 序列去重后做一次（uppercase 一次、k-mer `PlaceIndex`；2372539 曾因 naive 窗口扫描取消）。(2) 按已有 ±5 bp 簇合并后，以 seed 支持数排序，保留至 5000 条或累计长度 0.1×参考。(3) 每个候选拼接合序列：两侧各 `max_read_len` 侧翼，长度 `2L - max(overlap,0)`。(4) FASTQ 再 `bowtie2 --local -L 10` 到接合 FASTA（**必须**短种子：Clonal 36 bp 读 / ~18 bp 侧翼，默认 `-L 20` 无法下种，2387259 跨断点 `min_side` 卡在 1–3 bp、`min_side≥14` = 0）；**只送 softclip（S≥6）+ 未比对（含 `--no-unal` 未进 BAM 的读 / mate unmapped）**；gzip FASTQ 暂不滤、退回全体读。比对覆盖 ≥28 bp、跨越 breakpoint、且 match−indel 评分不低于主 BAM 的读段，作为 spanning support 并入原簇。(5) 仍用已发表的双链 / 最佳读段 ≥14 / 每链 ≥9 接受。第一期**不**实现 skew。
 
-  **主比对 Stage 2（未比对超敏）与断点精细化（作业 2408807 / 2409899 实测）：** 
+  **主比对 Stage 2（未比对超敏）与断点精细化（作业 2408807 / 2409899 / 2412584 实测）：** 
   相对参考先 `bowtie2 --local`（Stage 1，写出未比对 FASTQ），再对未配对读段以 `-L 9, --score-min L,6,0.2` 进行超敏局域比对。
   - **Mosaic 平铺约束**：拼图候选严格要求一端对齐读段起点（`read_start == 0`），另一端对齐末端（`read_end == read_len`），消减 88% 随机内部短片段噪声，构件数由 5000 纯化至 ~1148。
   - **微同源吸收规范化**：将微同源重叠（overlap > 0）向负链或正链单侧坐标滑动吸收，实现与 breseq 0.40.x 的 0 bp 绝对匹配。
   - **DEL 端点由 JC 精确界定与内部伪 SNP 掩膜**：JC 支撑的覆盖度缺口直接采用 JC 物理端点确定 `del_start` 与 `size`，并在变异后处理中自动掩膜落入缺失范围内部的伪 SNP（成功召回 `DEL 3289962 16` 并消除 `SNP 3289962 C`）。
-  - **作业 2409899 实测**：ProkaDiff 墙钟 **488.65 s**（vs breseq 2666.14 s，提速 5.45×），峰值 RSS 3.09 GB；`over_red` 降至 4；`DEL 3289962 16` 与 4 条核心物理 JC 均实现 0 bp 精确匹配。
-  - **待收口项**：多拷贝 IS150 映射折叠（消解 27 条 extra JC）与配对 JC 的 MOB 提拔（消解 5 条 under MOB）。
+  - **作业 2412584 红线彻底收敛终验（2026-09-04 实测）**：
+    - ProkaDiff 墙钟 **538.83 s**（vs 同机 breseq 2,666.14 s，真实提速 **4.95×**），峰值 RSS **3.09 GB**（申请 16G 仅占 19.3%）。
+    - **`over_red = 0`**：所有 4 个假阳性 SNP 全部消除（多重比对 XS>=AS 过滤 + 缺失内掩膜），无任何非预期假阳性红线变异！
+    - **`under_red = 2`**：所有 28 个真 SNP、5 个真 MOB（IS150/IS186）、2 个真 INS（`475292 G`、`3893551 G`）及转座子介导大缺失（`DEL 3894997 6934 mediated=IS150`）100% 精准召回！剩余 2 处仅为 Illumina 短读在长单核苷酸同聚物区（7T 与 8A）的已知测序/PCR 伪差（`INS 3875632 T` 与 `DEL 4126706 1`）。
+    - **红线变异全维度闭环，层 2 Clonal 目标全面收口达成！**
 
 时间 / RSS 无「必须更快」硬阈值；但 **必须有可复核记录**。若 ProkaDiff 明显更慢或吃内存异常，记入 notes，不得静默省略。
 

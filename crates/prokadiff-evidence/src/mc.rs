@@ -139,15 +139,14 @@ fn flanks_have_unique_coverage(span: MissingSpan, unique_depth: &[u32], cutoff: 
     if span.start_0 == 0 || span.end_0 >= unique_depth.len() {
         return false;
     }
-    // Pileup unique depth is end-trimmed by 1 bp; allow that margin when
-    // looking for unique flanks of a true-missing core.
-    const TRIM: usize = 1;
+    // Pileup unique depth tapers down near deletion breakpoints; allow up to 20 bp margin.
+    const WINDOW: usize = 20;
     let left_ok = (0..span.start_0)
         .rev()
-        .take(1 + TRIM)
+        .take(WINDOW)
         .any(|i| unique_depth[i] >= cutoff);
     let right_ok = (span.end_0..unique_depth.len())
-        .take(1 + TRIM)
+        .take(WINDOW)
         .any(|i| unique_depth[i] >= cutoff);
     left_ok && right_ok
 }
@@ -190,7 +189,7 @@ pub fn promote_mc_to_del(
 /// First-period MC→DEL rule (clean-room vs published methods, not breseq source):
 ///
 /// 1. Contig-terminal unique-depth 0 is not a DEL (breseq reports UN).
-/// 2. Both unique flanks must have unique depth ≥ coverage cutoff.
+/// 2. Both unique flanks must have unique depth ≥ coverage cutoff (or JC supports both flanks).
 /// 3. Interior **total** depth (any MAPQ) must stay below cutoff — unique-only
 ///    holes in repeats / IS copies stay MC.
 /// 4. Without JC: unique-0 core length ≥ `del_min_len` (default 50).
@@ -219,13 +218,14 @@ pub fn promote_mc_to_del_with_jc(
     if core.start_0 == 0 || core.end_0 == unique_depth.len() {
         return false;
     }
-    if !flanks_have_unique_coverage(core, unique_depth, cutoff) {
+    let has_jc_support = jc_supports_both_flanks(core, jc_endpoints_1);
+    if !has_jc_support && !flanks_have_unique_coverage(core, unique_depth, cutoff) {
         return false;
     }
     if !interior_total_below_cutoff(core, total_depth, cutoff) {
         return false;
     }
-    if jc_supports_both_flanks(core, jc_endpoints_1) {
+    if has_jc_support {
         return core.len() >= min_span;
     }
     core.len() >= del_min_len
