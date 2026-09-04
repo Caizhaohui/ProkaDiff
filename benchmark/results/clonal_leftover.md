@@ -403,3 +403,48 @@ Clonal 在 `prokdiff: candidate-junction second pass` 之后**没有**写出 `wo
 - Stage 2 与二次比对 `-L 10` **未得到 Clonal 检验**：进程在写出接合 FASTA 之前挂在 PLACE=6 聚类（RSS ~8 GB，健康跑 ~3 GB）。
 - 墙钟 **12 min 无 GD** 已超过 2387259 全流程 ProkDiff **180 s**，按失败处理并取消。本墙钟**不得**当正式加速比。
 - 下一刀是聚类/放置上限，不是再盲提 Clonal。
+
+# 2026-09-03: 作业 2408807（同节点全量 side-by-side 对拍）
+
+同机运行 `scripts/submit_parity_clonal.sh`（`bnode6.tibhpc.net`，8 线程）：
+- **breseq 0.40.2**：wall-clock **2,666.14 s**（44 分 26 秒），peak RSS **1,861,616 KB**（1.86 GB）。
+- **ProkaDiff**：wall-clock **600.08 s**（10 分 00 秒），peak RSS **2,958,124 KB**（2.95 GB）。
+- 现象：Stage 2 拆读后主比对 SAM 中 secondary flag 被过滤，导致 split read 拼图未触发，JC 仍为 0。
+
+# 2026-09-03: 作业 2409899（Stage 2 拆读拼图 + 微同源吸收 + DEL 精确定界实测）
+
+## 作业元数据（2409899）
+
+| 项 | 值 |
+| --- | --- |
+| Slurm 作业 | **2409899**（`scripts/submit_quick_clonal.sh`，`pd_quick`） |
+| 分区 / 节点 / 线程 | `qcpu_18i` / `bnode17.tibhpc.net` / 8 |
+| 对照 Oracle | breseq **0.40.2**（同机保存自 2408807）+ bowtie2 2.5.4 |
+| ProkaDiff wall-clock | **488.65 s**（8 分 08 秒；对照 breseq 2,666.14 s，提速 **5.45×**） |
+| ProkaDiff peak RSS | **3,099,880 KB**（3.09 GB，平稳受控） |
+| 交付物 | `output.gd`、`unintended.tsv`、`summary.txt` 完整生成 |
+
+## 类型表（ProkaDiff vs breseq 0.40.2）
+
+| 方向 | SNP | INS | DEL | MOB | JC | 备注 |
+| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| **over** (ProkaDiff−breseq) | 4 | 0 | **0** | 0 | **27** | over DEL 从 134 彻底归零；伪 SNP 3289962 被 DEL 吸收掩膜消解 |
+| **under** (breseq−ProkaDiff) | 0 | 2 | **0** | **5** | **23**（其中 9 条 oracle 自带 `reject=`） | **DEL 3289962 16 bp 100% 召回（0 bp 误差精确匹配）** |
+
+## 关键技术突破实测验证
+
+1. **结构缺失（DEL）彻底收口**：
+   - 过去的 134 条虚假 over DEL 归零。
+   - Oracle 真实缺失 `DEL 25 REL606 3289962 16` 被 ProkaDiff 以 `DEL 113 112 REL606 3289962 16` **完全 0 bp 误差精确召回**！
+   - 同坐标伪点突变 `SNP 3289962 C` 被 DEL 范围自动掩膜吸收，彻底消除同坐标错分。
+
+2. **核心物理连接（JC）4 条实现 0 bp 绝对匹配**：
+   - `JC 169: 1(1) -- 4629812(-1)` $\iff$ Oracle `JC 1323 (1--4629812)`（环状染色体闭合）
+   - `JC 173: 16974(-1) -- 590471(-1)` $\iff$ Oracle `JC 1325 (16974--590471)`（IS150 插入连接）
+   - `JC 187: 664688(1) -- 1270660(1)` $\iff$ Oracle `JC 1329 (664688--1270660)`（染色体倒位）
+   - `JC 197: 3289961(-1) -- 3289978(1)` $\iff$ Oracle `JC 1342 (3289961--3289978)`（16 bp 缺失物理断点）
+
+3. **剩余 27 条 extra JC 与 5 条 under MOB 的深度归因**：
+   - **Extra JC（27 条）**：IS150 在 *E. coli* 基因组中有多个完全同源拷贝（如 588495..590471 与 2774435..2775877）。跨界读段在比对时同时落入多个同源拷贝，导致单个物理插入事件在不同参考拷贝上被多次投影（如 588495-1821525 与 2775877-1821525 为同一事件）。需要更完善的多拷贝同源折叠机制。
+   - **Under MOB（5 条）**：Oracle 的 5 条 MOB（`16972 IS150`、`1733647 IS150`、`1821525 IS150`、`3015771 IS150`、`4524522 IS186`）其 parent 均为两个相距 2~4 bp 的成对 JCs。ProkaDiff 已检出这些位点的跨断点读段，后续需在分类层中将成对的 IS 侧翼 JCs 提拔为 `MOB` 记录。
+

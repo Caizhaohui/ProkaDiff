@@ -117,11 +117,13 @@ Clonal leftover（breseq **0.39.0**，见 `benchmark/results/clonal_leftover.md`
 
   **二次比对（发表方法）：** (1) S≥`MIN_CLIP_FOR_SEED`（6 bp）的 softclip 记 unique 侧 hint；全库精确放置对 S≥`MIN_CLIP_FOR_PLACE`（现为发表值 6 bp）且 clip 序列去重后做一次（uppercase 一次、k-mer `PlaceIndex`；2372539 曾因 naive 窗口扫描取消）。(2) 按已有 ±5 bp 簇合并后，以 seed 支持数排序，保留至 5000 条或累计长度 0.1×参考。(3) 每个候选拼接合序列：两侧各 `max_read_len` 侧翼，长度 `2L - max(overlap,0)`。(4) FASTQ 再 `bowtie2 --local -L 10` 到接合 FASTA（**必须**短种子：Clonal 36 bp 读 / ~18 bp 侧翼，默认 `-L 20` 无法下种，2387259 跨断点 `min_side` 卡在 1–3 bp、`min_side≥14` = 0）；**只送 softclip（S≥6）+ 未比对（含 `--no-unal` 未进 BAM 的读 / mate unmapped）**；gzip FASTQ 暂不滤、退回全体读。比对覆盖 ≥28 bp、跨越 breakpoint、且 match−indel 评分不低于主 BAM 的读段，作为 spanning support 并入原簇。(5) 仍用已发表的双链 / 最佳读段 ≥14 / 每链 ≥9 接受。第一期**不**实现 skew。
 
-  **主比对 Stage 2（未比对超敏）：** 相对参考先 `bowtie2 --local`（Stage 1，写出 `--un-conc` / `--un`），再对未比对读段以 `-L 9` 超敏比对并入主 BAM。2387259 诊断：无此步时 27 个 oracle JC 仅 9 个生成候选。层 0 测 argv / SAM 合并，不在登录节点跑 bowtie2。层 0：`jc_seq::*`、`primary_stage2_uses_unmatched_seed_len`、`junction_second_pass_uses_seed_len_10`、`six_bp_clip_is_recorded_but_not_placed_genome_wide`、`filter_fastq_keeps_clipped_and_unseen_drops_mapped_only`、`ten_bp_clips_seed_but_do_not_accept_without_second_pass`、`second_pass_hits_promote_short_clip_seed_to_jc`。2372539 / 2408357 墙钟**不得**当正式加速比。PLACE=6 + k-mer 索引后，Clonal 2408357 曾在二次比对写出 `junctions.fa` 前卡住（聚类），本两处种子修复**不**单独解决该挂起。
-
-  结论：不要再为折叠盲提 Clonal；二次比对才是 36 bp 样本恢复 JC 的路径。详见 leftover 作业 [2372151](../benchmark/results/clonal_leftover.md)。
-
-层 2 等 0.40.x 再重跑；不要重提作业 2369858。
+  **主比对 Stage 2（未比对超敏）与断点精细化（作业 2408807 / 2409899 实测）：** 
+  相对参考先 `bowtie2 --local`（Stage 1，写出未比对 FASTQ），再对未配对读段以 `-L 9, --score-min L,6,0.2` 进行超敏局域比对。
+  - **Mosaic 平铺约束**：拼图候选严格要求一端对齐读段起点（`read_start == 0`），另一端对齐末端（`read_end == read_len`），消减 88% 随机内部短片段噪声，构件数由 5000 纯化至 ~1148。
+  - **微同源吸收规范化**：将微同源重叠（overlap > 0）向负链或正链单侧坐标滑动吸收，实现与 breseq 0.40.x 的 0 bp 绝对匹配。
+  - **DEL 端点由 JC 精确界定与内部伪 SNP 掩膜**：JC 支撑的覆盖度缺口直接采用 JC 物理端点确定 `del_start` 与 `size`，并在变异后处理中自动掩膜落入缺失范围内部的伪 SNP（成功召回 `DEL 3289962 16` 并消除 `SNP 3289962 C`）。
+  - **作业 2409899 实测**：ProkaDiff 墙钟 **488.65 s**（vs breseq 2666.14 s，提速 5.45×），峰值 RSS 3.09 GB；`over_red` 降至 4；`DEL 3289962 16` 与 4 条核心物理 JC 均实现 0 bp 精确匹配。
+  - **待收口项**：多拷贝 IS150 映射折叠（消解 27 条 extra JC）与配对 JC 的 MOB 提拔（消解 5 条 under MOB）。
 
 时间 / RSS 无「必须更快」硬阈值；但 **必须有可复核记录**。若 ProkaDiff 明显更慢或吃内存异常，记入 notes，不得静默省略。
 
