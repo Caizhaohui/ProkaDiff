@@ -100,14 +100,14 @@
 
 ### 2. 中期重点：代码工程健壮性与架构解耦 (Refactoring)
 
-* [ ] **拆分 `engine.rs` 巨石文件（当前 2500+ 行）**
-  * **背景**：`engine.rs` 目前聚合了 BAM I/O、接头聚类折叠、MC 缺失判定、MOB 突变提拔、DEL/SNP 掩膜以及 1000+ 行单元测试，维护成本较高。
-  * **行动**：按职责拆分模块：
-    * `crates/prokadiff-evidence/src/engine/bam_io.rs`：BAM 单遍扫描与读段提取；
-    * `crates/prokadiff-evidence/src/engine/jc_cluster.rs`：接头聚类、反向去重与多拷贝折叠；
-    * `crates/prokadiff-evidence/src/engine/emit.rs`：覆盖度缺失、DEL 提拔、MOB 突变生成与掩膜；
-    * `crates/prokadiff-evidence/src/engine/tests.rs`：纯内存单元测试集。
-    * 拆分后各文件规模控制在 300~500 行以内，逻辑内聚清晰。
+* [x] **拆分 `engine.rs` 巨石文件（原本 2596 行）**
+  * **状态**：已完成（拆分为 `crates/prokadiff-evidence/src/engine/` 子模块目录）。
+  * **详情**：
+    * `bam_io.rs`（312 行）：BAM 单遍扫描、noodles CIGAR 解析与第二轮接头比对打分提取；
+    * `jc_cluster.rs`（545 行）：接头贪心聚类容差合并、反向成对去重、多拷贝折叠与断点种子候选提取；
+    * `emit.rs`（435 行）：RA 共识碱基、缺失覆盖度 MC 提拔、IS 重复序列元件靶向 MOB 生成与 DEL 内部 SNP 掩膜；
+    * `mod.rs`（219 行）：对外统一导出 `EngineOptions`、`ContigPileup`、`run_sample`、`call_from_bam`、`call_from_aligned` 等无感知向下兼容接口；
+    * `tests.rs`（1037 行）：全量内存级单元测试与 BAM fixture 测试，全部 130 个 workspace 测试 100% 绿色通过。
 * [ ] **引入结构化分级日志框架 (`tracing` 或 `env_logger`)**
   * **背景**：目前进度信息全使用原生的 `eprintln!`，无法调整输出级别。
   * **行动**：引入 `tracing` / `tracing-subscriber`，在 CLI 中支持 `-q / --quiet`（静默模式）与 `-v / --verbose`（调试模式），并将阶段耗时与过滤统计可重定向输出。
