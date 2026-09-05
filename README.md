@@ -194,22 +194,48 @@ NC_000913.3	345678	345678	INS	.	ATCG
 
 ---
 
-## Classification Logic
+## Mutation Types & Classification Logic
 
-Every unintended mutation detected in the edited strain is assigned to exactly one of three mutually exclusive classes in strict hierarchical order:
+`ProkaDiff` distinguishes the technical **calling of mutation types** (`gd_type`) from their biological **attribution into classification classes** (`class`).
+
+### 1. Mutation Types Identified (`gd_type`)
+
+After dual-strain background subtraction ($M_{\text{edited}} \setminus M_{\text{starter}}$) and optional on-target edit masking ($\setminus M_{\text{intended}}$), all unintended mutations are called and typed:
+
+| `gd_type` | Mutation Description | Calling Engine |
+| :--- | :--- | :--- |
+| **`SNP`** | Single-nucleotide polymorphism (point mutation) | Parallel Pileup (`RA`) |
+| **`INS`** | Short sequence insertion ($\le 2$ bp) | Read Alignment Split (`RA`) |
+| **`DEL`** | Deletion: short indel ($\le 2$ bp) or structural deletion (> 2 bp) | `RA` ($\le 2$ bp) / Missing Coverage (`MC` > 2 bp) |
+| **`MOB`** | Mobile element insertion (e.g., IS transposon jumping with TSD) | Junction Pairing (`JC` + GBK Repeat Index) |
+| **`JC`** | Novel sequence junction / genomic rearrangement / inversion | Two-Stage Split-Read Chimeric Alignment (`JC`) |
+| **`AMP` / `CON`** | Gene amplification or sequence replacement / conversion | Evidence Integration |
+
+---
+
+### 2. Hierarchical 3-Class Categorization (`class`)
+
+Every unintended mutation (`SNP`, `INS`, `DEL`, `MOB`, `JC`) is assigned to **exactly one** of three mutually exclusive classes in strict hierarchical order:
 
 ```mermaid
 graph TD
-    A[Unintended Mutation] --> B{Is Structural Event?}
-    B -- Yes: JC, MOB, DEL > 2bp, AMP, CON --> C[structural]
-    B -- No --> D{Near Spacer Homolog + PAM?}
-    D -- Yes: <= 4 mismatches, within window --> E[near_homolog]
-    D -- No --> F[scattered_snv]
+    A["Unintended Mutations<br/>(SNP / INS / DEL / MOB / JC)"] --> B{"Is Structural Event?<br/>• MOB, JC, AMP, CON<br/>• Large DEL > 2 bp"}
+    B -- "Yes" --> C["Class (3): structural<br/>(Transposons, rearrangements, large deletions)"]
+    B -- "No: Point mutations & short indels<br/>(SNP, INS, DEL ≤ 2 bp)" --> D{"Near Spacer Homolog + PAM?<br/>• ≤ 4 mismatches<br/>• Distance ≤ 50 bp<br/>• Cas9 / Cas12a"}
+    D -- "Yes" --> E["Class (1): near_homolog<br/>(Off-target cleavage SNPs & indels)"]
+    D -- "No (or --editor dsb)" --> F["Class (2): scattered_snv<br/>(Genome-wide scattered SNPs & short indels)"]
 ```
 
-1. **`structural`**: Large rearrangements, deletions (>2 bp), mobile element movements, and novel junction coordinates.
-2. **`near_homolog`**: Point mutations or small indels within proximity (default 50 bp) of a spacer homolog with up to 4 mismatches adjacent to a valid PAM.
-3. **`scattered_snv`**: Remaining point mutations or short indels located elsewhere across the chromosome.
+1. **`structural` (Class 3)**:
+   - Covers all large structural events: **novel sequence junctions (`JC`)**, **mobile genetic element insertions (`MOB`)**, **amplifications (`AMP`)**, **conversions (`CON`)**, and **large deletions (`DEL` > 2 bp)**.
+   - Evaluated first to ensure structural rearrangements are never mislabeled as isolated point mutations.
+2. **`near_homolog` (Class 1)**:
+   - Covers **point mutations (`SNP`)** and **short indels (`INS`, `DEL` $\le 2$ bp)** located in close proximity (default $\le 50$ bp) to an off-target homologous spacer sequence ($\le 4$ mismatches) with a valid PAM motif (e.g., Cas9 `NGG`, Cas12a `TTTV`).
+   - Represents canonical RNA-guided Cas endonuclease off-target cleavage and repair.
+3. **`scattered_snv` (Class 2)**:
+   - Covers all remaining **point mutations (`SNP`)** and **short indels (`INS`, `DEL` $\le 2$ bp)** scattered across the chromosome away from homologous target sites.
+   - Associated with global cellular stress, DSB-triggered SOS response (error-prone DNA polymerases IV / V, DinB / UmuDC), or spontaneous culture drift.
+   - In `--editor dsb` mode (unguided DSB), all non-structural mutations directly enter this class.
 
 ---
 
