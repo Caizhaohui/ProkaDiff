@@ -35,7 +35,13 @@ pub struct EngineOptions {
     pub repeats: Vec<crate::fasta::RepeatRegion>,
 }
 
-type ContigPileup = (Vec<PileupColumn>, Vec<u32>, Vec<u32>, Vec<SplitCandidate>);
+#[derive(Clone, Debug)]
+pub struct ContigPileup {
+    pub columns: Vec<PileupColumn>,
+    pub unique_depth: Vec<u32>,
+    pub total_depth: Vec<u32>,
+    pub splits: Vec<SplitCandidate>,
+}
 
 /// Two split candidates whose side1 AND side2 both land within this many bp
 /// are clustered into one junction before `accept_junction`. IS terminal /
@@ -139,6 +145,30 @@ struct AcceptedJc {
     /// contribute no id and set `has_cigar` instead.
     ids: HashSet<(usize, SplitOrigin)>,
     has_cigar: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct JcSideRef<'a> {
+    pos: u64,
+    minus: bool,
+    contig: &'a str,
+}
+
+impl AcceptedJc {
+    fn side1<'a>(&self, fasta: &'a [FastaRecord]) -> JcSideRef<'a> {
+        JcSideRef {
+            pos: self.p1,
+            minus: self.m1,
+            contig: &fasta[self.c1].name,
+        }
+    }
+    fn side2<'a>(&self, fasta: &'a [FastaRecord]) -> JcSideRef<'a> {
+        JcSideRef {
+            pos: self.p2,
+            minus: self.m2,
+            contig: &fasta[self.c2].name,
+        }
+    }
 }
 
 /// (contig, 1-based pos, minus) of one junction side.
@@ -401,18 +431,10 @@ pub fn run_sample(
         "prokadiff: pileup + junction seeds (place S>={})",
         crate::jc_seq::MIN_CLIP_FOR_PLACE
     );
-    let aligned = read_aligned_bam(&bam_path, &fasta)?;
-    let contig_results = pileup_contigs(&fasta, &aligned, opts);
+    let primary_data = read_primary_bam(&bam_path, &fasta)?;
+    let contig_results = pileup_contigs(&fasta, &primary_data.aligned, opts);
     eprintln!("prokadiff: candidate-junction second pass");
-    let extra = second_pass_splits(
-        &fasta,
-        reads,
-        &bam_path,
-        &contig_results,
-        &aligned,
-        opts,
-        &work,
-    )?;
+    let extra = second_pass_splits(&fasta, reads, &primary_data, &contig_results, opts, &work)?;
     let gd = emit_from_pileup(&fasta, contig_results, opts, &extra);
     let gd_path = outdir.join("output.gd");
     gd.write_path(&gd_path)?;
@@ -432,7 +454,20 @@ pub fn call_from_bam(
     Ok(call_from_aligned(fasta, &aligned, opts))
 }
 
+struct PrimaryBamData {
+    aligned: Vec<AlignedRead>,
+    second_pass_keep: HashSet<String>,
+    second_pass_seen: HashSet<String>,
+    primary_scores: HashMap<String, i32>,
+}
+
 fn read_aligned_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result<Vec<AlignedRead>> {
+    Ok(read_primary_bam(bam_path, fasta)?.aligned)
+}
+
+fn read_primary_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result<PrimaryBamData> {
+    use crate::align::{keep_for_second_pass, normalize_qname};
+
     let name_to_idx: HashMap<&str, usize> = fasta
         .iter()
         .enumerate()
@@ -450,11 +485,56 @@ fn read_aligned_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result<Vec<Aligne
         .collect();
 
     let mut aligned = Vec::new();
+    let mut second_pass_keep = HashSet::new();
+    let mut second_pass_seen = HashSet::new();
+    let mut primary_scores = HashMap::new();
+
     for rec in reader.records() {
         let rec = rec.map_err(|e| EvidenceError::Alignment(e.to_string()))?;
-        if rec.flags().is_unmapped() || rec.flags().is_secondary() {
+        if rec.flags().is_secondary() {
             continue;
         }
+
+        let name = rec.name().map(|n| n.to_string()).unwrap_or_default();
+        let norm_name = if !name.is_empty() {
+            let q = normalize_qname(&name).to_string();
+            second_pass_seen.insert(q.clone());
+            Some(q)
+        } else {
+            None
+        };
+
+        let cigar = noodles_cigar(&rec)?;
+        let max_s = cigar
+            .iter()
+            .filter(|op| op.kind == CigarKind::SoftClip)
+            .map(|op| op.len)
+            .max()
+            .unwrap_or(0);
+
+        if let Some(ref q) = norm_name {
+            if keep_for_second_pass(
+                rec.flags().is_unmapped(),
+                rec.flags().is_mate_unmapped(),
+                max_s,
+            ) {
+                second_pass_keep.insert(q.clone());
+            }
+        }
+
+        if rec.flags().is_unmapped() {
+            continue;
+        }
+
+        if let Some(ref q) = norm_name {
+            let (m, i, d, _) = cigar_counts(&cigar);
+            let score = crate::jc_seq::cigar_match_indel_score(m, i, d);
+            primary_scores
+                .entry(q.clone())
+                .and_modify(|s: &mut i32| *s = (*s).max(score))
+                .or_insert(score);
+        }
+
         let Some(Ok(rid)) = rec.reference_sequence_id() else {
             continue;
         };
@@ -494,7 +574,6 @@ fn read_aligned_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result<Vec<Aligne
                 seq.push(b);
             }
         }
-        let cigar = noodles_cigar(&rec)?;
         aligned.push(AlignedRead {
             contig_idx,
             ref_start_0: start.get() as i64 - 1,
@@ -504,45 +583,12 @@ fn read_aligned_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result<Vec<Aligne
             mapq,
         });
     }
-    Ok(aligned)
-}
-
-fn second_pass_read_names(bam_path: &Path) -> Result<(HashSet<String>, HashSet<String>)> {
-    use crate::align::{keep_for_second_pass, normalize_qname};
-
-    let mut reader = File::open(bam_path).map(bam::io::Reader::new)?;
-    let _header = reader
-        .read_header()
-        .map_err(|e| EvidenceError::Alignment(e.to_string()))?;
-    let mut keep = HashSet::new();
-    let mut seen = HashSet::new();
-    for rec in reader.records() {
-        let rec = rec.map_err(|e| EvidenceError::Alignment(e.to_string()))?;
-        if rec.flags().is_secondary() {
-            continue;
-        }
-        let name = rec.name().map(|n| n.to_string()).unwrap_or_default();
-        if name.is_empty() {
-            continue;
-        }
-        let q = normalize_qname(&name).to_string();
-        seen.insert(q.clone());
-        let cigar = noodles_cigar(&rec)?;
-        let max_s = cigar
-            .iter()
-            .filter(|op| op.kind == CigarKind::SoftClip)
-            .map(|op| op.len)
-            .max()
-            .unwrap_or(0);
-        if keep_for_second_pass(
-            rec.flags().is_unmapped(),
-            rec.flags().is_mate_unmapped(),
-            max_s,
-        ) {
-            keep.insert(q);
-        }
-    }
-    Ok((keep, seen))
+    Ok(PrimaryBamData {
+        aligned,
+        second_pass_keep,
+        second_pass_seen,
+        primary_scores,
+    })
 }
 
 fn cigar_counts(cigar: &[CigarOp]) -> (usize, usize, usize, usize) {
@@ -594,33 +640,6 @@ fn noodles_cigar(rec: &noodles::bam::Record) -> Result<Vec<CigarOp>> {
         });
     }
     Ok(cigar)
-}
-
-fn primary_alignment_scores(bam_path: &Path) -> Result<HashMap<String, i32>> {
-    let mut reader = File::open(bam_path).map(bam::io::Reader::new)?;
-    let _header = reader
-        .read_header()
-        .map_err(|e| EvidenceError::Alignment(e.to_string()))?;
-    let mut scores = HashMap::new();
-    for rec in reader.records() {
-        let rec = rec.map_err(|e| EvidenceError::Alignment(e.to_string()))?;
-        if rec.flags().is_unmapped() || rec.flags().is_secondary() {
-            continue;
-        }
-        let name = rec.name().map(|n| n.to_string()).unwrap_or_default();
-        if name.is_empty() {
-            continue;
-        }
-        let norm_name = crate::align::normalize_qname(&name).to_string();
-        let cigar = noodles_cigar(&rec)?;
-        let (m, i, d, _) = cigar_counts(&cigar);
-        let score = crate::jc_seq::cigar_match_indel_score(m, i, d);
-        scores
-            .entry(norm_name)
-            .and_modify(|s: &mut i32| *s = (*s).max(score))
-            .or_insert(score);
-    }
-    Ok(scores)
 }
 
 /// Minimum construct bases a second-pass alignment must place on EACH side
@@ -806,8 +825,8 @@ fn seed_candidates_from_pileup(
     contig_results: &[ContigPileup],
 ) -> Vec<crate::jc_seq::CandidateJunction> {
     let mut cands = Vec::new();
-    for (_, _, _, splits) in contig_results {
-        for (gk, c) in cluster_key_splits(splits) {
+    for cp in contig_results {
+        for (gk, c) in cluster_key_splits(&cp.splits) {
             let n = support_total(&c.support);
             if n == 0 {
                 continue;
@@ -830,16 +849,16 @@ fn seed_candidates_from_pileup(
 fn second_pass_splits(
     fasta: &[FastaRecord],
     reads: &FastqInput,
-    primary_bam: &Path,
+    primary_data: &PrimaryBamData,
     contig_results: &[ContigPileup],
-    aligned: &[AlignedRead],
     opts: &EngineOptions,
     work: &Path,
 ) -> Result<Vec<SplitCandidate>> {
     use crate::fasta::write_records;
     use crate::jc_seq::{junction_construct, rank_and_cap, CandidateJunction, JC_MIN_COVER_BASES};
 
-    let flank = aligned
+    let flank = primary_data
+        .aligned
         .iter()
         .map(|r| r.seq.len())
         .max()
@@ -959,9 +978,13 @@ fn second_pass_splits(
         eprintln!("prokadiff: gzip FASTQ; second-pass uses all reads (no clip/unmapped filter)");
         reads
     } else {
-        let (keep, seen) = second_pass_read_names(primary_bam)?;
         let pass_dir = jc_dir.join("reads");
-        let (filtered, nkeep) = crate::align::filter_fastq_input(reads, &keep, &seen, &pass_dir)?;
+        let (filtered, nkeep) = crate::align::filter_fastq_input(
+            reads,
+            &primary_data.second_pass_keep,
+            &primary_data.second_pass_seen,
+            &pass_dir,
+        )?;
         eprintln!("prokadiff: second-pass {nkeep} FASTQ records after clip/unmapped filter");
         if nkeep == 0 {
             return Ok(Vec::new());
@@ -978,8 +1001,7 @@ fn second_pass_splits(
         &jc_dir,
         AlignKind::Junction,
     )?;
-    let ref_scores = primary_alignment_scores(primary_bam)?;
-    let (extra, stats) = parse_junction_bam(&jc_bam, &kept, &ref_scores)?;
+    let (extra, stats) = parse_junction_bam(&jc_bam, &kept, &primary_data.primary_scores)?;
     eprintln!(
         "prokadiff: second-pass records considered={} kept={} \
          rejected(short_cover={} not_spanning={} worse_than_primary={})",
@@ -1057,7 +1079,12 @@ fn pileup_contigs(
                     );
                 }
                 splits.extend(place_softclips(&clips, fasta));
-                (columns, unique_depth, total_depth, splits)
+                ContigPileup {
+                    columns,
+                    unique_depth,
+                    total_depth,
+                    splits,
+                }
             })
             .collect()
     };
@@ -1067,27 +1094,22 @@ fn pileup_contigs(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn normalize_jc_coords(
-    p1: u64,
-    m1: bool,
-    c1_name: &str,
-    p2: u64,
-    m2: bool,
-    c2_name: &str,
+    s1: JcSideRef<'_>,
+    s2: JcSideRef<'_>,
     overlap: i64,
     repeats: &[crate::fasta::RepeatRegion],
 ) -> (u64, u64) {
-    let mut np1 = p1;
-    let mut np2 = p2;
+    let mut np1 = s1.pos;
+    let mut np2 = s2.pos;
     if overlap > 0 && overlap <= 4 {
         let k = overlap as u64;
-        let rep1 = find_repeat_at(repeats, c1_name, p1);
-        let rep2 = find_repeat_at(repeats, c2_name, p2);
+        let rep1 = find_repeat_at(repeats, s1.contig, s1.pos);
+        let rep2 = find_repeat_at(repeats, s2.contig, s2.pos);
         match (rep1, rep2) {
             (Some(_), None) => {
                 // Side 2 is genomic target
-                if m2 {
+                if s2.minus {
                     np2 = np2.saturating_sub(k);
                 } else {
                     np2 = np2.saturating_add(k);
@@ -1095,16 +1117,16 @@ fn normalize_jc_coords(
             }
             (None, Some(_)) => {
                 // Side 1 is genomic target
-                if m1 {
+                if s1.minus {
                     np1 = np1.saturating_sub(k);
                 } else {
                     np1 = np1.saturating_add(k);
                 }
             }
             _ => {
-                if m1 {
+                if s1.minus {
                     np1 = np1.saturating_sub(k);
-                } else if !m2 {
+                } else if !s2.minus {
                     np2 = np2.saturating_add(k);
                 } else {
                     np1 = np1.saturating_add(k);
@@ -1123,7 +1145,7 @@ fn emit_from_pileup(
 ) -> GenomeDiff {
     for sp in extra_splits {
         if sp.contig_idx < contig_results.len() {
-            contig_results[sp.contig_idx].3.push(sp.clone());
+            contig_results[sp.contig_idx].splits.push(sp.clone());
         }
     }
 
@@ -1137,7 +1159,12 @@ fn emit_from_pileup(
     let mut accepted_all: Vec<AcceptedJc> = Vec::new();
 
     for (idx, rec) in fasta.iter().enumerate() {
-        let (columns, unique_depth, total_depth, splits) = &contig_results[idx];
+        let ContigPileup {
+            columns,
+            unique_depth,
+            total_depth,
+            splits,
+        } = &contig_results[idx];
         let mut pending_del: Option<(u64, u8)> = None;
         let flush_del = |gd: &mut GenomeDiff, id: &mut u32, start: u64, size: u8| {
             // Match breseq mutation coordinates (RA evidence may stay 5′).
@@ -1267,12 +1294,8 @@ fn emit_from_pileup(
             for j in &accepted_all {
                 if j.c1 == idx && j.c2 == idx {
                     let (p1, p2) = normalize_jc_coords(
-                        j.p1,
-                        j.m1,
-                        &fasta[j.c1].name,
-                        j.p2,
-                        j.m2,
-                        &fasta[j.c2].name,
+                        j.side1(fasta),
+                        j.side2(fasta),
                         j.overlap,
                         &opts.repeats,
                     );
@@ -1303,12 +1326,8 @@ fn emit_from_pileup(
                 mediated_repeat = Some(r.name.clone());
                 for j in &accepted_all {
                     let (p1, p2) = normalize_jc_coords(
-                        j.p1,
-                        j.m1,
-                        &fasta[j.c1].name,
-                        j.p2,
-                        j.m2,
-                        &fasta[j.c2].name,
+                        j.side1(fasta),
+                        j.side2(fasta),
                         j.overlap,
                         &opts.repeats,
                     );
@@ -1331,12 +1350,8 @@ fn emit_from_pileup(
                 }
                 for j in &accepted_all {
                     let (p1, p2) = normalize_jc_coords(
-                        j.p1,
-                        j.m1,
-                        &fasta[j.c1].name,
-                        j.p2,
-                        j.m2,
-                        &fasta[j.c2].name,
+                        j.side1(fasta),
+                        j.side2(fasta),
                         j.overlap,
                         &opts.repeats,
                     );
@@ -1379,16 +1394,8 @@ fn emit_from_pileup(
         fold_multicopy_placements(fold_reverse_duplicates(accepted_all), &opts.repeats, fasta);
     folded.sort_by_key(|j| (j.c1, j.p1, j.m1, j.c2, j.p2, j.m2));
     for j in &mut folded {
-        let (np1, np2) = normalize_jc_coords(
-            j.p1,
-            j.m1,
-            &fasta[j.c1].name,
-            j.p2,
-            j.m2,
-            &fasta[j.c2].name,
-            j.overlap,
-            &opts.repeats,
-        );
+        let (np1, np2) =
+            normalize_jc_coords(j.side1(fasta), j.side2(fasta), j.overlap, &opts.repeats);
         j.p1 = np1;
         j.p2 = np2;
         if j.overlap > 0 && j.overlap <= 4 {
@@ -1448,7 +1455,7 @@ fn emit_from_pileup(
                         continue;
                     }
                     let unique_cov_ok = {
-                        let u_depth = &contig_results[c_tgt1].1;
+                        let u_depth = &contig_results[c_tgt1].unique_depth;
                         let p_idx = (p_plus as usize).saturating_sub(1);
                         let n = u_depth.len();
                         (p_idx.saturating_sub(50)..p_idx.min(n)).any(|pos| u_depth[pos] >= 5)
@@ -1457,14 +1464,26 @@ fn emit_from_pileup(
                     if !unique_cov_ok {
                         continue;
                     }
+
                     let mut dup = (p_minus - p_plus + 1) as i64;
                     // Biological constraint: IS elements have minimum target duplications (>= 3 bp).
                     // Sub-3 bp duplications are alignment artifacts / unresolved repeat boundaries.
                     if dup < 3 {
                         continue;
                     }
-                    if rep1.name == "IS150" && dup == 4 && p_minus == 1821528 {
-                        dup = 3;
+                    // IS150 canonical target site duplication is 3 bp.
+                    // If dup == 4 and the endpoints of the target duplication share a 1-bp microhomology
+                    // (same base at p_plus and p_minus), the junction register over-counted the TSD by 1 bp.
+                    if rep1.name == "IS150" && dup == 4 {
+                        let p_plus_0 = (p_plus as usize).saturating_sub(1);
+                        let p_minus_0 = (p_minus as usize).saturating_sub(1);
+                        let seq = &fasta[c_tgt1].seq;
+                        if p_plus_0 < seq.len()
+                            && p_minus_0 < seq.len()
+                            && seq[p_plus_0].eq_ignore_ascii_case(&seq[p_minus_0])
+                        {
+                            dup = 3;
+                        }
                     }
                     let Some(rep_plus) = find_repeat_at(&opts.repeats, n_tgt1, p_rep_plus) else {
                         continue;
@@ -1509,19 +1528,19 @@ fn emit_from_pileup(
         .iter()
         .filter(|e| e.kind == GdKind::Del)
         .filter_map(|e| {
-            let seq_id = e.fields.first()?.clone();
-            let pos: u64 = e.fields.get(1)?.parse().ok()?;
-            let sz: u64 = e.fields.get(2)?.parse().ok()?;
+            let seq_id = e.seq_id()?.to_string();
+            let pos = e.position()?;
+            let sz = e.del_size()?;
             Some((seq_id, pos, pos + sz.saturating_sub(1)))
         })
         .collect();
     if !dels.is_empty() {
         gd.entries.retain(|e| {
             if e.kind == GdKind::Snp {
-                let Some(seq_id) = e.fields.first() else {
+                let Some(seq_id) = e.seq_id() else {
                     return true;
                 };
-                let Some(pos) = e.fields.get(1).and_then(|p| p.parse::<u64>().ok()) else {
+                let Some(pos) = e.position() else {
                     return true;
                 };
                 !dels

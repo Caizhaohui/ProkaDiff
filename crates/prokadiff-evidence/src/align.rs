@@ -209,49 +209,37 @@ pub(crate) fn bowtie2_align_args(
             }
         }
         AlignPass::PrimaryStage2 => {
-            args.push("--ma".to_string());
-            args.push("1".to_string());
-            args.push("--mp".to_string());
-            args.push("3".to_string());
-            args.push("--np".to_string());
-            args.push("0".to_string());
-            args.push("--rdg".to_string());
-            args.push("2,3".to_string());
-            args.push("--rfg".to_string());
-            args.push("2,3".to_string());
-            args.push("--ignore-quals".to_string());
-            args.push("-L".to_string());
-            args.push(UNMATCHED_SEED_LEN.to_string());
-            args.push("-i".to_string());
-            args.push("S,1,0.25".to_string());
-            args.push("--score-min".to_string());
-            args.push("L,6,0.2".to_string());
-            args.push("-k".to_string());
-            args.push("200".to_string());
+            push_sensitive_bowtie2_opts(&mut args, UNMATCHED_SEED_LEN, "L,6,0.2", 200);
         }
         AlignPass::Junction => {
-            args.push("--ma".to_string());
-            args.push("1".to_string());
-            args.push("--mp".to_string());
-            args.push("3".to_string());
-            args.push("--np".to_string());
-            args.push("0".to_string());
-            args.push("--rdg".to_string());
-            args.push("2,3".to_string());
-            args.push("--rfg".to_string());
-            args.push("2,3".to_string());
-            args.push("--ignore-quals".to_string());
-            args.push("-L".to_string());
-            args.push(JUNCTION_SEED_LEN.to_string());
-            args.push("-i".to_string());
-            args.push("S,1,0.25".to_string());
-            args.push("--score-min".to_string());
-            args.push("L,1,0.70".to_string());
-            args.push("-k".to_string());
-            args.push("2000".to_string());
+            push_sensitive_bowtie2_opts(&mut args, JUNCTION_SEED_LEN, "L,1,0.70", 2000);
         }
     }
     args
+}
+
+fn push_sensitive_bowtie2_opts(args: &mut Vec<String>, seed_len: usize, score_min: &str, k: usize) {
+    args.extend([
+        "--ma".to_string(),
+        "1".to_string(),
+        "--mp".to_string(),
+        "3".to_string(),
+        "--np".to_string(),
+        "0".to_string(),
+        "--rdg".to_string(),
+        "2,3".to_string(),
+        "--rfg".to_string(),
+        "2,3".to_string(),
+        "--ignore-quals".to_string(),
+        "-L".to_string(),
+        seed_len.to_string(),
+        "-i".to_string(),
+        "S,1,0.25".to_string(),
+        "--score-min".to_string(),
+        score_min.to_string(),
+        "-k".to_string(),
+        k.to_string(),
+    ]);
 }
 
 fn append_fastq_args(args: &mut Vec<String>, reads: &FastqInput) -> Result<()> {

@@ -227,6 +227,14 @@ impl GdEntry {
         }
     }
 
+    pub fn del_size(&self) -> Option<u64> {
+        if self.kind == GdKind::Del {
+            self.fields.get(2).and_then(|s| s.parse().ok())
+        } else {
+            None
+        }
+    }
+
     /// Set-difference key: type + coordinates + allele.
     pub fn subtract_key(&self) -> String {
         format!("{}|{}", self.kind.as_str(), self.fields.join("|"))
