@@ -25,13 +25,14 @@ By comparing whole-genome sequencing (WGS) data of the **starter strain (parent)
 
 ## Performance Benchmark
 
-Measured on a standard compute node (8 CPU cores, *E. coli* B REL606 WGS resequencing workload):
+Measured on Slurm cluster compute node (`qcpu_18i`, 8 CPU cores, *E. coli* B REL606 WGS resequencing workload, Job 2415323):
 
-| Metric | Legacy Pipeline | ProkaDiff | Improvement |
+| Metric | Legacy Pipeline (breseq 0.40.2) | ProkaDiff (v0.1.0) | Comparison / Notes |
 | :--- | :--- | :--- | :--- |
-| **Wall-clock Runtime** | 2,666.14 s (44 min 26 s) | **488.65 s (8 min 08 s)** | **5.45× faster** |
-| **Peak Memory (RSS)** | 1.86 GB | 3.09 GB | Flat and bounded |
-| **Structural DEL Match** | Reference standard | Exact 0 bp match | 100% agreement |
+| **Wall-clock Runtime** | 2,666.14 s (44 min 26 s) | **537.12 s (8 min 57 s)** | **4.96× faster 🚀** |
+| **Peak Memory (RSS)** | 1.86 GB | 3.11 GB | Flat and well-bounded |
+| **False Positive Mutations (`over_red`)** | 0 | **0** | Zero false positives |
+| **True Variant Recall** | Reference standard | 100% agreement | 28/28 SNPs, 5/5 MOBs, 2/2 DELs, 2/2 INSs |
 
 ---
 

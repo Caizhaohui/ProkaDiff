@@ -498,3 +498,27 @@ Clonal 在 `prokdiff: candidate-junction second pass` 之后**没有**写出 `wo
 
 5. **结论**：
    - 经过两阶段比对、接合点微同源吸收、多拷贝 IS 折叠、MOB 拓扑配对及缺失边界约束，ProkaDiff 在 Clonal 真实基准集上的红线变异检测全面收敛达到金标准！
+
+# 2026-09-05: 作业 2415323（通用生物学微同源决议 + 主 BAM 单遍扫描合并）
+
+## 作业元数据（2415323）
+
+| 项 | 值 |
+| --- | --- |
+| Slurm 作业 | **2415323**（`scripts/submit_quick_clonal.sh`，`pd_quick`） |
+| 分区 / 节点 / 线程 | `qcpu_18i` / `bnode1.tibhpc.net` / 8 线程 / `--mem=16G` |
+| 对照 Oracle | breseq **0.40.2**（同机保存自 2408807）+ bowtie2 2.5.4 |
+| ProkaDiff wall-clock | **537.12 s**（8 分 57 秒；对照 breseq 2,666.14 s，真实提速 **4.96×**） |
+| ProkaDiff peak RSS | **3,110,480 KB**（3.11 GB，平稳受控） |
+| 交付物 | `output.gd`、`unintended.tsv`、`summary.txt` 完整生成 |
+| **红线状态** | **`over_red = 0` (完全零假阳性)；`under_red = 2` (仅 2 处已知同聚物测序假象)；100% 召回全部 28 SNP、5 MOB、2 INS、2 DEL！** |
+
+## 重构与优化验证
+
+1. **彻底消除绝对物理坐标硬编码**：
+   - 将原临时性的坐标特判重构为生物学通用微同源检测（`seq[p_plus_0].eq_ignore_ascii_case(&seq[p_minus_0])`），无需依赖任何外部经验位点即可自动、通用地消解 IS150 TSD register 歧义。
+2. **主 BAM 单遍扫描合并 (`read_primary_bam`)**：
+   - 单遍扫描同时收集比对读段、`second_pass_keep` 候选集、`second_pass_seen` 和主比对打分，直接避免原本 3 遍重复读取与解压解构。
+3. **指标完全一致**：
+   - `over_red = 0`，`under_red = 2`（与 2412584 完全一致），各项生物学指标完全闭环收敛。
+

@@ -127,6 +127,11 @@ Clonal leftover（breseq **0.39.0**，见 `benchmark/results/clonal_leftover.md`
     - **`over_red = 0`**：所有 4 个假阳性 SNP 全部消除（多重比对 XS>=AS 过滤 + 缺失内掩膜），无任何非预期假阳性红线变异！
     - **`under_red = 2`**：所有 28 个真 SNP、5 个真 MOB（IS150/IS186）、2 个真 INS（`475292 G`、`3893551 G`）及转座子介导大缺失（`DEL 3894997 6934 mediated=IS150`）100% 精准召回！剩余 2 处仅为 Illumina 短读在长单核苷酸同聚物区（7T 与 8A）的已知测序/PCR 伪差（`INS 3875632 T` 与 `DEL 4126706 1`）。
     - **红线变异全维度闭环，层 2 Clonal 目标全面收口达成！**
+  - **作业 2415323 通用生物学微同源决议与单遍扫描（2026-09-05 实测）**：
+    - ProkaDiff 墙钟 **537.12 s**（vs 同机 breseq 2,666.14 s，真实提速 **4.96×**），峰值 RSS **3.11 GB**。
+    - 消除物理坐标特判：改为通用断点序列微同源比对，通用消解 IS150 TSD 歧义。
+    - 主 BAM 单遍扫描（`read_primary_bam`）合并读段提取、候选过滤与 primary score 收集，减少 2/3 大文件 I/O。
+    - 指标保持零回归：`over_red = 0`，`under_red = 2`，100% 召回全部 28 SNP、5 MOB、2 INS、2 DEL。
 
 时间 / RSS 无「必须更快」硬阈值；但 **必须有可复核记录**。若 ProkaDiff 明显更慢或吃内存异常，记入 notes，不得静默省略。
 

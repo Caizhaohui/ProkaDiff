@@ -35,15 +35,19 @@ pub struct Cli {
     /// First period: cas9 | cas12a | dsb. cast / is110 error.
     #[arg(long)]
     pub editor: Option<String>,
+    /// Target guide sequence (DNA alphabet, e.g. 20 nt; required for cas9/cas12a).
     #[arg(long)]
     pub spacer: Option<String>,
+    /// PAM motif (IUPAC DNA, e.g. NGG for cas9, TTTV for cas12a; defaults provided).
     #[arg(long)]
     pub pam: Option<String>,
+    /// Number of parallel threads for alignment and pileup.
     #[arg(long, default_value_t = 8)]
     pub threads: usize,
     /// Omit the hypothesis column from unintended.tsv.
     #[arg(long, default_value_t = false)]
     pub no_hypothesis: bool,
+    /// Directory where diff outputs (unintended.tsv, summary.txt, .gd) will be written.
     #[arg(long)]
     pub outdir: Option<PathBuf>,
     /// Keep intermediate BAM / Bowtie2 index under outdir.
@@ -81,7 +85,7 @@ pub enum Editor {
     Dsb,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum CliError {
     StarterMandatory,
     EditorRoadmap { value: String },
@@ -90,7 +94,10 @@ pub enum CliError {
     MissingOutdir,
     EmptyFastq,
     MissingSpacer,
-    OddFastqCount { flag: &'static str },
+    InvalidSpacer { reason: String },
+    InvalidPam { reason: String },
+    OddFastqCount { flag: &'static str, count: usize },
+    FileNotFound { flag: &'static str, path: PathBuf },
 }
 
 impl std::fmt::Display for CliError {
@@ -98,23 +105,32 @@ impl std::fmt::Display for CliError {
         match self {
             Self::StarterMandatory => f.write_str(STARTER_MANDATORY),
             Self::EditorRoadmap { value } => {
-                write!(f, "unsupported --editor {value}: {EDITOR_ROADMAP}")
+                write!(f, "unsupported --editor '{value}': {EDITOR_ROADMAP}")
             }
             Self::BadEditor { value } => {
                 write!(
                     f,
-                    "unknown --editor {value}; first-period values are cas9 | cas12a | dsb"
+                    "unknown --editor '{value}'; supported first-period editors are cas9 | cas12a | dsb"
                 )
             }
-            Self::MissingRef => f.write_str("at least one --ref is required"),
-            Self::MissingOutdir => f.write_str("--outdir is required"),
-            Self::EmptyFastq => f.write_str("at least one FASTQ is required"),
+            Self::MissingRef => {
+                f.write_str("--ref: at least one reference file (FASTA or GenBank) is required")
+            }
+            Self::MissingOutdir => f.write_str("--outdir: output directory is required"),
+            Self::EmptyFastq => f.write_str("--fastq: at least one FASTQ file is required"),
             Self::MissingSpacer => f.write_str(
                 "--spacer is required for --editor cas9 and cas12a (omit for --editor dsb)",
             ),
-            Self::OddFastqCount { flag } => write!(
+            Self::InvalidSpacer { reason } => write!(f, "invalid --spacer: {reason}"),
+            Self::InvalidPam { reason } => write!(f, "invalid --pam: {reason}"),
+            Self::OddFastqCount { flag, count } => write!(
                 f,
-                "{flag}: expected 1 file (SE) or an even number of files (PE pairs, R1 then R2)"
+                "{flag}: expected 1 file (SE) or an even number of files (PE pairs, R1 then R2), but got {count} file(s)"
+            ),
+            Self::FileNotFound { flag, path } => write!(
+                f,
+                "{flag}: file '{}' not found or not accessible",
+                path.display()
             ),
         }
     }
@@ -134,6 +150,56 @@ pub fn parse_editor(raw: &str) -> Result<Editor, CliError> {
             value: other.to_string(),
         }),
     }
+}
+
+pub fn validate_spacer(raw: &str) -> Result<String, CliError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(CliError::InvalidSpacer {
+            reason: "spacer sequence cannot be empty".into(),
+        });
+    }
+    if trimmed.contains('U') || trimmed.contains('u') {
+        return Err(CliError::InvalidSpacer {
+            reason: "spacer must use DNA alphabet (use 'T' instead of 'U')".into(),
+        });
+    }
+    let upper = trimmed.to_ascii_uppercase();
+    if let Some(ch) = upper
+        .chars()
+        .find(|c| !matches!(c, 'A' | 'C' | 'G' | 'T' | 'N'))
+    {
+        return Err(CliError::InvalidSpacer {
+            reason: format!("spacer contains invalid character '{ch}'; expected A, C, G, T"),
+        });
+    }
+    Ok(upper)
+}
+
+pub fn validate_pam(raw: &str) -> Result<String, CliError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(CliError::InvalidPam {
+            reason: "PAM sequence cannot be empty".into(),
+        });
+    }
+    if trimmed.contains('U') || trimmed.contains('u') {
+        return Err(CliError::InvalidPam {
+            reason: "PAM must use DNA alphabet (use 'T' instead of 'U')".into(),
+        });
+    }
+    let upper = trimmed.to_ascii_uppercase();
+    if let Some(ch) = upper.chars().find(|c| {
+        !matches!(
+            c,
+            'A' | 'C' | 'G' | 'T' | 'R' | 'Y' | 'S' | 'W' | 'K' | 'M' | 'B' | 'D' | 'H' | 'V' | 'N'
+        )
+    }) {
+        return Err(CliError::InvalidPam {
+            reason: format!("PAM contains invalid character '{ch}'; expected IUPAC DNA code"),
+        });
+    }
+    Ok(upper)
 }
 
 #[derive(Debug)]
@@ -169,24 +235,61 @@ pub fn validate_product(cli: &Cli) -> Result<ProductJob, CliError> {
     let editor = parse_editor(raw)?;
     check_fastq_pairing("--starter", &cli.starter)?;
     check_fastq_pairing("--edited", &cli.edited)?;
-    let spacer = cli
-        .spacer
-        .as_ref()
-        .map(|s| s.trim().to_ascii_uppercase())
-        .filter(|s| !s.is_empty());
-    match editor {
-        Editor::Cas9 | Editor::Cas12a if spacer.is_none() => {
-            return Err(CliError::MissingSpacer);
+
+    let spacer = match (editor, cli.spacer.as_deref()) {
+        (Editor::Cas9 | Editor::Cas12a, None) => return Err(CliError::MissingSpacer),
+        (Editor::Cas9 | Editor::Cas12a, Some(s)) if s.trim().is_empty() => {
+            return Err(CliError::MissingSpacer)
         }
-        _ => {}
+        (_, Some(s)) if !s.trim().is_empty() => Some(validate_spacer(s)?),
+        _ => None,
+    };
+
+    let pam = match cli.pam.as_deref() {
+        Some(p) if !p.trim().is_empty() => Some(validate_pam(p)?),
+        _ => None,
+    };
+
+    for r in &cli.refs {
+        if !r.exists() {
+            return Err(CliError::FileNotFound {
+                flag: "--ref",
+                path: r.clone(),
+            });
+        }
     }
+    for f in &cli.starter {
+        if !f.exists() {
+            return Err(CliError::FileNotFound {
+                flag: "--starter",
+                path: f.clone(),
+            });
+        }
+    }
+    for f in &cli.edited {
+        if !f.exists() {
+            return Err(CliError::FileNotFound {
+                flag: "--edited",
+                path: f.clone(),
+            });
+        }
+    }
+    if let Some(ref p) = cli.intended {
+        if !p.exists() {
+            return Err(CliError::FileNotFound {
+                flag: "--intended",
+                path: p.clone(),
+            });
+        }
+    }
+
     Ok(ProductJob {
         starter: cli.starter.clone(),
         edited: cli.edited.clone(),
         refs: cli.refs.clone(),
         editor,
         spacer,
-        pam: cli.pam.clone(),
+        pam,
         threads: cli.threads.max(1),
         outdir,
         keep_bam: cli.keep_bam,
@@ -197,10 +300,13 @@ pub fn validate_product(cli: &Cli) -> Result<ProductJob, CliError> {
 
 fn check_fastq_pairing(flag: &'static str, files: &[PathBuf]) -> Result<(), CliError> {
     if files.is_empty() {
-        return Err(CliError::StarterMandatory);
+        return Ok(());
     }
     if files.len() != 1 && files.len() % 2 != 0 {
-        return Err(CliError::OddFastqCount { flag });
+        return Err(CliError::OddFastqCount {
+            flag,
+            count: files.len(),
+        });
     }
     Ok(())
 }
@@ -212,6 +318,23 @@ pub fn validate_evidence(args: &EvidenceArgs) -> Result<(), CliError> {
     if args.fastq.is_empty() {
         return Err(CliError::EmptyFastq);
     }
+    check_fastq_pairing("--fastq", &args.fastq)?;
+    for r in &args.refs {
+        if !r.exists() {
+            return Err(CliError::FileNotFound {
+                flag: "--ref",
+                path: r.clone(),
+            });
+        }
+    }
+    for f in &args.fastq {
+        if !f.exists() {
+            return Err(CliError::FileNotFound {
+                flag: "--fastq",
+                path: f.clone(),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -219,6 +342,25 @@ pub fn validate_evidence(args: &EvidenceArgs) -> Result<(), CliError> {
 mod tests {
     use super::*;
     use clap::Parser;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn test_dir(prefix: &str) -> PathBuf {
+        let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "prokadiff_cli_test_{prefix}_{id}_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn touch(dir: &std::path::Path, name: &str) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, b"").unwrap();
+        p
+    }
 
     #[test]
     fn missing_starter_is_mandatory_error() {
@@ -261,9 +403,21 @@ mod tests {
 
     #[test]
     fn evidence_subcommand_does_not_require_starter() {
+        let d = test_dir("evidence_ok");
+        let r = touch(&d, "r.fa");
+        let a = touch(&d, "a.fq");
+        let b = touch(&d, "b.fq");
         let cli = Cli::try_parse_from([
-            "prokdiff", "evidence", "--ref", "r.fa", "--fastq", "a.fq", "--fastq", "b.fq",
-            "--outdir", "out",
+            "prokdiff",
+            "evidence",
+            "--ref",
+            r.to_str().unwrap(),
+            "--fastq",
+            a.to_str().unwrap(),
+            "--fastq",
+            b.to_str().unwrap(),
+            "--outdir",
+            "out",
         ])
         .unwrap();
         match cli.command {
@@ -273,6 +427,7 @@ mod tests {
             }
             other => panic!("expected evidence, got {other:?}"),
         }
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]
@@ -312,14 +467,18 @@ mod tests {
 
     #[test]
     fn dsb_does_not_require_spacer() {
+        let d = test_dir("dsb_ok");
+        let s = touch(&d, "s.fq");
+        let e = touch(&d, "e.fq");
+        let r = touch(&d, "r.fa");
         let cli = Cli::try_parse_from([
             "prokdiff",
             "--starter",
-            "s.fq",
+            s.to_str().unwrap(),
             "--edited",
-            "e.fq",
+            e.to_str().unwrap(),
             "--ref",
-            "r.fa",
+            r.to_str().unwrap(),
             "--editor",
             "dsb",
             "--outdir",
@@ -331,6 +490,7 @@ mod tests {
         assert_eq!(job.editor, Editor::Dsb);
         assert!(job.spacer.is_none());
         assert!(!job.hypothesis);
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]
@@ -355,36 +515,123 @@ mod tests {
         .unwrap();
         assert!(matches!(
             validate_product(&cli).unwrap_err(),
-            CliError::OddFastqCount { flag: "--starter" }
+            CliError::OddFastqCount {
+                flag: "--starter",
+                count: 3
+            }
         ));
     }
 
     #[test]
     fn intended_path_is_optional_and_stored() {
+        let d = test_dir("intended_ok");
+        let s = touch(&d, "s.fq");
+        let e = touch(&d, "e.fq");
+        let r = touch(&d, "r.fa");
+        let i = touch(&d, "intended.tsv");
         let cli = Cli::try_parse_from([
             "prokdiff",
             "--starter",
-            "s.fq",
+            s.to_str().unwrap(),
             "--edited",
-            "e.fq",
+            e.to_str().unwrap(),
             "--ref",
-            "r.fa",
+            r.to_str().unwrap(),
             "--editor",
             "cas9",
             "--spacer",
             "acgtacgtacgtacgtacgt",
             "--intended",
-            "intended.tsv",
+            i.to_str().unwrap(),
             "--outdir",
             "out",
         ])
         .unwrap();
         let job = validate_product(&cli).unwrap();
         assert_eq!(job.spacer.as_deref(), Some("ACGTACGTACGTACGTACGT"));
-        assert_eq!(
-            job.intended.as_deref(),
-            Some(std::path::Path::new("intended.tsv"))
-        );
+        assert_eq!(job.intended.as_ref(), Some(&i));
         assert!(job.hypothesis);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn file_not_found_on_starter() {
+        let d = test_dir("fnf_starter");
+        let e = touch(&d, "e.fq");
+        let r = touch(&d, "r.fa");
+        let missing = d.join("missing_starter.fq");
+        let cli = Cli::try_parse_from([
+            "prokdiff",
+            "--starter",
+            missing.to_str().unwrap(),
+            "--edited",
+            e.to_str().unwrap(),
+            "--ref",
+            r.to_str().unwrap(),
+            "--editor",
+            "dsb",
+            "--outdir",
+            "out",
+        ])
+        .unwrap();
+        let err = validate_product(&cli).unwrap_err();
+        assert!(matches!(
+            err,
+            CliError::FileNotFound {
+                flag: "--starter",
+                ..
+            }
+        ));
+        assert!(err.to_string().contains("not found"));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn file_not_found_on_ref() {
+        let d = test_dir("fnf_ref");
+        let s = touch(&d, "s.fq");
+        let e = touch(&d, "e.fq");
+        let missing = d.join("missing_ref.fa");
+        let cli = Cli::try_parse_from([
+            "prokdiff",
+            "--starter",
+            s.to_str().unwrap(),
+            "--edited",
+            e.to_str().unwrap(),
+            "--ref",
+            missing.to_str().unwrap(),
+            "--editor",
+            "dsb",
+            "--outdir",
+            "out",
+        ])
+        .unwrap();
+        let err = validate_product(&cli).unwrap_err();
+        assert!(matches!(err, CliError::FileNotFound { flag: "--ref", .. }));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn invalid_spacer_rejects_uracil_and_bad_chars() {
+        assert!(validate_spacer("").is_err());
+        let u_err = validate_spacer("AUGCAUGCAUGCAUGCAUGC").unwrap_err();
+        assert!(u_err.to_string().contains("use 'T' instead of 'U'"));
+        let bad_err = validate_spacer("ACGT123").unwrap_err();
+        assert!(bad_err.to_string().contains("invalid character"));
+        assert_eq!(
+            validate_spacer("acgtacgtacgtacgtacgt").unwrap(),
+            "ACGTACGTACGTACGTACGT"
+        );
+    }
+
+    #[test]
+    fn invalid_pam_rejects_uracil_and_bad_chars() {
+        assert!(validate_pam("").is_err());
+        let u_err = validate_pam("NGGU").unwrap_err();
+        assert!(u_err.to_string().contains("use 'T' instead of 'U'"));
+        let bad_err = validate_pam("NGG@").unwrap_err();
+        assert!(bad_err.to_string().contains("invalid character"));
+        assert_eq!(validate_pam("ngg").unwrap(), "NGG");
+        assert_eq!(validate_pam("tttv").unwrap(), "TTTV");
     }
 }
