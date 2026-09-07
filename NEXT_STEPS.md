@@ -108,12 +108,18 @@
     * `emit.rs`（435 行）：RA 共识碱基、缺失覆盖度 MC 提拔、IS 重复序列元件靶向 MOB 生成与 DEL 内部 SNP 掩膜；
     * `mod.rs`（219 行）：对外统一导出 `EngineOptions`、`ContigPileup`、`run_sample`、`call_from_bam`、`call_from_aligned` 等无感知向下兼容接口；
     * `tests.rs`（1037 行）：全量内存级单元测试与 BAM fixture 测试，全部 130 个 workspace 测试 100% 绿色通过。
-* [ ] **引入结构化分级日志框架 (`tracing` 或 `env_logger`)**
-  * **背景**：目前进度信息全使用原生的 `eprintln!`，无法调整输出级别。
-  * **行动**：引入 `tracing` / `tracing-subscriber`，在 CLI 中支持 `-q / --quiet`（静默模式）与 `-v / --verbose`（调试模式），并将阶段耗时与过滤统计可重定向输出。
-* [ ] **多 Contig 场景的 Softclip 批量索引优化**
-  * **背景**：针对具有多个质粒或染色体的细菌菌株，当前 `place_softclips` 在 par_iter 内部针对每个 contig 独立构建临时查找结构。
-  * **行动**：在多 contig 时构建全局 K-mer 索引一次，供所有 contig 的 softclips 批量放置，进一步缩短多序列基因组的比对耗时。
+* [x] **引入结构化分级日志框架 (`tracing`)**
+  * **状态**：已完成。
+  * **详情**：
+    * 引入 `tracing` 与 `tracing-subscriber`（遵循 `AGENTS.md` Rule 9 补充依赖说明）；
+    * CLI 支持 `-q / --quiet`（静默模式，仅告警与错误）与 `-v / -vv / --verbose`（调试/跟踪模式）；
+    * 全面替换原先分散的 `eprintln!` 为分级 `info!`、`debug!` 与 `warn!`，各阶段耗时、过滤统计、构建与写入输出规范受控。
+* [x] **多 Contig 场景的 Softclip 批量全局 K-mer 索引优化**
+  * **状态**：已完成。
+  * **详情**：
+    * 导出公开的 `PlaceIndex` 结构体及 `place_softclips_with_index` / `place_softclips_batch_with_index` 批量方法；
+    * 改造 `pileup_contigs`：在多 contig / 质粒场景下，全基因组范围内仅构建一次 `PlaceIndex`，跨 contig 全局去重并批量并发检索 softclips，消除多 contig 冗余建索开销；
+    * 补充多 contig 批量检索与单 contig 独立检索等价性单元测试。
 
 ---
 

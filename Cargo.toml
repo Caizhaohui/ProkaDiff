@@ -36,6 +36,9 @@ thiserror = "2.0"
 # noodles: BAM/SAM/FASTA I/O (AGENTS Rule 9; same family as SAMRust).
 noodles = { version = "0.115", features = ["bam", "sam", "bgzf", "core", "fasta"] }
 rayon = "1.10"
+# tracing & tracing-subscriber: structured diagnostic logging across crates with leveled filtering (info/debug/warn/error) and quiet/verbose CLI flags.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [profile.release]
 lto = true

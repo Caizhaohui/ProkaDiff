@@ -53,6 +53,12 @@ pub struct Cli {
     /// Keep intermediate BAM / Bowtie2 index under outdir.
     #[arg(long, default_value_t = false)]
     pub keep_bam: bool,
+    /// Suppress informational progress messages (-q / --quiet).
+    #[arg(short, long, default_value_t = false, global = true)]
+    pub quiet: bool,
+    /// Increase diagnostic logging verbosity (-v for DEBUG, -vv for TRACE).
+    #[arg(short, long, action = ArgAction::Count, global = true)]
+    pub verbose: u8,
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -633,5 +639,23 @@ mod tests {
         assert!(bad_err.to_string().contains("invalid character"));
         assert_eq!(validate_pam("ngg").unwrap(), "NGG");
         assert_eq!(validate_pam("tttv").unwrap(), "TTTV");
+    }
+
+    #[test]
+    fn quiet_and_verbose_flags_parse_correctly() {
+        let cli = Cli::try_parse_from([
+            "prokadiff",
+            "--starter",
+            "s.fq",
+            "--edited",
+            "e.fq",
+            "--ref",
+            "r.fa",
+            "-q",
+            "-vv",
+        ])
+        .unwrap();
+        assert!(cli.quiet);
+        assert_eq!(cli.verbose, 2);
     }
 }

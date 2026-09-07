@@ -20,9 +20,29 @@ use prokadiff_report::{write_summary, write_unintended_tsv};
 use cli::{
     validate_evidence, validate_product, Cli, CliError, Commands, Editor, EvidenceArgs, ProductJob,
 };
+use tracing::info;
+
+fn init_logging(quiet: bool, verbose: u8) {
+    let default_level = match (quiet, verbose) {
+        (true, _) => "warn",
+        (false, 0) => "info",
+        (false, 1) => "debug",
+        (false, _) => "trace",
+    };
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level));
+
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .without_time()
+        .with_writer(std::io::stderr)
+        .try_init();
+}
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    init_logging(cli.quiet, cli.verbose);
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -118,7 +138,7 @@ fn run_evidence(args: EvidenceArgs) -> Result<(), RunError> {
         ..EngineOptions::default()
     };
     let gd = run_sample(&ref_fa, &reads, &args.outdir, &opts)?;
-    eprintln!("wrote {}", gd.display());
+    info!("wrote {}", gd.display());
     Ok(())
 }
 
@@ -209,10 +229,10 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
         editor_kind.as_str(),
     )?;
 
-    eprintln!("wrote {}", starter_out.display());
-    eprintln!("wrote {}", edited_out.display());
-    eprintln!("wrote {}", tsv.display());
-    eprintln!("wrote {}", summary.display());
+    info!("wrote {}", starter_out.display());
+    info!("wrote {}", edited_out.display());
+    info!("wrote {}", tsv.display());
+    info!("wrote {}", summary.display());
     Ok(())
 }
 

@@ -10,12 +10,15 @@ use std::path::{Path, PathBuf};
 
 use prokadiff_gd::GenomeDiff;
 use rayon::prelude::*;
+use tracing::info;
 
 use crate::align::{align_to_bam, AlignKind, FastqInput};
 use crate::error::Result;
 use crate::fasta::{read_reference, FastaRecord, RepeatRegion};
 use crate::mc::MC_DEL_MIN_LEN;
-use crate::pileup::{apply_read, place_softclips, AlignedRead, SplitCandidate};
+use crate::pileup::{
+    apply_read, place_softclips_batch_with_index, AlignedRead, PlaceIndex, SplitCandidate,
+};
 use crate::ra::{PileupColumn, RaOptions};
 
 use bam_io::{read_aligned_bam, read_primary_bam};
@@ -101,7 +104,7 @@ pub fn run_sample(
     let work = outdir.join("work");
     std::fs::create_dir_all(&work)?;
     let bam_path = outdir.join("aligned.bam");
-    eprintln!("prokadiff: primary alignment");
+    info!("prokadiff: primary alignment");
     align_to_bam(
         ref_fa,
         reads,
@@ -111,13 +114,13 @@ pub fn run_sample(
         AlignKind::Primary,
     )?;
     let fasta = read_reference(ref_fa)?;
-    eprintln!(
+    info!(
         "prokadiff: pileup + junction seeds (place S>={})",
         crate::jc_seq::MIN_CLIP_FOR_PLACE
     );
     let primary_data = read_primary_bam(&bam_path, &fasta)?;
     let contig_results = pileup_contigs(&fasta, &primary_data.aligned, opts);
-    eprintln!("prokadiff: candidate-junction second pass");
+    info!("prokadiff: candidate-junction second pass");
     let extra = second_pass_splits(&fasta, reads, &primary_data, &contig_results, opts, &work)?;
     let gd = emit_from_pileup(&fasta, contig_results, opts, &extra);
     let gd_path = outdir.join("output.gd");
@@ -174,7 +177,7 @@ pub(crate) fn pileup_contigs(
     };
 
     let call_contigs = || {
-        fasta
+        let (mut results, all_clips): (Vec<_>, Vec<_>) = fasta
             .par_iter()
             .enumerate()
             .map(|(idx, rec)| {
@@ -202,15 +205,28 @@ pub(crate) fn pileup_contigs(
                         &mut clips,
                     );
                 }
-                splits.extend(place_softclips(&clips, fasta));
-                ContigPileup {
-                    columns,
-                    unique_depth,
-                    total_depth,
-                    splits,
-                }
+                (
+                    ContigPileup {
+                        columns,
+                        unique_depth,
+                        total_depth,
+                        splits,
+                    },
+                    clips,
+                )
             })
-            .collect()
+            .unzip();
+
+        let has_any_clips = all_clips.iter().any(|c| !c.is_empty());
+        if has_any_clips {
+            let place_index = PlaceIndex::from_fasta(fasta);
+            let placed_splits = place_softclips_batch_with_index(&all_clips, &place_index);
+            for (cp, placed) in results.iter_mut().zip(placed_splits) {
+                cp.splits.extend(placed);
+            }
+        }
+
+        results
     };
     match &pool {
         Some(p) => p.install(call_contigs),

@@ -9,6 +9,7 @@ use std::process::Command;
 use noodles::bam;
 use noodles::sam;
 use noodles::sam::alignment::io::Write as _;
+use tracing::info;
 
 use crate::error::{EvidenceError, Result};
 use crate::jc_seq::MIN_CLIP_FOR_SEED;
@@ -412,8 +413,8 @@ pub fn align_to_bam(
         if is_pe {
             let (r1, r2) = unconc_mate_paths(&unconc);
             if fastq_nonempty(&r1) {
-                eprintln!(
-                    "prokdiff: primary stage-2 unmatched R1 (-L {UNMATCHED_SEED_LEN}, --score-min L,6,0.2)"
+                info!(
+                    "prokadiff: primary stage-2 unmatched R1 (-L {UNMATCHED_SEED_LEN}, --score-min L,6,0.2)"
                 );
                 let sam_r1 = work.join("stage2_r1.sam");
                 let mut s2 = bowtie2_align_args(
@@ -429,8 +430,8 @@ pub fn align_to_bam(
                 run_bowtie2(&bowtie2, &s2)?;
             }
             if fastq_nonempty(&r2) {
-                eprintln!(
-                    "prokdiff: primary stage-2 unmatched R2 (-L {UNMATCHED_SEED_LEN}, --score-min L,6,0.2)"
+                info!(
+                    "prokadiff: primary stage-2 unmatched R2 (-L {UNMATCHED_SEED_LEN}, --score-min L,6,0.2)"
                 );
                 let sam_r2 = work.join("stage2_r2.sam");
                 let mut s2 = bowtie2_align_args(
@@ -447,8 +448,8 @@ pub fn align_to_bam(
             }
         }
         if fastq_nonempty(&unpaired) {
-            eprintln!(
-                "prokdiff: primary stage-2 unmatched SE as single reads (-L {UNMATCHED_SEED_LEN}, --score-min L,6,0.2)"
+            info!(
+                "prokadiff: primary stage-2 unmatched SE as single reads (-L {UNMATCHED_SEED_LEN}, --score-min L,6,0.2)"
             );
             let sam2 = work.join("stage2_se.sam");
             let mut s2 = bowtie2_align_args(

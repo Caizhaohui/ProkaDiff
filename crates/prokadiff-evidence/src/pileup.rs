@@ -399,7 +399,7 @@ fn pack_seed(seq: &[u8]) -> Option<u64> {
     Some(key)
 }
 
-struct PlaceIndex {
+pub struct PlaceIndex {
     hays: Vec<Vec<u8>>,
     /// `(packed first-PLACE_K-mer, contig, 0-based start)`, sorted by key.
     ///
@@ -424,7 +424,7 @@ struct PlaceIndex {
 pub const MAX_CLIP_HITS: usize = 20;
 
 impl PlaceIndex {
-    fn from_fasta(fasta: &[FastaRecord]) -> Self {
+    pub fn from_fasta(fasta: &[FastaRecord]) -> Self {
         let hays: Vec<Vec<u8>> = fasta
             .iter()
             .map(|r| {
@@ -471,7 +471,7 @@ impl PlaceIndex {
 
     /// Exact hits of `needle_upper` on either strand, as
     /// `(contig, 0-based start, matched_reverse_complement)`.
-    fn search(&self, needle_upper: &[u8]) -> Vec<(usize, usize, bool)> {
+    pub fn search(&self, needle_upper: &[u8]) -> Vec<(usize, usize, bool)> {
         if needle_upper.len() < MIN_CLIP_FOR_PLACE {
             return Vec::new();
         }
@@ -587,10 +587,11 @@ fn hits_to_splits(
 /// Place softclips onto the reference (exact match, both strands).
 ///
 /// Clips shorter than [`MIN_CLIP_FOR_PLACE`] are not searched (recorded
-/// seeds still exist for unique-side evidence). Identical clip sequences
-/// are searched once against an uppercase-once index.
-pub fn place_softclips(clips: &[SoftclipHint], fasta: &[FastaRecord]) -> Vec<SplitCandidate> {
-    let index = PlaceIndex::from_fasta(fasta);
+/// Place softclips against a pre-built reference index (exact match, both strands).
+pub fn place_softclips_with_index(
+    clips: &[SoftclipHint],
+    index: &PlaceIndex,
+) -> Vec<SplitCandidate> {
     let mut keys: Vec<Vec<u8>> = Vec::new();
     let mut seen: HashMap<Vec<u8>, ()> = HashMap::new();
     for hint in clips {
@@ -621,6 +622,67 @@ pub fn place_softclips(clips: &[SoftclipHint], fasta: &[FastaRecord]) -> Vec<Spl
         }
     }
     out
+}
+
+/// Place softclips for multiple contigs in a single batch against a pre-built reference index.
+///
+/// Deduplicates unique clip keys across ALL contigs globally so identical clips
+/// (e.g. homologous repeats or mobile element transposition across plasmids/chromosomes)
+/// are searched only once, and returns split candidates partitioned by contig index.
+pub fn place_softclips_batch_with_index(
+    contig_clips: &[Vec<SoftclipHint>],
+    index: &PlaceIndex,
+) -> Vec<Vec<SplitCandidate>> {
+    let mut keys: Vec<Vec<u8>> = Vec::new();
+    let mut seen: HashMap<Vec<u8>, ()> = HashMap::new();
+    for clips in contig_clips {
+        for hint in clips {
+            if hint.clip_seq.len() < MIN_CLIP_FOR_PLACE || hint.aligned_q_len < MIN_CLIP_FOR_SEED {
+                continue;
+            }
+            let key = clip_key(&hint.clip_seq);
+            if seen.insert(key.clone(), ()).is_none() {
+                keys.push(key);
+            }
+        }
+    }
+    keys.sort();
+    let searched: HashMap<Vec<u8>, Vec<(usize, usize, bool)>> = keys
+        .into_par_iter()
+        .map(|k| {
+            let hits = index.search(&k);
+            (k, hits)
+        })
+        .collect();
+
+    contig_clips
+        .iter()
+        .map(|clips| {
+            let mut out = Vec::new();
+            for (hint_id, hint) in clips.iter().enumerate() {
+                if hint.clip_seq.len() < MIN_CLIP_FOR_PLACE
+                    || hint.aligned_q_len < MIN_CLIP_FOR_SEED
+                {
+                    continue;
+                }
+                let key = clip_key(&hint.clip_seq);
+                if let Some(hits) = searched.get(&key) {
+                    out.extend(hits_to_splits(hint, hint_id, key.len(), hits));
+                }
+            }
+            out
+        })
+        .collect()
+}
+
+/// Place softclips onto the reference (exact match, both strands).
+///
+/// Clips shorter than [`MIN_CLIP_FOR_PLACE`] are not searched (recorded
+/// seeds still exist for unique-side evidence). Identical clip sequences
+/// are searched once against an uppercase-once index.
+pub fn place_softclips(clips: &[SoftclipHint], fasta: &[FastaRecord]) -> Vec<SplitCandidate> {
+    let index = PlaceIndex::from_fasta(fasta);
+    place_softclips_with_index(clips, &index)
 }
 
 /// Place a single softclip. Repeat copies are allowed. Skip the trivial
@@ -1037,5 +1099,45 @@ mod tests {
                 .any(|s| (41..=52).contains(&s.side2_pos_1) || (101..=112).contains(&s.side2_pos_1)),
             "12 bp clip must place onto a motif copy, got {placed:?}"
         );
+    }
+
+    #[test]
+    fn batch_place_multi_contig_matches_independent_placement() {
+        let motif = *b"ACGTACGTACGT";
+        let (ref_seq, read) = motif_clip_read(&motif, 20);
+        let fasta = [
+            FastaRecord {
+                name: "chr1".into(),
+                seq: ref_seq.clone(),
+            },
+            FastaRecord {
+                name: "plasmid1".into(),
+                seq: ref_seq.clone(),
+            },
+        ];
+        let hint0 = recorded_clip(&ref_seq, &read);
+        let mut hint1 = hint0.clone();
+        hint1.contig_idx = 1;
+
+        let index = PlaceIndex::from_fasta(&fasta);
+        let single0 = place_softclips_with_index(std::slice::from_ref(&hint0), &index);
+        let single1 = place_softclips_with_index(std::slice::from_ref(&hint1), &index);
+
+        let batch = place_softclips_batch_with_index(&[vec![hint0], vec![hint1]], &index);
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].len(), single0.len());
+        assert_eq!(batch[1].len(), single1.len());
+        for (b, s) in batch[0].iter().zip(&single0) {
+            assert_eq!(b.contig_idx, s.contig_idx);
+            assert_eq!(b.side2_contig_idx, s.side2_contig_idx);
+            assert_eq!(b.side1_pos_1, s.side1_pos_1);
+            assert_eq!(b.side2_pos_1, s.side2_pos_1);
+        }
+        for (b, s) in batch[1].iter().zip(&single1) {
+            assert_eq!(b.contig_idx, s.contig_idx);
+            assert_eq!(b.side2_contig_idx, s.side2_contig_idx);
+            assert_eq!(b.side1_pos_1, s.side1_pos_1);
+            assert_eq!(b.side2_pos_1, s.side2_pos_1);
+        }
     }
 }

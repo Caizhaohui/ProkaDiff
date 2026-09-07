@@ -3,6 +3,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use tracing::{debug, info};
+
 use crate::align::{align_to_bam, AlignKind, FastqInput};
 use crate::engine::bam_io::{parse_junction_bam, PrimaryBamData};
 use crate::engine::EngineOptions;
@@ -377,7 +379,7 @@ pub(crate) fn second_pass_splits(
                 &contig_names,
                 default_mate,
             ) {
-                eprintln!(
+                debug!(
                     "prokadiff: extracted {} split-read candidate junctions from {}",
                     split_cands.len(),
                     sam_name
@@ -430,7 +432,7 @@ pub(crate) fn second_pass_splits(
     let ref_len: usize = fasta.iter().map(|r| r.seq.len()).sum();
     let cands = rank_and_cap(all_cands, ref_len, flank);
     if cands.is_empty() {
-        eprintln!("prokadiff: second-pass skipped (no seed junctions)");
+        info!("prokadiff: second-pass skipped (no seed junctions)");
         return Ok(Vec::new());
     }
     let mut recs = Vec::new();
@@ -453,7 +455,7 @@ pub(crate) fn second_pass_splits(
     std::fs::create_dir_all(&jc_dir)?;
     let fa = jc_dir.join("junctions.fa");
     write_records(&recs, &fa)?;
-    eprintln!(
+    debug!(
         "prokadiff: second-pass {} junction constructs; filtering clip/unmapped reads",
         recs.len()
     );
@@ -464,7 +466,7 @@ pub(crate) fn second_pass_splits(
     });
     let filtered_owner;
     let pass_reads: &FastqInput = if gzip {
-        eprintln!("prokadiff: gzip FASTQ; second-pass uses all reads (no clip/unmapped filter)");
+        debug!("prokadiff: gzip FASTQ; second-pass uses all reads (no clip/unmapped filter)");
         reads
     } else {
         let pass_dir = jc_dir.join("reads");
@@ -474,7 +476,7 @@ pub(crate) fn second_pass_splits(
             &primary_data.second_pass_seen,
             &pass_dir,
         )?;
-        eprintln!("prokadiff: second-pass {nkeep} FASTQ records after clip/unmapped filter");
+        debug!("prokadiff: second-pass {nkeep} FASTQ records after clip/unmapped filter");
         if nkeep == 0 {
             return Ok(Vec::new());
         }
@@ -491,7 +493,7 @@ pub(crate) fn second_pass_splits(
         AlignKind::Junction,
     )?;
     let (extra, stats) = parse_junction_bam(&jc_bam, &kept, &primary_data.primary_scores)?;
-    eprintln!(
+    info!(
         "prokadiff: second-pass records considered={} kept={} \
          rejected(short_cover={} not_spanning={} worse_than_primary={})",
         stats.considered,

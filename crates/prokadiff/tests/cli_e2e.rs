@@ -494,3 +494,22 @@ fn e2e_pipeline_synth_parent_child() {
 
     let _ = std::fs::remove_dir_all(outdir);
 }
+
+#[test]
+fn e2e_cli_quiet_and_verbose_options_in_help() {
+    let output = Command::new(prokadiff_bin())
+        .arg("--help")
+        .output()
+        .expect("failed to run prokadiff --help");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("-q") && stdout.contains("--quiet"),
+        "help must document -q/--quiet"
+    );
+    assert!(
+        stdout.contains("-v") && stdout.contains("--verbose"),
+        "help must document -v/--verbose"
+    );
+}
