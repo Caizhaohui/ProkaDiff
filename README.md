@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/logo.png" alt="ProkaDiff Logo" width="600">
+</p>
+
 # ProkaDiff
 
 **Prokaryotic Genome Diff for Gene-Editing Quality Control — Starter vs. Edited WGS**

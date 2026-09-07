@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/logo.png" alt="ProkaDiff Logo" width="600">
+</p>
+
 # ProkaDiff
 
 **原核基因编辑质控用全基因组差分分析工具：出发株 vs 编辑株 WGS**
