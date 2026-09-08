@@ -13,7 +13,7 @@ use prokadiff_classify::{
 };
 use prokadiff_evidence::align::FastqInput;
 use prokadiff_evidence::engine::{run_sample, EngineOptions};
-use prokadiff_evidence::fasta::{read_reference, write_combined_fasta};
+use prokadiff_evidence::fasta::{read_reference, read_references, write_combined_fasta};
 use prokadiff_gd::GenomeDiff;
 use prokadiff_report::{write_summary, write_unintended_tsv};
 
@@ -237,6 +237,7 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
 }
 
 fn materialize_ref(refs: &[PathBuf], work: &Path) -> Result<PathBuf, RunError> {
+    read_references(refs)?;
     if refs.len() == 1 {
         let p = &refs[0];
         let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
@@ -254,4 +255,27 @@ fn materialize_ref(refs: &[PathBuf], work: &Path) -> Result<PathBuf, RunError> {
     let dest = work.join("reference.fa");
     write_combined_fasta(refs, &dest)?;
     Ok(dest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn materialize_ref_rejects_duplicate_id_in_direct_single_fasta() {
+        // Given: a direct Bowtie2-compatible FASTA with a duplicate contig ID.
+        let dir =
+            std::env::temp_dir().join(format!("prokadiff-direct-reference-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("duplicate.fa");
+        let mut file = std::fs::File::create(&source).unwrap();
+        writeln!(file, ">chr\nACGT\n>chr\nTGCA").unwrap();
+
+        // When: direct reference materialization is requested.
+        let result = materialize_ref(std::slice::from_ref(&source), &dir.join("work"));
+
+        // Then: validation fails before Bowtie2 could receive the direct file.
+        assert!(matches!(result, Err(RunError::Evidence(_))));
+    }
 }

@@ -87,8 +87,24 @@ pub fn classify(
         }
     };
 
+    let mob_positions: Vec<(String, u64)> = remain
+        .iter()
+        .filter(|e| e.kind == GdKind::Mob)
+        .filter_map(|e| Some((e.seq_id()?.to_string(), e.position()?)))
+        .collect();
+
     let mut unintended = Vec::with_capacity(remain.len());
     for e in remain {
+        if e.kind == GdKind::Jc && e.attrs.contains_key("mob_evidence") {
+            if let (Some(seq), Some(pos)) = (e.seq_id(), e.position()) {
+                if mob_positions
+                    .iter()
+                    .any(|(m_seq, m_pos)| m_seq == seq && pos.abs_diff(*m_pos) <= 20)
+                {
+                    continue;
+                }
+            }
+        }
         unintended.push(label_one(e, &sites, opts, pam_used.as_deref()));
     }
 

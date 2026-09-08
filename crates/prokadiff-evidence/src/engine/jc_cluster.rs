@@ -200,7 +200,7 @@ pub(crate) fn shares_one_side(a: &AcceptedJc, b: &AcceptedJc) -> bool {
     let sb = [(b.c1, b.p1, b.m1), (b.c2, b.p2, b.m2)];
     sa.iter().any(|x| {
         sb.iter()
-            .any(|y| x.0 == y.0 && x.1.abs_diff(y.1) <= 2 && x.2 == y.2)
+            .any(|y| x.0 == y.0 && x.1.abs_diff(y.1) <= JC_CLUSTER_TOL_BP && x.2 == y.2)
     })
 }
 
@@ -236,13 +236,13 @@ pub(crate) fn fold_multicopy_placements(
 
             let same_repeat_family = if !repeats.is_empty() {
                 let mut shared_unique = None;
-                if g.c1 == j.c1 && g.p1.abs_diff(j.p1) <= 2 && g.m1 == j.m1 {
+                if g.c1 == j.c1 && g.p1.abs_diff(j.p1) <= JC_CLUSTER_TOL_BP && g.m1 == j.m1 {
                     shared_unique = Some(((g.c2, g.p2), (j.c2, j.p2)));
-                } else if g.c1 == j.c2 && g.p1.abs_diff(j.p2) <= 2 && g.m1 == j.m2 {
+                } else if g.c1 == j.c2 && g.p1.abs_diff(j.p2) <= JC_CLUSTER_TOL_BP && g.m1 == j.m2 {
                     shared_unique = Some(((g.c2, g.p2), (j.c1, j.p1)));
-                } else if g.c2 == j.c1 && g.p2.abs_diff(j.p1) <= 2 && g.m2 == j.m1 {
+                } else if g.c2 == j.c1 && g.p2.abs_diff(j.p1) <= JC_CLUSTER_TOL_BP && g.m2 == j.m1 {
                     shared_unique = Some(((g.c1, g.p1), (j.c2, j.p2)));
-                } else if g.c2 == j.c2 && g.p2.abs_diff(j.p2) <= 2 && g.m2 == j.m2 {
+                } else if g.c2 == j.c2 && g.p2.abs_diff(j.p2) <= JC_CLUSTER_TOL_BP && g.m2 == j.m2 {
                     shared_unique = Some(((g.c1, g.p1), (j.c1, j.p1)));
                 }
 

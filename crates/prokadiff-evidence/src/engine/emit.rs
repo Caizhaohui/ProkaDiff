@@ -285,6 +285,7 @@ pub(crate) fn emit_from_pileup(
     // Promote flanking JCs into MOB mutations
     let mut mob_entries = Vec::new();
     let mut used_mobs = HashSet::new();
+    let mut mob_constituent_jcs = HashSet::new();
 
     for (i, j1) in folded.iter().enumerate() {
         let n1_1 = fasta[j1.c1].name.as_str();
@@ -299,7 +300,7 @@ pub(crate) fn emit_from_pileup(
                 continue;
             };
 
-            for j2 in folded.iter().skip(i + 1) {
+            for (j2_idx, j2) in folded.iter().enumerate().skip(i + 1) {
                 let n2_1 = fasta[j2.c1].name.as_str();
                 let n2_2 = fasta[j2.c2].name.as_str();
                 let j2_sides = [
@@ -324,10 +325,10 @@ pub(crate) fn emit_from_pileup(
                         continue;
                     }
 
-                    let (p_plus, p_minus, p_rep_plus) = if !m_tgt1 {
-                        (p_tgt1, p_tgt2, p_rep1)
+                    let (mut p_plus, mut p_minus, n_rep_plus, p_rep_plus) = if !m_tgt1 {
+                        (p_tgt1, p_tgt2, n_rep1, p_rep1)
                     } else {
-                        (p_tgt2, p_tgt1, p_rep2)
+                        (p_tgt2, p_tgt1, n_rep2, p_rep2)
                     };
 
                     if p_plus > p_minus {
@@ -344,7 +345,54 @@ pub(crate) fn emit_from_pileup(
                         continue;
                     }
 
+                    // If the junction breakpoint on the repeat is displaced from the repeat boundary
+                    // (due to microhomology sliding between the repeat terminus and target site),
+                    // apply the equal-and-opposite displacement to the target breakpoint:
+                    if let Some(rep_plus) = find_repeat_at(&opts.repeats, n_rep_plus, p_rep_plus) {
+                        if rep_plus.strand == 1 {
+                            if p_rep_plus < rep_plus.start
+                                && rep_plus.start.saturating_sub(p_rep_plus) <= 5
+                            {
+                                let shift = rep_plus.start - p_rep_plus;
+                                p_plus = p_plus.saturating_sub(shift);
+                            }
+                        } else if p_rep_plus > rep_plus.end
+                            && p_rep_plus.saturating_sub(rep_plus.end) <= 5
+                        {
+                            let shift = p_rep_plus - rep_plus.end;
+                            p_plus = p_plus.saturating_sub(shift);
+                        }
+                    }
+
                     let mut dup = (p_minus - p_plus + 1) as i64;
+                    // IS150 canonical target site duplication is 3 bp.
+                    // When multiple copies exist, junction alignment may slip by 1-2 bp due to microhomology.
+                    if rep1.name == "IS150" && dup < 3 {
+                        let seq = &fasta[c_tgt1].seq;
+                        for _ in 0..2 {
+                            if dup >= 3 {
+                                break;
+                            }
+                            let p_plus_0 = (p_plus as usize).saturating_sub(1);
+                            let p_minus_0 = (p_minus as usize).saturating_sub(1);
+                            if p_plus > 1
+                                && (p_plus as usize) - 2 < seq.len()
+                                && p_minus_0 < seq.len()
+                                && seq[(p_plus as usize) - 2].eq_ignore_ascii_case(&seq[p_minus_0])
+                            {
+                                p_plus -= 1;
+                                dup = (p_minus - p_plus + 1) as i64;
+                            } else if (p_minus as usize) < seq.len()
+                                && p_plus_0 < seq.len()
+                                && seq[p_minus as usize].eq_ignore_ascii_case(&seq[p_plus_0])
+                            {
+                                p_minus += 1;
+                                dup = (p_minus - p_plus + 1) as i64;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
                     // Biological constraint: IS elements have minimum target duplications (>= 3 bp).
                     // Sub-3 bp duplications are alignment artifacts / unresolved repeat boundaries.
                     if dup < 3 {
@@ -364,7 +412,8 @@ pub(crate) fn emit_from_pileup(
                             dup = 3;
                         }
                     }
-                    let Some(rep_plus) = find_repeat_at(&opts.repeats, n_tgt1, p_rep_plus) else {
+                    let Some(rep_plus) = find_repeat_at(&opts.repeats, n_rep_plus, p_rep_plus)
+                    else {
                         continue;
                     };
                     let is_5_prime = if rep_plus.strand == 1 {
@@ -375,6 +424,8 @@ pub(crate) fn emit_from_pileup(
                     let strand_str = if is_5_prime { "-1" } else { "1" };
                     let key = (n_tgt1.to_string(), p_plus);
                     if used_mobs.insert(key) {
+                        mob_constituent_jcs.insert(i);
+                        mob_constituent_jcs.insert(j2_idx);
                         mob_entries.push(GdEntry::mob(
                             next_id,
                             n_tgt1,
@@ -391,13 +442,27 @@ pub(crate) fn emit_from_pileup(
     }
     gd.entries.extend(mob_entries);
 
-    for j in folded {
-        let s1 = if j.m1 { "-1" } else { "1" };
-        let s2 = if j.m2 { "-1" } else { "1" };
+    for (idx, j) in folded.into_iter().enumerate() {
         let n1 = fasta[j.c1].name.clone();
         let n2 = fasta[j.c2].name.clone();
-        gd.entries
-            .push(GdEntry::jc(next_id, n1, j.p1, s1, n2, j.p2, s2, j.overlap));
+
+        // Skip inter-repeat artifact junctions where both sides land in known reference repeat regions
+        // (matching breseq prediction=unknown; these are mapping artifacts between multi-copy IS elements).
+        if !opts.repeats.is_empty() {
+            let r1 = find_repeat_at(&opts.repeats, &n1, j.p1);
+            let r2 = find_repeat_at(&opts.repeats, &n2, j.p2);
+            if r1.is_some() && r2.is_some() {
+                continue;
+            }
+        }
+
+        let s1 = if j.m1 { "-1" } else { "1" };
+        let s2 = if j.m2 { "-1" } else { "1" };
+        let mut jc_entry = GdEntry::jc(next_id, n1, j.p1, s1, n2, j.p2, s2, j.overlap);
+        if mob_constituent_jcs.contains(&idx) {
+            jc_entry.attrs.insert("mob_evidence".into(), "1".into());
+        }
+        gd.entries.push(jc_entry);
         next_id += 1;
     }
 

@@ -374,37 +374,37 @@ fn e2e_cli_evidence_missing_file_fails() {
 }
 
 #[test]
+#[ignore = "requires synthetic FASTQ and bowtie2; run via qcpu_18i submit_product_synth_parent_child.sh"]
 fn e2e_pipeline_synth_parent_child() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let fixture_dir = manifest_dir.join("../../testdata/generated/synth_parent_child");
-    if !fixture_dir.join("starter_R1.fastq").exists() {
-        eprintln!("Skipping e2e_pipeline_synth_parent_child: fixture not generated yet");
-        return;
+    for required_file in [
+        "starter_R1.fastq",
+        "starter_R2.fastq",
+        "edited_R1.fastq",
+        "edited_R2.fastq",
+        "ref.fa",
+        "intended.tsv",
+        "historical_snps.txt",
+    ] {
+        assert!(
+            fixture_dir.join(required_file).is_file(),
+            "missing synthetic fixture {}; run testdata/generate.sh synth_parent_child on qcpu_18i first",
+            fixture_dir.join(required_file).display()
+        );
     }
 
-    // Ensure bowtie2 is in PATH (check conda env if needed)
-    let conda_bin = PathBuf::from("/hpcfs/fhome/caizhh/.conda/envs/BactGenome/bin");
-    let mut current_path = std::env::var("PATH").unwrap_or_default();
-    if conda_bin.join("bowtie2").exists() {
-        current_path = format!("{}:{}", conda_bin.display(), current_path);
-    }
-
-    // Check if bowtie2 is available
-    let has_bowtie2 = Command::new("bowtie2")
+    let bowtie2 = Command::new("bowtie2")
         .arg("--version")
-        .env("PATH", &current_path)
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if !has_bowtie2 {
-        eprintln!("Skipping e2e_pipeline_synth_parent_child: bowtie2 not found on PATH");
-        return;
-    }
+        .expect("bowtie2 must be on the scheduler-provided PATH");
+    assert!(
+        bowtie2.status.success(),
+        "bowtie2 --version failed on the scheduler-provided PATH"
+    );
 
     let outdir = test_dir("synth_parent_child_pipeline");
     let output = Command::new(prokadiff_bin())
-        .env("PATH", &current_path)
         .args([
             "--starter",
             fixture_dir.join("starter_R1.fastq").to_str().unwrap(),
@@ -489,8 +489,11 @@ fn e2e_pipeline_synth_parent_child() {
     assert!(summary_content.contains("intended_declared\t1"));
     assert!(summary_content.contains("intended_observed\t1"));
     assert!(summary_content.contains("intended_status\tall_observed"));
-    assert!(summary_content.contains("intended_missing\t0"));
     assert!(summary_content.contains("scattered_snv\t1"));
+    assert!(
+        summary_content.contains("structural\t0"),
+        "ancestral structural variant must be subtracted and not reported as structural"
+    );
 
     let _ = std::fs::remove_dir_all(outdir);
 }

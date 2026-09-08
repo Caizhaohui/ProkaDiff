@@ -30,7 +30,7 @@ prokadiff \
 | --- | --- | --- |
 | `--starter` | 是 | 可重复。同一选项连续两个文件 = 一对 PE（先 R1 后 R2）；单个文件 = SE；可多 lane（多对）。 |
 | `--edited` | 是 | 同上。缺任一株 → 非零退出，错误信息写明必须提供出发株 WGS。 |
-| `--ref` | 是 | 可重复。染色体 + 质粒 + donor 骨架进入同一套参考。 |
+| `--ref` | 是 | 可重复。染色体 + 质粒 + donor 骨架进入同一套参考。所有输入中的 contig ID 必须全局唯一；同一文件内或不同文件间重名会在写合并 FASTA 或调用 Bowtie2 前以非零错误拒绝，并显示重复 ID 与两个冲突来源路径。 |
 | `--intended` | 否 | 目的编辑表。缺省则差分后全部进非预期。坐标相对骨架参考。 |
 | `--editor` | 是 | `cas9` \| `cas12a` \| `dsb`。`cast` / `is110` → 明确错误并指向路线图。 |
 | `--spacer` | cas9/cas12a 是 | 引导 RNA 的 DNA 字母（T 而非 U）。`dsb` 不要求。 |
@@ -88,7 +88,8 @@ gdtools SUBTRACT edited.gd starter.gd
 
 再减去 intended（若有），与 `unintended.tsv` 的变异集合一致（允许 [parity.md](parity.md) 中列出的规范化差异）。
 
-集合差语义（`prokadiff-gd`）：匹配键为 **坐标 + GD 类型 + 等位基因**（与 `gdtools SUBTRACT` 一致的可测行为）。JC 键含双端坐标、链向与 overlap，**精确匹配**；出发株与编辑株各自调用时若 junction 坐标抖动 ±1 bp，该 JC **不会**被减去，可能以 class (3) 进入非预期列表。第一期保持与 `gdtools SUBTRACT` 对齐，不做模糊匹配；层 3 真实配对若出现此类假阳性，再在 [parity.md](parity.md) 写容差阈值。大 DEL（MC 衍生）同理：边界差 1 bp 即视为不同事件。
+集合差语义（`prokadiff-gd`）：匹配键为 **坐标 + GD 类型 + 等位基因**。为处理出发株与编辑株独立比对聚类时的代表位点微漂移，`subtract` 对 JC、MOB 以及结构缺失 DEL（`size > 2`，起点与终点边界双端差 ≤5 bp）实施 ±5 bp 规范化容差消去（双端 contig、链向一致且坐标差 ≤5 bp 即视为同一物理事件减除），彻底避免先祖结构变异假阳性冒出；提供 `subtract_exact` 供严格文本精确比对。非 JC/MOB/DEL 变异与短 indel（≤2 bp）保持精确字段匹配。
+
 
 ## `unintended.tsv`（产品输出）
 

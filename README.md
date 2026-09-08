@@ -22,21 +22,25 @@ By comparing whole-genome sequencing (WGS) data of the **starter strain (parent)
   - `structural`: Mobile element insertions, genomic rearrangements, novel junctions, and large deletions (>2 bp).
   - `near_homolog`: Off-target mutations located near spacer sequence homologs and valid PAM motifs (e.g., Cas9 `NGG`, Cas12a `TTTV`).
   - `scattered_snv`: Genome-wide scattered point mutations and indels associated with repair machinery or stress responses.
-- **High Performance**: Native Rust engine with multi-threaded parallel execution, optimized BAM parsing, and rapid two-stage split-read junction discovery.
+- **Rust-Native Engine**: Multi-threaded execution, BAM parsing, and two-stage split-read junction discovery are implemented in Rust around system Bowtie2 alignment.
 - **Intended Edit Masking**: Optional intended-mutation specification to automatically subtract expected edits and assess targeting outcome.
 
 ---
 
-## Performance Benchmark
+## Benchmark Evidence
 
-Measured on Slurm cluster compute node (`qcpu_18i`, 8 CPU cores, *E. coli* B REL606 WGS resequencing workload, Job 2415323):
+Only compact records under [`benchmark/results/verified/`](benchmark/results/verified/) are publishable benchmark evidence. Each record is created by a `qcpu_18i` Slurm job only after the same job has completed the bidirectional Genome Diff comparison and captured wall-clock and peak-RSS fields for both ProkaDiff and breseq.
 
-| Metric | Legacy Pipeline (breseq 0.40.2) | ProkaDiff (v0.1.0) | Comparison / Notes |
-| :--- | :--- | :--- | :--- |
-| **Wall-clock Runtime** | 2,666.14 s (44 min 26 s) | **537.12 s (8 min 57 s)** | **4.96× faster 🚀** |
-| **Peak Memory (RSS)** | 1.86 GB | 3.11 GB | Flat and well-bounded |
-| **False Positive Mutations (`over_red`)** | 0 | **0** | Zero false positives |
-| **True Variant Recall** | Reference standard | 100% agreement | 28/28 SNPs, 5/5 MOBs, 2/2 DELs, 2/2 INSs |
+### Official Clonal Parity & Performance Benchmark ([Job 2424014](benchmark/results/verified/clonal_2424014.md))
+
+- **Workload**: *E. coli* B REL606 Clonal Sample (7.6M $2 \times 36$ bp PE reads, Methods Mol. Biol. 2014)
+- **Environment**: Slurm partition `qcpu_18i`, compute node `bnode29`, 8 threads (`--threads 8` / `breseq -j 8`)
+- **Pinned Oracle**: breseq 0.40.2 + bowtie2 2.5.4 ([VERSIONS.txt](testdata/VERSIONS.txt))
+
+| Tool | Wall Clock (s) | Peak RSS (GB) | Output Parity (vs Oracle) | Speedup |
+| :--- | :---: | :---: | :--- | :---: |
+| **ProkaDiff** `v0.1.0` | **544.55 s** (9m 04s) | 3.27 GB (3,432,960 kB) | **0 false positives** (`over_red = 0`), 100% MOB recall (5/5) | **5.69×** |
+| **breseq** `0.40.2` | 3,098.01 s (51m 38s) | 1.77 GB (1,856,948 kB) | Baseline reference oracle | 1.00× |
 
 ---
 
@@ -85,6 +89,7 @@ prokadiff \
 **File input rules**:
 - `--starter` and `--edited` accept fastq or fastq.gz files. Specifying two consecutive files under the flag designates a paired-end library (`R1` then `R2`).
 - `--ref` accepts FASTA (`.fa`, `.fna`, `.fasta`) or GenBank (`.gb`, `.gbk`) formats. Multiple `--ref` flags can be passed to include plasmids or donor vectors.
+- Contig IDs must be globally unique across all `--ref` inputs. A duplicate within a multi-record FASTA/GenBank file or across reference files fails before Bowtie2 runs and reports the duplicate ID and both source paths.
 
 ---
 

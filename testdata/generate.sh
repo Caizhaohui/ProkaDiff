@@ -102,17 +102,31 @@ elif fixture == "synth_parent_child":
     rng = random.Random(43)
     ref = "".join(rng.choice(bases) for _ in range(10_000))
     intended_pos, extra_pos = 2500, 8000
+    del_start = 5000
+    del_len = 300
     hist_pos = []
     p = 150
     while len(hist_pos) < 50:
-        if p not in (intended_pos, extra_pos) and 80 < p < 9900:
+        if (
+            p not in (intended_pos, extra_pos)
+            and 80 < p < 9900
+            and not (del_start - 100 <= p <= del_start + del_len + 100)
+        ):
             hist_pos.append(p)
         p += 90
     hist = [(p, ref[p - 1], flip[ref[p - 1]]) for p in hist_pos]
     intended = (intended_pos, ref[intended_pos - 1], flip[ref[intended_pos - 1]])
     extra = (extra_pos, ref[extra_pos - 1], flip[ref[extra_pos - 1]])
-    starter = apply_snps(ref, hist)
-    edited = apply_snps(ref, hist + [intended, extra])
+
+    # Ancestral structural variant: 300 bp deletion in BOTH starter and edited
+    starter_bases = list(apply_snps(ref, hist))
+    del starter_bases[del_start - 1 : del_start - 1 + del_len]
+    starter = "".join(starter_bases)
+
+    edited_bases = list(apply_snps(ref, hist + [intended, extra]))
+    del edited_bases[del_start - 1 : del_start - 1 + del_len]
+    edited = "".join(edited_bases)
+
     write_fa(out / "ref.fa", "synth", ref)
     write_fa(out / "starter.fa", "synth", starter)
     write_fa(out / "edited.fa", "synth", edited)
@@ -123,8 +137,13 @@ elif fixture == "synth_parent_child":
     (out / "historical_snps.txt").write_text(
         "pos\tref\talt\n" + "".join(f"{p}\t{r}\t{a}\n" for p, r, a in hist)
     )
+    (out / "historical_structural.txt").write_text(
+        f"kind\tstart\tlen\nDEL\t{del_start}\t{del_len}\n"
+    )
     (out / "extra_snp.txt").write_text(f"{extra[0]}\t{extra[1]}\t{extra[2]}\n")
-    print(f"wrote parent_child {out} hist={len(hist)} intended={intended[0]} extra={extra[0]}")
+    print(
+        f"wrote parent_child {out} hist={len(hist)} hist_del={del_start}..{del_start+del_len} intended={intended[0]} extra={extra[0]}"
+    )
 
 elif fixture == "synth_cas9_near":
     rng = random.Random(44)

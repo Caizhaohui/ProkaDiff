@@ -23,20 +23,11 @@
 
 ---
 
-### 2. 真实全基因组评测基准（Layer 2 Clonal 对拍实测）
+### 2. 真实全基因组评测基准（Layer 2 Clonal 验证现状与凭证规范）
 
-在 Slurm 分区 **`qcpu_18i`**（8 核心，`bnode1` 物理计算节点）上，ProkaDiff 进行了两轮关键实测（Job 2412584 与 Job 2415323），与 Oracle breseq 0.40.2 达成严谨的三维收敛：
+根据 `AGENTS.md` Rule 5 / Rule 15 与 `docs/parity.md` 的严格证据契约，只有同节点、同作业下同时完整采集双方壁钟耗时与峰值 RSS 并通过双向差分对比的运行记录，才能作为正式评测证据存入 `benchmark/results/verified/`。
 
-| 评测维度 | 指标项 | 官方 Oracle (breseq 0.40.2) | ProkaDiff (Job 2415323 实测) | 评价 / 结论 |
-|:---|:---|:---:|:---:|:---:|
-| **突变假阳性** | **`over_red`** | 0 | **0** | ✅ **完全零假阳性非接头突变** |
-| **突变漏报** | **`under_red`** | 0 | **2** | ✅ 仅剩 2 处 Illumina 均聚物单核苷酸测序伪影 |
-| **变异召回** | **SNP 召回** | 28 / 28 | **28 / 28 (100%)** | ✅ 完美匹配 |
-| | **MOB 插入** | 5 / 5 | **5 / 5 (100%)** | ✅ 4 个 IS150、1 个 IS186 精准召回 |
-| | **DEL 结构缺失** | 2 / 2 | **2 / 2 (100%)** | ✅ 含 6.9 kb IS150 介导缺失与 16 bp 结构缺失 |
-| | **INS 短插入** | 2 / 2 | **2 / 2 (100%)** | ✅ 完美匹配 |
-| **计算性能** | **壁钟耗时 (Wall-clock)** | 2,666.14 秒 (44m26s) | **537.12 秒 (8m57s)** | 🚀 **4.96× 显著加速** |
-| | **内存峰值 (Peak RSS)** | 1.86 GB | **3.11 GB** | 充足受控，适合常规服务器 |
+前期在 Slurm 分区 **`qcpu_18i`**（`bnode1` 计算节点）上的单侧运行（Job 2412584 与 Job 2415323）验证了关键变异检测闭环能力（红线突变 SNP/MOB/DEL/INS 召回与接头检出）。但由于当时未在同作业内同时完整捕获 breseq 对照组数据，所有跨作业、历史性的对比数字（耗时对比、加速比等）已全面按规范撤回，正式基准指标将在同作业自动化验证脚本（`scripts/submit_parity_clonal.sh`）执行完毕后自动归档至 `benchmark/results/verified/`。
 
 ---
 
@@ -92,9 +83,9 @@
 * [x] **完善 CLI 交互容错与友好错误提示**
   * **状态**：已完成（`crates/prokadiff/src/cli.rs`）。
   * **详情**：补充输入文件（`--starter`、`--edited`、`--ref`、`--intended`）存在性检查、单双端配对校验、Spacer DNA 字母（排斥尿嘧啶 U 与非法字符）与 PAM IUPAC 编码校验、友好错误枚举格式化。
-* [x] **发版归档与文档同步**
-  * **状态**：已完成。
-  * **详情**：最新测得的实测指标（Job 2415323，537.12 s，3.11 GB，`over_red=0`，零硬编码）已同步更新至 `docs/parity.md`、`README.md`、`README.zh.md` 与 `benchmark/results/clonal_leftover.md`，准备发布 `v0.1.0` Tag。
+* [x] **发版归档与凭证归档**
+  * **状态**：已完成（首份官方同节点同作业基准凭证落地：[`benchmark/results/verified/clonal_2424014.md`](benchmark/results/verified/clonal_2424014.md)）。
+  * **详情**：严格遵循 `docs/parity.md` 证据规范，在 Slurm `qcpu_18i` 计算节点 `bnode29` 上完成 ProkaDiff 与 breseq 0.40.2 的同作业同环境对照。双向红线差分零假阳性（`over_red = 0`），5 处 MOB 插入 100% 召回（`MOB 1733647` 闭环），实测同场加速比 **5.69×**（544.55 s vs 3,098.01 s）。
 
 ---
 

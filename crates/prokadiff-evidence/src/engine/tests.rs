@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use prokadiff_gd::GenomeDiff;
 
@@ -901,7 +901,7 @@ fn second_pass_uses_per_construct_breakpoint_not_flank() {
         &[("jc0", 30)],
         &[sam_rec("r1", 0, "jc0", 1, "30M", 30)],
     );
-    let scores = HashMap::new();
+    let scores = PrimaryScores::default();
 
     let (extra, stats) = parse_junction_bam(&bam, &[jc_cand(10)], &scores).unwrap();
     assert_eq!(stats.considered, 1);
@@ -932,7 +932,8 @@ fn second_pass_rejects_two_bp_overhang_instead_of_clamping_it_up() {
         &[("jc0", 72)],
         &[sam_rec("r1", 0, "jc0", 35, "36M", 36)],
     );
-    let (extra, stats) = parse_junction_bam(&bam, &[jc_cand(36)], &HashMap::new()).unwrap();
+    let (extra, stats) =
+        parse_junction_bam(&bam, &[jc_cand(36)], &PrimaryScores::default()).unwrap();
     assert!(extra.is_empty(), "2 bp past the breakpoint is not evidence");
     assert_eq!(stats.not_spanning, 1);
     assert_eq!(stats.kept, 0);
@@ -947,7 +948,8 @@ fn second_pass_reports_real_overlaps_with_no_floor() {
         &[("jc0", 72)],
         &[sam_rec("r1", 0, "jc0", 34, "36M", 36)],
     );
-    let (extra, stats) = parse_junction_bam(&bam, &[jc_cand(36)], &HashMap::new()).unwrap();
+    let (extra, stats) =
+        parse_junction_bam(&bam, &[jc_cand(36)], &PrimaryScores::default()).unwrap();
     assert_eq!(stats.kept, 1);
     assert_eq!(extra[0].left.len(), 3);
     assert_eq!(extra[0].right.len(), 33);
@@ -961,7 +963,8 @@ fn second_pass_counts_short_cover_rejects() {
         &[("jc0", 72)],
         &[sam_rec("r1", 0, "jc0", 25, "20M16S", 36)],
     );
-    let (extra, stats) = parse_junction_bam(&bam, &[jc_cand(36)], &HashMap::new()).unwrap();
+    let (extra, stats) =
+        parse_junction_bam(&bam, &[jc_cand(36)], &PrimaryScores::default()).unwrap();
     assert!(extra.is_empty());
     assert_eq!(stats.short_cover, 1);
     assert_eq!(stats.not_spanning, 0, "cover is checked before spanning");
@@ -980,17 +983,57 @@ fn second_pass_counts_primary_score_gate_separately_from_spanning() {
     );
     let cands = [jc_cand(36)];
 
-    let weaker = HashMap::from([("r1".to_string(), 30)]);
+    let weaker = PrimaryScores::from_single_ended([("r1", 30)]);
     let (extra, stats) = parse_junction_bam(&bam, &cands, &weaker).unwrap();
     assert_eq!(stats.kept, 1);
     assert_eq!(stats.worse_than_primary, 0);
     assert_eq!(extra.len(), 1);
 
-    let stronger = HashMap::from([("r1".to_string(), 40)]);
+    let stronger = PrimaryScores::from_single_ended([("r1", 40)]);
     let (extra, stats) = parse_junction_bam(&bam, &cands, &stronger).unwrap();
     assert!(extra.is_empty());
     assert_eq!(stats.worse_than_primary, 1);
     assert_eq!(stats.not_spanning, 0);
+}
+
+#[test]
+fn pe_mate_scores_are_isolated_so_perfect_mate_does_not_gate_junction_mate() {
+    // In paired-end sequencing, mate 1 may have aligned perfectly to the
+    // reference genome (score 150), while mate 2 crosses a structural junction
+    // and had a weak primary alignment (score 20).
+    //
+    // The second-pass junction alignment for mate 2 scores 36 on the junction
+    // construct. With per-mate score isolation, mate 2 compares only against its
+    // own primary score (20), so 36 >= 20 keeps the junction read.
+    // Without mate isolation, mate 1's score of 150 would erroneously gate out mate 2.
+    let bam = write_fixture_bam(
+        "prokdiff-jcbam-pe-mate-isolation",
+        &[("jc0", 72)],
+        &[sam_rec("read_pe", 129, "jc0", 19, "36M", 36)], // flag 129: paired + mate 2
+    );
+    let cands = [jc_cand(36)];
+
+    let scores = PrimaryScores::from_iter([
+        (("read_pe", Mate::First), 150),
+        (("read_pe", Mate::Last), 20),
+    ]);
+
+    let (extra, stats) = parse_junction_bam(&bam, &cands, &scores).unwrap();
+    assert_eq!(
+        stats.kept, 1,
+        "mate 2 is accepted against its own primary score"
+    );
+    assert_eq!(stats.worse_than_primary, 0);
+    assert_eq!(extra.len(), 1);
+
+    // If mate 2's own primary score had been superior (e.g. 40), it would be rejected.
+    let scores_higher = PrimaryScores::from_iter([
+        (("read_pe", Mate::First), 150),
+        (("read_pe", Mate::Last), 40),
+    ]);
+    let (extra_high, stats_high) = parse_junction_bam(&bam, &cands, &scores_higher).unwrap();
+    assert!(extra_high.is_empty());
+    assert_eq!(stats_high.worse_than_primary, 1);
 }
 
 #[test]
@@ -1003,7 +1046,8 @@ fn second_pass_origins_are_per_read_and_never_alias_softclip_ids() {
             sam_rec("r2", 16, "jc0", 20, "36M", 36),
         ],
     );
-    let (extra, stats) = parse_junction_bam(&bam, &[jc_cand(36)], &HashMap::new()).unwrap();
+    let (extra, stats) =
+        parse_junction_bam(&bam, &[jc_cand(36)], &PrimaryScores::default()).unwrap();
     assert_eq!(stats.kept, 2);
     // Two reads, two identities: the multi-copy fold must be able to tell
     // them apart.
@@ -1031,7 +1075,113 @@ fn second_pass_ignores_records_on_unknown_constructs() {
             sam_rec("r2", 0, "jc7", 19, "36M", 36),
         ],
     );
-    let (extra, stats) = parse_junction_bam(&bam, &[jc_cand(36)], &HashMap::new()).unwrap();
+    let (extra, stats) =
+        parse_junction_bam(&bam, &[jc_cand(36)], &PrimaryScores::default()).unwrap();
     assert!(extra.is_empty());
     assert_eq!(stats.considered, 0);
+}
+
+#[test]
+fn is150_microhomology_sliding_recovers_mob_from_dup2() {
+    let mut seq = vec![b'G'; 2500];
+    // Target sequence around 1700:
+    // 0-based 1700..1706 is 1-based 1701..1706.
+    // 1-based:
+    // 1701: 'A'
+    // 1702: 'C'
+    // 1703: 'A'
+    // If p_plus = 1702, p_minus = 1703, dup = 2.
+    // Base at 1701 ('A') == base at 1703 ('A'), so p_plus slides to 1701 and dup becomes 3.
+    seq[1700..1706].copy_from_slice(b"ACAACA");
+    let fasta = vec![FastaRecord {
+        name: "chr".into(),
+        seq,
+    }];
+    let repeats = vec![RepeatRegion {
+        seq_id: "chr".into(),
+        name: "IS150".into(),
+        strand: 1,
+        start: 500,
+        end: 1500,
+    }];
+    let opts = EngineOptions {
+        repeats,
+        ..Default::default()
+    };
+    let mut splits = Vec::new();
+    // Junction 1: IS150 end (1500, minus) to target (1703, minus)
+    for (i, minus) in [false, false, false, true, true, true]
+        .into_iter()
+        .enumerate()
+    {
+        splits.push(SplitCandidate {
+            contig_idx: 0,
+            side2_contig_idx: 0,
+            minus,
+            side1_minus: true,
+            side2_minus: true,
+            left: SubAlignment {
+                read_start: 0,
+                read_end: 18,
+            },
+            right: SubAlignment {
+                read_start: 18,
+                read_end: 36,
+            },
+            side1_pos_1: 1500,
+            side2_pos_1: 1703,
+            overlap: 0,
+            origin: SplitOrigin::Softclip(100 + i),
+        });
+    }
+    // Junction 2: IS150 start (500, plus) to target (1702, plus)
+    for (i, minus) in [false, false, false, true, true, true]
+        .into_iter()
+        .enumerate()
+    {
+        splits.push(SplitCandidate {
+            contig_idx: 0,
+            side2_contig_idx: 0,
+            minus,
+            side1_minus: false,
+            side2_minus: false,
+            left: SubAlignment {
+                read_start: 0,
+                read_end: 18,
+            },
+            right: SubAlignment {
+                read_start: 18,
+                read_end: 36,
+            },
+            side1_pos_1: 500,
+            side2_pos_1: 1702,
+            overlap: 0,
+            origin: SplitOrigin::Softclip(200 + i),
+        });
+    }
+    let contig_results = vec![ContigPileup {
+        columns: fasta[0]
+            .seq
+            .iter()
+            .map(|&b| PileupColumn {
+                ref_base: b,
+                observations: vec![],
+                insertions: vec![],
+            })
+            .collect(),
+        unique_depth: vec![10; 2500],
+        total_depth: vec![10; 2500],
+        splits,
+    }];
+    let gd = emit_from_pileup(&fasta, contig_results, &opts, &[]);
+    let mobs: Vec<_> = gd
+        .entries
+        .iter()
+        .filter(|e| e.kind == prokadiff_gd::GdKind::Mob)
+        .collect();
+    assert_eq!(mobs.len(), 1, "Expected 1 MOB, got: {:?}", mobs);
+    assert_eq!(mobs[0].fields[0], "chr");
+    assert_eq!(mobs[0].fields[1], "1701");
+    assert_eq!(mobs[0].fields[2], "IS150");
+    assert_eq!(mobs[0].fields[4], "3");
 }

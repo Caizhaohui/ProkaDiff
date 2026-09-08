@@ -20,7 +20,7 @@ pub mod split_seed;
 pub use align::FastqInput;
 pub use engine::{call_from_aligned, run_sample, EngineOptions};
 pub use error::EvidenceError;
-pub use fasta::{read_reference, write_combined_fasta, FastaRecord};
+pub use fasta::{read_reference, read_references, write_combined_fasta, FastaRecord};
 pub use mc::call_missing_coverage;
 pub use normalize::{right_align_del, right_align_ins};
 pub use ra::{call_consensus, BaseObs, ConsensusCall, PileupColumn, RaOptions, Strand};

@@ -98,7 +98,6 @@ python3 "${ROOT}/scripts/layer2_gd_compare.py" \
   --csv "${ROOT}/benchmark/results/synth_is_mob.csv" \
   --threads "${THREADS}" \
   --prokadiff-gd "${RUST_GD}" \
-  --breseq-gd "${BRESEQ_GD}" \
-  || true
+  --breseq-gd "${BRESEQ_GD}"
 
-echo "done ${JOBOUT} (do not invent leftover/wall/RSS if compare failed)"
+echo "done ${JOBOUT} (comparator passed; artifact writes are in ${JOBOUT})"

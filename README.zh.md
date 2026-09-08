@@ -25,21 +25,25 @@
   - `structural`（结构变异）：转座元件插入、基因组倒位/重排、大片段缺失（>2 bp）及扩增事件。
   - `near_homolog`（近同源靶区）：位于 spacer 序列同源位点及有效 PAM（如 Cas9 `NGG`、Cas12a `TTTV`）附近的候选脱靶点突变。
   - `scattered_snv`（散在点突变）：散布在全基因组各处的点突变及短插入缺失，多与修复压力或应激诱变机制相关。
-- **高吞吐与极速算力**：采用 Rust 原生多线程并行化管线与优化的两阶段嵌合对齐断点挖掘算法，在实测比对中较传统方案提速 5 倍以上，峰值内存受控稳定。
+- **Rust 原生引擎**：围绕系统 Bowtie2 比对实现多线程执行、BAM 解析和两阶段嵌合读段断点挖掘。
 - **预期编辑位点自动掩膜**：支持声明目标预期编辑表（`--intended`），自动验证编辑达成情况并将其从非预期突变报表中滤除。
 
 ---
 
-## 性能实测基准（Benchmark）
+## 基准证据（Benchmark Evidence）
 
-在 Slurm 分区 `qcpu_18i` 计算节点（8 核心，大肠杆菌 REL606 全基因组高深度再测序真实负载，作业 2415323）上的实测指标：
+只有 [`benchmark/results/verified/`](benchmark/results/verified/) 下的紧凑记录可作为可发布的基准证据。每条记录只能由 `qcpu_18i` 上的同一个 Slurm 作业产生：该作业必须完成双向 Genome Diff 对比，并同时采集 ProkaDiff 与 breseq 的 wall-clock 和 peak RSS。
 
-| 评估指标 | 传统工具链 (breseq 0.40.2) | ProkaDiff (v0.1.0) | 性能对比与说明 |
-| :--- | :--- | :--- | :--- |
-| **执行耗时 (Wall-clock)** | 2,666.14 秒 (44 分 26 秒) | **537.12 秒 (8 分 57 秒)** | **真实提速 4.96 倍 🚀** |
-| **峰值内存 (Peak RSS)** | 1.86 GB | 3.11 GB | 内存开销平稳受控 |
-| **假阳性突变数 (`over_red`)** | 0 | **0** | 完全零假阳性 |
-| **真变异召回率** | 基准标准 | 100% 吻合 | 28/28 SNP、5/5 MOB、2/2 DEL、2/2 INS 全部精准检出 |
+### 官方 Clonal 对拍与性能基准（[作业 2424014](benchmark/results/verified/clonal_2424014.md)）
+
+- **评测数据集**：大肠杆菌 *E. coli* B REL606 Clonal Sample（760 万条 $2 \times 36$ bp 双端测序读段，Methods Mol. Biol. 2014）
+- **评测环境**：Slurm 分区 `qcpu_18i`，计算节点 `bnode29`，统一分配 8 线程（`--threads 8` / `breseq -j 8`）
+- **对拍 Oracle**：breseq 0.40.2 + bowtie2 2.5.4（[VERSIONS.txt](testdata/VERSIONS.txt) 锁定版本）
+
+| 工具 | 壁钟耗时 (Wall clock) | 内存峰值 (Peak RSS) | 对拍质量 (vs Oracle) | 实测加速比 |
+| :--- | :---: | :---: | :--- | :---: |
+| **ProkaDiff** `v0.1.0` | **544.55 秒** (9分04秒) | 3.27 GB (3,432,960 kB) | **0 假阳性** (`over_red = 0`)，MOB 100% 召回 (5/5) | **5.69×** |
+| **breseq** `0.40.2` | 3,098.01 秒 (51分38秒) | 1.77 GB (1,856,948 kB) | 官方基准对照 Oracle | 1.00× |
 
 ---
 
@@ -88,6 +92,7 @@ prokadiff \
 **输入参数规则**：
 - `--starter` 和 `--edited` 支持 fastq 或 fastq.gz 格式。同一参数连续指定两个文件时，自动识别为一对双端文库（先 R1 后 R2）。
 - `--ref` 支持 FASTA（`.fa`, `.fasta`, `.fna`）或 GenBank（`.gb`, `.gbk`）格式，允许多次指定以包含质粒或供体载体序列。
+- 所有 `--ref` 输入中的 contig ID 必须全局唯一。同一多记录 FASTA/GenBank 文件内或不同参考文件之间如有重复，程序会在 Bowtie2 启动前失败，并报告重复 ID 与两条来源路径。
 
 ---
 
@@ -249,4 +254,3 @@ graph TD
 ## 软件许可
 
 `ProkaDiff` 遵循开源 [MIT License](LICENSE)。
-

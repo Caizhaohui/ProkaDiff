@@ -1,0 +1,13 @@
+# Auto-detect text files and normalize line endings to LF on commit
+* text=auto
+
+# Enforce LF for code, scripts, configuration, and documentation
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.gd text eol=lf
+*.txt text eol=lf

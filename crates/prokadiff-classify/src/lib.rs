@@ -400,4 +400,48 @@ mod tests {
         assert_eq!(out.unintended[0].class, MutationClass::NearHomolog);
         assert_eq!(out.unintended[0].pam_profile.as_deref(), Some("NAG"));
     }
+
+    #[test]
+    fn starter_inherited_jc_with_jitter_is_subtracted_not_structural() {
+        let starter = gd(vec![GdEntry::jc(1, "chr", 100, "+", "chr", 500, "-", 0)]);
+        let edited = gd(vec![
+            GdEntry::jc(1, "chr", 102, "+", "chr", 501, "-", 0), // inherited, jittered by 2 bp
+            GdEntry::jc(2, "chr", 2000, "+", "chr", 3000, "-", 0), // novel structural edit
+        ]);
+        let out = classify(&edited, &starter, &[], &[], &cas9_opts(false));
+        assert_eq!(out.unintended.len(), 1);
+        assert_eq!(out.unintended[0].class, MutationClass::Structural);
+        assert_eq!(out.unintended[0].entry.fields[1], "2000");
+    }
+
+    #[test]
+    fn starter_inherited_mob_with_jitter_is_subtracted_not_structural() {
+        let starter = gd(vec![GdEntry::mob(1, "chr", 601, "IS150", "+", 3)]);
+        let edited = gd(vec![
+            GdEntry::mob(1, "chr", 603, "IS150", "+", 3), // inherited, jittered by 2 bp
+            GdEntry::snp(2, "chr", 800, "C"),             // novel edit
+        ]);
+        let out = classify(&edited, &starter, &[], &[], &cas9_opts(false));
+        assert_eq!(out.unintended.len(), 1);
+        assert_eq!(out.unintended[0].class, MutationClass::ScatteredSnv);
+        assert_eq!(out.unintended[0].entry.fields[1], "800");
+    }
+
+    #[test]
+    fn mob_constituent_jc_is_subsumed_by_mob_not_duplicate_structural() {
+        let mut jc_flank = GdEntry::jc(2, "chr", 601, "+", "chr", 2500, "-", 0);
+        jc_flank.attrs.insert("mob_evidence".into(), "1".into());
+        let edited = gd(vec![
+            GdEntry::mob(1, "chr", 601, "IS150", "+", 3),
+            jc_flank,
+            GdEntry::snp(3, "chr", 1200, "T"),
+        ]);
+        let out = classify(&edited, &gd(vec![]), &[], &[], &cas9_opts(false));
+        // MOB is structural (1), SNP is scattered_snv (1); jc_flank is subsumed and not duplicated
+        assert_eq!(out.unintended.len(), 2);
+        assert_eq!(out.unintended[0].entry.kind, GdKind::Mob);
+        assert_eq!(out.unintended[0].class, MutationClass::Structural);
+        assert_eq!(out.unintended[1].entry.kind, GdKind::Snp);
+        assert_eq!(out.unintended[1].class, MutationClass::ScatteredSnv);
+    }
 }

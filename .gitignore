@@ -30,7 +30,8 @@ testdata/layer2/
 benchmark/results/*
 !benchmark/results/.gitkeep
 !benchmark/results/README.md
-!benchmark/results/clonal_leftover.md
+!benchmark/results/verified/
+!benchmark/results/verified/*.md
 benchmark/logs/
 
 # Slurm
@@ -53,3 +54,6 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# Session handoffs
+.*handoff*.md

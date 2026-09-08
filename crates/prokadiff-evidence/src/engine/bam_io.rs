@@ -14,11 +14,112 @@ use crate::jc::SubAlignment;
 use crate::jc_seq::{spans_breakpoint, JC_MIN_COVER_BASES};
 use crate::pileup::{AlignedRead, CigarKind, CigarOp, SplitCandidate, SplitOrigin};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) enum Mate {
+    Single,
+    First,
+    Last,
+}
+
+impl Mate {
+    pub(crate) fn from_flags_and_name(
+        flags: &noodles::sam::alignment::record::Flags,
+        name: &str,
+    ) -> Self {
+        if flags.is_segmented() {
+            if flags.is_first_segment() {
+                Mate::First
+            } else if flags.is_last_segment() {
+                Mate::Last
+            } else {
+                Mate::Single
+            }
+        } else if name.ends_with("/1") {
+            Mate::First
+        } else if name.ends_with("/2") {
+            Mate::Last
+        } else {
+            Mate::Single
+        }
+    }
+}
+
+/// Primary alignment scores recorded per (normalized QNAME, Mate).
+///
+/// In paired-end sequencing, mate 1 and mate 2 may have very different
+/// alignment scores against the reference genome (e.g. mate 1 is collinear
+/// with high score, while mate 2 crosses a novel structural junction with low
+/// score). Tracking scores per-mate prevents mate 1 from gating out mate 2's
+/// genuine junction support during the second-pass alignment.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PrimaryScores {
+    scores: HashMap<(String, Mate), i32>,
+}
+
+impl PrimaryScores {
+    pub(crate) fn new() -> Self {
+        Self {
+            scores: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn record_primary(&mut self, qname: &str, mate: Mate, score: i32) {
+        self.scores
+            .entry((qname.to_string(), mate))
+            .and_modify(|s| *s = (*s).max(score))
+            .or_insert(score);
+    }
+
+    pub(crate) fn get_score(&self, qname: &str, mate: Mate) -> Option<i32> {
+        self.scores
+            .get(&(qname.to_string(), mate))
+            .copied()
+            .or_else(|| {
+                if mate != Mate::Single {
+                    self.scores.get(&(qname.to_string(), Mate::Single)).copied()
+                } else {
+                    None
+                }
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_single_ended<S: AsRef<str>>(
+        iter: impl IntoIterator<Item = (S, i32)>,
+    ) -> Self {
+        let mut ps = Self::new();
+        for (q, score) in iter {
+            ps.record_primary(q.as_ref(), Mate::Single, score);
+        }
+        ps
+    }
+}
+
+impl<S: AsRef<str>> FromIterator<((S, Mate), i32)> for PrimaryScores {
+    fn from_iter<T: IntoIterator<Item = ((S, Mate), i32)>>(iter: T) -> Self {
+        let mut ps = Self::new();
+        for ((q, mate), score) in iter {
+            ps.record_primary(q.as_ref(), mate, score);
+        }
+        ps
+    }
+}
+
+impl From<HashMap<String, i32>> for PrimaryScores {
+    fn from(map: HashMap<String, i32>) -> Self {
+        let mut ps = Self::new();
+        for (q, score) in map {
+            ps.record_primary(&q, Mate::Single, score);
+        }
+        ps
+    }
+}
+
 pub(crate) struct PrimaryBamData {
     pub(crate) aligned: Vec<AlignedRead>,
     pub(crate) second_pass_keep: HashSet<String>,
     pub(crate) second_pass_seen: HashSet<String>,
-    pub(crate) primary_scores: HashMap<String, i32>,
+    pub(crate) primary_scores: PrimaryScores,
 }
 
 pub(crate) fn read_aligned_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result<Vec<AlignedRead>> {
@@ -45,7 +146,7 @@ pub(crate) fn read_primary_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result
     let mut aligned = Vec::new();
     let mut second_pass_keep = HashSet::new();
     let mut second_pass_seen = HashSet::new();
-    let mut primary_scores = HashMap::new();
+    let mut primary_scores = PrimaryScores::new();
 
     for rec in reader.records() {
         let rec = rec.map_err(|e| EvidenceError::Alignment(e.to_string()))?;
@@ -87,10 +188,8 @@ pub(crate) fn read_primary_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result
         if let Some(ref q) = norm_name {
             let (m, i, d, _) = cigar_counts(&cigar);
             let score = crate::jc_seq::cigar_match_indel_score(m, i, d);
-            primary_scores
-                .entry(q.clone())
-                .and_modify(|s: &mut i32| *s = (*s).max(score))
-                .or_insert(score);
+            let mate = Mate::from_flags_and_name(&rec.flags(), &name);
+            primary_scores.record_primary(q, mate, score);
         }
 
         let Some(Ok(rid)) = rec.reference_sequence_id() else {
@@ -214,12 +313,13 @@ pub(crate) struct SecondPassReject {
     pub(crate) kept: usize,
 }
 
-/// Hash of a read name, used as second-pass supporting-read identity.
-pub(crate) fn qname_id(qname: &str) -> u64 {
+/// Hash of a read name and mate identity, used as second-pass supporting-read identity.
+pub(crate) fn qname_id(qname: &str, mate: Mate) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
     qname.hash(&mut hasher);
+    mate.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -227,7 +327,7 @@ pub(crate) fn qname_id(qname: &str) -> u64 {
 pub(crate) fn parse_junction_bam(
     bam_path: &Path,
     candidates: &[(crate::jc_seq::CandidateJunction, usize)],
-    ref_scores: &HashMap<String, i32>,
+    ref_scores: &PrimaryScores,
 ) -> Result<(Vec<SplitCandidate>, SecondPassReject)> {
     let mut stats = SecondPassReject::default();
     let mut reader = File::open(bam_path).map(bam::io::Reader::new)?;
@@ -278,8 +378,9 @@ pub(crate) fn parse_junction_bam(
         }
         let jc_score = crate::jc_seq::cigar_match_indel_score(n_match, n_ins, n_del);
         let qname = rec.name().map(|n| n.to_string()).unwrap_or_default();
+        let mate = Mate::from_flags_and_name(&rec.flags(), &qname);
         let norm_qname = crate::align::normalize_qname(&qname);
-        if let Some(&rs) = ref_scores.get(norm_qname) {
+        if let Some(rs) = ref_scores.get_score(norm_qname, mate) {
             if jc_score < rs {
                 stats.worse_than_primary += 1;
                 continue;
@@ -305,7 +406,7 @@ pub(crate) fn parse_junction_bam(
             side1_pos_1: cand.side1_pos_1,
             side2_pos_1: cand.side2_pos_1,
             overlap: cand.overlap,
-            origin: SplitOrigin::SecondPass(qname_id(&qname)),
+            origin: SplitOrigin::SecondPass(qname_id(&qname, mate)),
         });
     }
     Ok((extra, stats))

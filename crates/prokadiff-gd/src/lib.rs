@@ -241,6 +241,131 @@ impl GdEntry {
     }
 }
 
+pub const DEFAULT_JC_SUBTRACT_TOL_BP: u64 = 5;
+pub const DEFAULT_MOB_SUBTRACT_TOL_BP: u64 = 5;
+pub const DEFAULT_DEL_SUBTRACT_TOL_BP: u64 = 5;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CanonicalJcSide {
+    pub seq_id: String,
+    pub strand: String,
+    pub pos: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalJc {
+    pub side1: CanonicalJcSide,
+    pub side2: CanonicalJcSide,
+}
+
+fn normalize_strand(s: &str) -> String {
+    match s {
+        "+" | "1" => "+".to_string(),
+        "-" | "-1" => "-".to_string(),
+        other => other.to_string(),
+    }
+}
+
+impl CanonicalJc {
+    pub fn parse(fields: &[String]) -> Option<Self> {
+        if fields.len() < 6 {
+            return None;
+        }
+        let pos1: u64 = fields[1].parse().ok()?;
+        let pos2: u64 = fields[4].parse().ok()?;
+        let s1 = CanonicalJcSide {
+            seq_id: fields[0].clone(),
+            strand: normalize_strand(&fields[2]),
+            pos: pos1,
+        };
+        let s2 = CanonicalJcSide {
+            seq_id: fields[3].clone(),
+            strand: normalize_strand(&fields[5]),
+            pos: pos2,
+        };
+        let (side1, side2) = if s1 <= s2 { (s1, s2) } else { (s2, s1) };
+        Some(Self { side1, side2 })
+    }
+
+    pub fn matches_tolerant(&self, other: &Self, tol: u64) -> bool {
+        self.side1.seq_id == other.side1.seq_id
+            && self.side1.strand == other.side1.strand
+            && self.side1.pos.abs_diff(other.side1.pos) <= tol
+            && self.side2.seq_id == other.side2.seq_id
+            && self.side2.strand == other.side2.strand
+            && self.side2.pos.abs_diff(other.side2.pos) <= tol
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalMob {
+    pub seq_id: String,
+    pub pos: u64,
+    pub repeat_name: String,
+    pub strand: String,
+}
+
+impl CanonicalMob {
+    pub fn parse(fields: &[String]) -> Option<Self> {
+        if fields.len() < 4 {
+            return None;
+        }
+        let pos: u64 = fields[1].parse().ok()?;
+        Some(Self {
+            seq_id: fields[0].clone(),
+            pos,
+            repeat_name: fields[2].clone(),
+            strand: normalize_strand(&fields[3]),
+        })
+    }
+
+    pub fn matches_tolerant(&self, other: &Self, tol: u64) -> bool {
+        self.seq_id == other.seq_id
+            && self.repeat_name == other.repeat_name
+            && self.strand == other.strand
+            && self.pos.abs_diff(other.pos) <= tol
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalDel {
+    pub seq_id: String,
+    pub start: u64,
+    pub size: u64,
+}
+
+impl CanonicalDel {
+    pub fn parse(fields: &[String]) -> Option<Self> {
+        if fields.len() < 3 {
+            return None;
+        }
+        let start: u64 = fields[1].parse().ok()?;
+        let size: u64 = fields[2].parse().ok()?;
+        Some(Self {
+            seq_id: fields[0].clone(),
+            start,
+            size,
+        })
+    }
+
+    pub fn end(&self) -> u64 {
+        self.start.saturating_add(self.size.saturating_sub(1))
+    }
+
+    pub fn matches_tolerant(&self, other: &Self, tol: u64) -> bool {
+        if self.seq_id != other.seq_id {
+            return false;
+        }
+        if self.size > 2 || other.size > 2 {
+            // Structural deletion: both start and end boundaries match within tolerance
+            self.start.abs_diff(other.start) <= tol && self.end().abs_diff(other.end()) <= tol
+        } else {
+            // Short indel (<= 2 bp): exact coordinate and size match
+            self.start == other.start && self.size == other.size
+        }
+    }
+}
+
 /// A Genome Diff document.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GenomeDiff {
@@ -315,8 +440,8 @@ impl GenomeDiff {
 
     /// `gdtools SUBTRACT self other`: records in `self` whose subtract key is not in `other`.
     /// UN evidence is kept even when a matching UN exists in `other` (parity: UN is not an
-    /// oracle failure). Mutation and other evidence types are subtracted.
-    pub fn subtract(&self, other: &GenomeDiff) -> GenomeDiff {
+    /// oracle failure). Exact string match on kind and fields.
+    pub fn subtract_exact(&self, other: &GenomeDiff) -> GenomeDiff {
         let remove: HashSet<String> = other
             .entries
             .iter()
@@ -332,6 +457,130 @@ impl GenomeDiff {
                 .cloned()
                 .collect(),
         }
+    }
+
+    /// Tolerant set subtraction: applies coordinate tolerance to JC, MOB, and structural DEL
+    /// entries to avoid false-positive unintended calls when independent runs
+    /// pick representative coordinates that jitter within clustering tolerance (±5 bp).
+    /// Non-JC/MOB/DEL entries use exact subtraction keys.
+    pub fn subtract_tolerant(
+        &self,
+        other: &GenomeDiff,
+        jc_tol_bp: u64,
+        mob_tol_bp: u64,
+        del_tol_bp: u64,
+    ) -> GenomeDiff {
+        let remove_exact: HashSet<String> = other
+            .entries
+            .iter()
+            .filter(|e| {
+                e.kind != GdKind::Un
+                    && e.kind != GdKind::Jc
+                    && e.kind != GdKind::Mob
+                    && e.kind != GdKind::Del
+            })
+            .map(GdEntry::subtract_key)
+            .collect();
+
+        let other_jcs: Vec<(usize, CanonicalJc)> = other
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.kind == GdKind::Jc)
+            .filter_map(|(idx, e)| CanonicalJc::parse(&e.fields).map(|c| (idx, c)))
+            .collect();
+
+        let other_mobs: Vec<(usize, CanonicalMob)> = other
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.kind == GdKind::Mob)
+            .filter_map(|(idx, e)| CanonicalMob::parse(&e.fields).map(|c| (idx, c)))
+            .collect();
+
+        let other_dels: Vec<(usize, CanonicalDel)> = other
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.kind == GdKind::Del)
+            .filter_map(|(idx, e)| CanonicalDel::parse(&e.fields).map(|c| (idx, c)))
+            .collect();
+
+        let mut used_other_jcs: HashSet<usize> = HashSet::new();
+        let mut used_other_mobs: HashSet<usize> = HashSet::new();
+        let mut used_other_dels: HashSet<usize> = HashSet::new();
+        let mut entries = Vec::new();
+
+        for e in &self.entries {
+            if e.kind == GdKind::Un {
+                entries.push(e.clone());
+                continue;
+            }
+            if e.kind == GdKind::Jc {
+                if let Some(jc) = CanonicalJc::parse(&e.fields) {
+                    let mut matched = false;
+                    for (idx, o_jc) in &other_jcs {
+                        if !used_other_jcs.contains(idx) && jc.matches_tolerant(o_jc, jc_tol_bp) {
+                            used_other_jcs.insert(*idx);
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if matched {
+                        continue;
+                    }
+                }
+            } else if e.kind == GdKind::Mob {
+                if let Some(mob) = CanonicalMob::parse(&e.fields) {
+                    let mut matched = false;
+                    for (idx, o_mob) in &other_mobs {
+                        if !used_other_mobs.contains(idx) && mob.matches_tolerant(o_mob, mob_tol_bp)
+                        {
+                            used_other_mobs.insert(*idx);
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if matched {
+                        continue;
+                    }
+                }
+            } else if e.kind == GdKind::Del {
+                if let Some(del) = CanonicalDel::parse(&e.fields) {
+                    let mut matched = false;
+                    for (idx, o_del) in &other_dels {
+                        if !used_other_dels.contains(idx) && del.matches_tolerant(o_del, del_tol_bp)
+                        {
+                            used_other_dels.insert(*idx);
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if matched {
+                        continue;
+                    }
+                }
+            } else if remove_exact.contains(&e.subtract_key()) {
+                continue;
+            }
+            entries.push(e.clone());
+        }
+
+        GenomeDiff {
+            metadata: self.metadata.clone(),
+            entries,
+        }
+    }
+
+    /// ProkaDiff product subtract: cancels matching mutations, with ±5 bp
+    /// tolerance for JC, MOB, and structural DEL coordinates to accommodate independent clustering jitter.
+    pub fn subtract(&self, other: &GenomeDiff) -> GenomeDiff {
+        self.subtract_tolerant(
+            other,
+            DEFAULT_JC_SUBTRACT_TOL_BP,
+            DEFAULT_MOB_SUBTRACT_TOL_BP,
+            DEFAULT_DEL_SUBTRACT_TOL_BP,
+        )
     }
 }
 
@@ -516,9 +765,9 @@ UN\t6\t.\tNC_000913\t900\t910
     }
 
     #[test]
-    fn subtract_jc_requires_exact_coordinates() {
-        // First-period product subtract matches gdtools SUBTRACT (exact fields).
-        // A 1 bp junction jitter therefore does *not* cancel — documented risk.
+    fn subtract_exact_requires_exact_coordinates() {
+        // Exact subtract matches gdtools SUBTRACT (exact fields).
+        // A 1 bp junction jitter therefore does *not* cancel under subtract_exact.
         let edited = GenomeDiff {
             metadata: vec![],
             entries: vec![GdEntry::jc(1, "chr", 100, "+", "chr", 500, "-", 0)],
@@ -527,9 +776,108 @@ UN\t6\t.\tNC_000913\t900\t910
             metadata: vec![],
             entries: vec![GdEntry::jc(1, "chr", 101, "+", "chr", 500, "-", 0)],
         };
+        let out = edited.subtract_exact(&starter);
+        assert_eq!(out.entries.len(), 1);
+        assert_eq!(out.entries[0].fields[1], "100");
+    }
+
+    #[test]
+    fn subtract_tolerant_cancels_jittered_jc_within_tolerance() {
+        // Product subtract cancels jittered JCs within default 5 bp tolerance
+        let edited = GenomeDiff {
+            metadata: vec![],
+            entries: vec![
+                GdEntry::jc(1, "chr", 100, "+", "chr", 500, "-", 0),
+                GdEntry::jc(2, "chr", 2000, "+", "chr", 3000, "-", 0),
+            ],
+        };
+        let starter = GenomeDiff {
+            metadata: vec![],
+            entries: vec![GdEntry::jc(1, "chr", 102, "+", "chr", 501, "-", 0)],
+        };
+        let out = edited.subtract(&starter);
+        assert_eq!(out.entries.len(), 1);
+        assert_eq!(out.entries[0].fields[1], "2000");
+    }
+
+    #[test]
+    fn subtract_tolerant_preserves_distinct_jc_beyond_tolerance() {
+        let edited = GenomeDiff {
+            metadata: vec![],
+            entries: vec![GdEntry::jc(1, "chr", 100, "+", "chr", 500, "-", 0)],
+        };
+        let starter = GenomeDiff {
+            metadata: vec![],
+            entries: vec![GdEntry::jc(1, "chr", 108, "+", "chr", 500, "-", 0)],
+        };
         let out = edited.subtract(&starter);
         assert_eq!(out.entries.len(), 1);
         assert_eq!(out.entries[0].fields[1], "100");
+    }
+
+    #[test]
+    fn subtract_tolerant_cancels_jittered_mob() {
+        let edited = GenomeDiff {
+            metadata: vec![],
+            entries: vec![
+                GdEntry::mob(1, "chr", 601, "IS150", "+", 3),
+                GdEntry::snp(2, "chr", 800, "A"),
+            ],
+        };
+        let starter = GenomeDiff {
+            metadata: vec![],
+            entries: vec![GdEntry::mob(1, "chr", 603, "IS150", "+", 3)],
+        };
+        let out = edited.subtract(&starter);
+        assert_eq!(out.entries.len(), 1);
+        assert_eq!(out.entries[0].kind, GdKind::Snp);
+    }
+
+    #[test]
+    fn subtract_tolerant_cancels_jittered_structural_del() {
+        let edited = GenomeDiff {
+            metadata: vec![],
+            entries: vec![
+                GdEntry::del(1, "chr", 4999, 304),
+                GdEntry::snp(2, "chr", 8000, "A"),
+            ],
+        };
+        let starter = GenomeDiff {
+            metadata: vec![],
+            entries: vec![GdEntry::del(1, "chr", 5000, 300)],
+        };
+        let out = edited.subtract(&starter);
+        assert_eq!(out.entries.len(), 1);
+        assert_eq!(out.entries[0].kind, GdKind::Snp);
+    }
+
+    #[test]
+    fn subtract_tolerant_preserves_distinct_del_beyond_tolerance() {
+        let edited = GenomeDiff {
+            metadata: vec![],
+            entries: vec![GdEntry::del(1, "chr", 5000, 300)],
+        };
+        let starter = GenomeDiff {
+            metadata: vec![],
+            entries: vec![GdEntry::del(1, "chr", 5020, 300)],
+        };
+        let out = edited.subtract(&starter);
+        assert_eq!(out.entries.len(), 1);
+    }
+
+    #[test]
+    fn subtract_tolerant_handles_inverted_side_order() {
+        // side1 and side2 order may be flipped between independent callers
+        let edited = GenomeDiff {
+            metadata: vec![],
+            entries: vec![GdEntry::jc(1, "chr", 500, "-", "chr", 100, "+", 0)],
+        };
+        let starter = GenomeDiff {
+            metadata: vec![],
+            entries: vec![GdEntry::jc(1, "chr", 101, "+", "chr", 502, "-", 0)],
+        };
+        let out = edited.subtract(&starter);
+        assert_eq!(out.entries.len(), 0);
     }
 
     #[test]

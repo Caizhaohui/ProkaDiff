@@ -35,14 +35,16 @@ if ! command -v wgsim >/dev/null 2>&1; then
   echo "error: wgsim not found. Stop layer-1; do not invent results." >&2
   exit 1
 fi
-if [[ ! -x "${ROOT}/target/release/prokadiff" ]]; then
-  echo "building release prokadiff on the compute node..."
-  cargo build --release -p prokadiff
-fi
+echo "building release prokadiff (incremental; no-op if fresh)..."
+cargo build --release -p prokadiff
 PROKDIFF="${ROOT}/target/release/prokadiff"
 
 bash "${ROOT}/testdata/generate.sh" synth_parent_child "${ROOT}/testdata/generated/synth_parent_child"
 GEN="${ROOT}/testdata/generated/synth_parent_child"
+
+echo "running ignored FASTQ/Bowtie2 E2E through cargo test on qcpu_18i..."
+cargo test -p prokadiff --test cli_e2e e2e_pipeline_synth_parent_child -- --ignored --exact
+
 JOBOUT="${ROOT}/benchmark/results/synth_parent_child_${SLURM_JOB_ID}"
 mkdir -p "${JOBOUT}"
 
@@ -100,7 +102,10 @@ if hits[0]["class"] != "scattered_snv":
 if hits[0]["alt"] != extra_alt:
     print("FAIL: extra SNP alt", hits[0]["alt"], "expected", extra_alt)
     sys.exit(2)
-print("synth_parent_child OK: historical subtracted, intended masked, extra SNP scattered_snv")
+if any(r["class"] == "structural" for r in rows):
+    print("FAIL: ancestral structural variant leaked into unintended:", [r for r in rows if r["class"] == "structural"])
+    sys.exit(2)
+print("synth_parent_child OK: historical subtracted, intended masked, extra SNP scattered_snv, zero structural leak")
 print(f"unintended_rows={len(rows)}")
 PY
 
