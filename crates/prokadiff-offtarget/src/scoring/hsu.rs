@@ -1,4 +1,18 @@
+/// Validation status of Hsu et al. (2013) MIT specificity score against FlashFry oracle.
+pub const HSU2013_VALIDATED: bool = false;
+
 /// Hsu et al. (2013) MIT specificity score calculation for SpCas9 (20 nt spacer).
+///
+/// Returns calculated score if validated, or None while experimental.
+pub fn calculate_hsu_score(guide: &str, target_protospacer: &str) -> Option<f64> {
+    if !HSU2013_VALIDATED {
+        // Disabled by default in production pending FlashFry numeric parity validation
+        return None;
+    }
+    calculate_unvalidated_hsu2013(guide, target_protospacer)
+}
+
+/// Internal Hsu 2013 formula implementation retained for validation benchmarks.
 ///
 /// Formula:
 ///   Score = ( \prod_{i \in M} (1 - W[i]) ) * ( 1 / ( ((19 - d)/19) * 4 + 1 ) ) * ( 1 / n^2 ) * 100
@@ -7,7 +21,7 @@
 ///   - d is the mean pairwise distance between consecutive mismatches
 ///   - n is the total number of mismatches
 ///   - if n == 0, Score = 100.0
-pub fn calculate_hsu_score(guide: &str, target_protospacer: &str) -> Option<f64> {
+pub fn calculate_unvalidated_hsu2013(guide: &str, target_protospacer: &str) -> Option<f64> {
     let g = guide.as_bytes();
     let t = target_protospacer.as_bytes();
     if g.len() != 20 || t.len() != 20 {
@@ -59,27 +73,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn perfect_match_has_100_hsu_score() {
+    fn hsu_score_is_none_while_unvalidated() {
         let guide = "GAGTCCGAGCAGAAGAAGAA";
-        let score = calculate_hsu_score(guide, guide).unwrap();
+        assert_eq!(calculate_hsu_score(guide, guide), None);
+    }
+
+    #[test]
+    fn unvalidated_perfect_match_has_100_score() {
+        let guide = "GAGTCCGAGCAGAAGAAGAA";
+        let score = calculate_unvalidated_hsu2013(guide, guide).unwrap();
         assert!((score - 100.0).abs() < 1e-6);
     }
 
     #[test]
-    fn single_distal_mismatch_has_high_score() {
+    fn unvalidated_single_distal_mismatch_has_high_score() {
         let guide = "GAGTCCGAGCAGAAGAAGAA";
         let mut target = guide.to_string();
         target.replace_range(0..1, "A"); // pos 1 distal mismatch (weight 0)
-        let score = calculate_hsu_score(guide, &target).unwrap();
+        let score = calculate_unvalidated_hsu2013(guide, &target).unwrap();
         assert!(score > 90.0);
     }
 
     #[test]
-    fn single_seed_mismatch_has_low_score() {
+    fn unvalidated_single_seed_mismatch_has_low_score() {
         let guide = "GAGTCCGAGCAGAAGAAGAA";
         let mut target = guide.to_string();
         target.replace_range(17..18, "T"); // pos 18 proximal seed mismatch (weight 0.804)
-        let score = calculate_hsu_score(guide, &target).unwrap();
+        let score = calculate_unvalidated_hsu2013(guide, &target).unwrap();
         assert!(score < 30.0);
     }
 }
