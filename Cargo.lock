@@ -486,6 +486,7 @@ name = "prokadiff-classify"
 version = "0.1.0"
 dependencies = [
  "prokadiff-gd",
+ "prokadiff-offtarget",
  "thiserror",
 ]
 
@@ -504,6 +505,14 @@ dependencies = [
 name = "prokadiff-gd"
 version = "0.1.0"
 dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "prokadiff-offtarget"
+version = "0.1.0"
+dependencies = [
+ "prokadiff-gd",
  "thiserror",
 ]
 

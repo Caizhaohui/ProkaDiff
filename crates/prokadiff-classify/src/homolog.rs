@@ -1,4 +1,6 @@
 use crate::{EditorKind, RefContig};
+use prokadiff_offtarget::model::{NucleaseProfile, PamSide};
+use prokadiff_offtarget::rust_search::scan_contig;
 
 pub const DEFAULT_NEAR_DISTANCE: u64 = 50;
 pub const DEFAULT_MAX_MISMATCHES: u32 = 4;
@@ -20,222 +22,39 @@ pub fn scan_homologs(
     editor: EditorKind,
     max_mismatches: u32,
 ) -> Vec<HomologSite> {
-    let spacer: Vec<u8> = spacer.bytes().map(|b| b.to_ascii_uppercase()).collect();
-    let pam: Vec<u8> = pam.bytes().map(|b| b.to_ascii_uppercase()).collect();
-    if spacer.is_empty() || pam.is_empty() {
+    if spacer.trim().is_empty() || pam.trim().is_empty() {
         return Vec::new();
     }
+    let profile = match editor {
+        EditorKind::Dsb => return Vec::new(),
+        EditorKind::Cas9 => NucleaseProfile::custom("Cas9", spacer.len(), pam, PamSide::ThreePrime),
+        EditorKind::Cas12a => {
+            NucleaseProfile::custom("Cas12a", spacer.len(), pam, PamSide::FivePrime)
+        }
+    };
+
     let mut sites = Vec::new();
     for rec in refs {
-        let seq = &rec.seq;
-        match editor {
-            EditorKind::Dsb => {}
-            EditorKind::Cas9 => scan_cas9(
-                rec.name.as_str(),
-                seq,
-                &spacer,
-                &pam,
-                max_mismatches,
-                &mut sites,
-            ),
-            EditorKind::Cas12a => scan_cas12a(
-                rec.name.as_str(),
-                seq,
-                &spacer,
-                &pam,
-                max_mismatches,
-                &mut sites,
-            ),
+        let found = scan_contig(
+            &rec.name,
+            &rec.seq,
+            spacer,
+            &profile,
+            max_mismatches,
+            sites.len(),
+        );
+        for s in found {
+            sites.push(HomologSite {
+                seq_id: s.seq_id,
+                start: s.start,
+                end: s.end,
+                strand: s.strand.as_char(),
+                mismatches: s.mismatches,
+                pam: s.pam,
+            });
         }
     }
     sites
-}
-
-fn scan_cas9(
-    seq_id: &str,
-    seq: &[u8],
-    spacer: &[u8],
-    pam: &[u8],
-    max_mm: u32,
-    out: &mut Vec<HomologSite>,
-) {
-    let sp = spacer.len();
-    let pn = pam.len();
-    if seq.len() < sp + pn {
-        return;
-    }
-    let pam_rc = revcomp_iupac(pam);
-    let pam_s = String::from_utf8_lossy(pam).into_owned();
-    // Plus: [protospacer][PAM]
-    for p in 0..=seq.len() - pn {
-        if !iupac_eq_slice(pam, &seq[p..p + pn]) {
-            continue;
-        }
-        if p < sp {
-            continue;
-        }
-        let mm = hamming(&seq[p - sp..p], spacer);
-        if mm <= max_mm {
-            out.push(HomologSite {
-                seq_id: seq_id.to_string(),
-                start: (p - sp) as u64 + 1,
-                end: (p + pn) as u64,
-                strand: '+',
-                mismatches: mm,
-                pam: pam_s.clone(),
-            });
-        }
-    }
-    // Minus: [revcomp PAM][revcomp protospacer] on the top strand.
-    for p in 0..=seq.len() - pn {
-        if !iupac_eq_slice(&pam_rc, &seq[p..p + pn]) {
-            continue;
-        }
-        let sp0 = p + pn;
-        if sp0 + sp > seq.len() {
-            continue;
-        }
-        let proto = revcomp_dna(&seq[sp0..sp0 + sp]);
-        let mm = hamming(&proto, spacer);
-        if mm <= max_mm {
-            out.push(HomologSite {
-                seq_id: seq_id.to_string(),
-                start: p as u64 + 1,
-                end: (sp0 + sp) as u64,
-                strand: '-',
-                mismatches: mm,
-                pam: pam_s.clone(),
-            });
-        }
-    }
-}
-
-fn scan_cas12a(
-    seq_id: &str,
-    seq: &[u8],
-    spacer: &[u8],
-    pam: &[u8],
-    max_mm: u32,
-    out: &mut Vec<HomologSite>,
-) {
-    let sp = spacer.len();
-    let pn = pam.len();
-    if seq.len() < sp + pn {
-        return;
-    }
-    let pam_rc = revcomp_iupac(pam);
-    let pam_s = String::from_utf8_lossy(pam).into_owned();
-    // Plus: [PAM][spacer]
-    for p in 0..=seq.len() - pn {
-        if !iupac_eq_slice(pam, &seq[p..p + pn]) {
-            continue;
-        }
-        let sp0 = p + pn;
-        if sp0 + sp > seq.len() {
-            continue;
-        }
-        let mm = hamming(&seq[sp0..sp0 + sp], spacer);
-        if mm <= max_mm {
-            out.push(HomologSite {
-                seq_id: seq_id.to_string(),
-                start: p as u64 + 1,
-                end: (sp0 + sp) as u64,
-                strand: '+',
-                mismatches: mm,
-                pam: pam_s.clone(),
-            });
-        }
-    }
-    // Minus: [revcomp spacer][revcomp PAM] on the top strand.
-    for p in 0..=seq.len() - pn {
-        if !iupac_eq_slice(&pam_rc, &seq[p..p + pn]) {
-            continue;
-        }
-        if p < sp {
-            continue;
-        }
-        let proto = revcomp_dna(&seq[p - sp..p]);
-        let mm = hamming(&proto, spacer);
-        if mm <= max_mm {
-            out.push(HomologSite {
-                seq_id: seq_id.to_string(),
-                start: (p - sp) as u64 + 1,
-                end: (p + pn) as u64,
-                strand: '-',
-                mismatches: mm,
-                pam: pam_s.clone(),
-            });
-        }
-    }
-}
-
-fn hamming(a: &[u8], b: &[u8]) -> u32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| u32::from(!x.eq_ignore_ascii_case(y)))
-        .sum()
-}
-
-fn iupac_eq_slice(pat: &[u8], seq: &[u8]) -> bool {
-    pat.len() == seq.len() && pat.iter().zip(seq.iter()).all(|(p, s)| iupac_eq(*p, *s))
-}
-
-fn iupac_eq(pat: u8, base: u8) -> bool {
-    let b = base.to_ascii_uppercase();
-    match pat.to_ascii_uppercase() {
-        x if x == b && matches!(x, b'A' | b'C' | b'G' | b'T') => true,
-        b'A' | b'C' | b'G' | b'T' => false,
-        b'N' => matches!(b, b'A' | b'C' | b'G' | b'T'),
-        b'V' => matches!(b, b'A' | b'C' | b'G'),
-        b'B' => matches!(b, b'C' | b'G' | b'T'),
-        b'D' => matches!(b, b'A' | b'G' | b'T'),
-        b'H' => matches!(b, b'A' | b'C' | b'T'),
-        b'R' => matches!(b, b'A' | b'G'),
-        b'Y' => matches!(b, b'C' | b'T'),
-        b'W' => matches!(b, b'A' | b'T'),
-        b'S' => matches!(b, b'C' | b'G'),
-        b'K' => matches!(b, b'G' | b'T'),
-        b'M' => matches!(b, b'A' | b'C'),
-        _ => false,
-    }
-}
-
-fn complement_iupac(b: u8) -> u8 {
-    match b.to_ascii_uppercase() {
-        b'A' => b'T',
-        b'T' => b'A',
-        b'G' => b'C',
-        b'C' => b'G',
-        b'N' => b'N',
-        b'V' => b'B',
-        b'B' => b'V',
-        b'D' => b'H',
-        b'H' => b'D',
-        b'R' => b'Y',
-        b'Y' => b'R',
-        b'W' => b'W',
-        b'S' => b'S',
-        b'K' => b'M',
-        b'M' => b'K',
-        x => x,
-    }
-}
-
-fn revcomp_iupac(seq: &[u8]) -> Vec<u8> {
-    seq.iter().rev().copied().map(complement_iupac).collect()
-}
-
-fn revcomp_dna(seq: &[u8]) -> Vec<u8> {
-    seq.iter()
-        .rev()
-        .map(|b| match b.to_ascii_uppercase() {
-            b'A' => b'T',
-            b'T' => b'A',
-            b'G' => b'C',
-            b'C' => b'G',
-            x => x,
-        })
-        .collect()
 }
 
 #[cfg(test)]

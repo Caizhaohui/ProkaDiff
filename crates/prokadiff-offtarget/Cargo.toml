@@ -1,15 +1,14 @@
 [package]
-name = "prokadiff-classify"
+name = "prokadiff-offtarget"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Starter-strain subtract, intended-edit mask, three-class labels"
+description = "Reference-based CRISPR off-target search and oracle alignment framework"
 readme.workspace = true
 
 [dependencies]
 prokadiff-gd = { workspace = true }
-prokadiff-offtarget = { workspace = true }
 thiserror = { workspace = true }
