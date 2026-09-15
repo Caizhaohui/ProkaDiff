@@ -56,6 +56,19 @@ pub fn scan_contig(
                 let mm = hamming(proto_slice, guide_bytes);
                 if mm <= max_mismatches {
                     let site_idx = id_offset + sites.len() + 1;
+                    let proto_str = String::from_utf8_lossy(proto_slice);
+                    let pam_str = String::from_utf8_lossy(pam_slice);
+                    let (cfd_score, hsu_score) = if sp == 20
+                        && (profile.name.eq_ignore_ascii_case("spcas9")
+                            || profile.name.eq_ignore_ascii_case("cas9"))
+                    {
+                        (
+                            crate::scoring::calculate_cfd_score(&guide_clean, &proto_str, &pam_str),
+                            crate::scoring::calculate_hsu_score(&guide_clean, &proto_str),
+                        )
+                    } else {
+                        (None, None)
+                    };
                     sites.push(OffTargetSite {
                         site_id: format!("site_{site_idx}"),
                         seq_id: seq_id.to_string(),
@@ -64,13 +77,13 @@ pub fn scan_contig(
                         strand: Strand::Plus,
                         guide: guide_clean.clone(),
                         target_seq: String::from_utf8_lossy(&seq[p - sp..p + pn]).into_owned(),
-                        pam: String::from_utf8_lossy(pam_slice).into_owned(),
+                        pam: pam_str.into_owned(),
                         mismatches: mm,
                         bulge_type: BulgeType::None,
                         bulge_size: 0,
                         search_backend: "rust_exact".to_string(),
-                        cfd_score: None,
-                        hsu_score: None,
+                        cfd_score,
+                        hsu_score,
                     });
                 }
             }
@@ -86,6 +99,20 @@ pub fn scan_contig(
                 let mm = hamming(&proto, guide_bytes);
                 if mm <= max_mismatches {
                     let site_idx = id_offset + sites.len() + 1;
+                    let proto_str = String::from_utf8_lossy(&proto);
+                    let pam_rc_bytes = revcomp_dna(pam_slice);
+                    let pam_str = String::from_utf8_lossy(&pam_rc_bytes);
+                    let (cfd_score, hsu_score) = if sp == 20
+                        && (profile.name.eq_ignore_ascii_case("spcas9")
+                            || profile.name.eq_ignore_ascii_case("cas9"))
+                    {
+                        (
+                            crate::scoring::calculate_cfd_score(&guide_clean, &proto_str, &pam_str),
+                            crate::scoring::calculate_hsu_score(&guide_clean, &proto_str),
+                        )
+                    } else {
+                        (None, None)
+                    };
                     sites.push(OffTargetSite {
                         site_id: format!("site_{site_idx}"),
                         seq_id: seq_id.to_string(),
@@ -94,13 +121,13 @@ pub fn scan_contig(
                         strand: Strand::Minus,
                         guide: guide_clean.clone(),
                         target_seq: String::from_utf8_lossy(&seq[p..p + pn + sp]).into_owned(),
-                        pam: String::from_utf8_lossy(&revcomp_dna(pam_slice)).into_owned(),
+                        pam: pam_str.into_owned(),
                         mismatches: mm,
                         bulge_type: BulgeType::None,
                         bulge_size: 0,
                         search_backend: "rust_exact".to_string(),
-                        cfd_score: None,
-                        hsu_score: None,
+                        cfd_score,
+                        hsu_score,
                     });
                 }
             }

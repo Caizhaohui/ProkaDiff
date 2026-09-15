@@ -476,6 +476,7 @@ dependencies = [
  "prokadiff-classify",
  "prokadiff-evidence",
  "prokadiff-gd",
+ "prokadiff-offtarget",
  "prokadiff-report",
  "tracing",
  "tracing-subscriber",

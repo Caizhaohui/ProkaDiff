@@ -56,6 +56,15 @@ pub struct Cli {
     /// Suppress informational progress messages (-q / --quiet).
     #[arg(short, long, default_value_t = false, global = true)]
     pub quiet: bool,
+    /// Distance window in bp to associate mutations with off-target candidate sites (default: 50).
+    #[arg(long = "offtarget-association-window", default_value_t = 50)]
+    pub offtarget_association_window: u64,
+    /// Maximum DNA bulge size (insertion in genomic DNA relative to guide) for off-target search (default: 0).
+    #[arg(long = "max-dna-bulge", default_value_t = 0)]
+    pub max_dna_bulge: u32,
+    /// Maximum RNA bulge size (deletion in genomic DNA relative to guide) for off-target search (default: 0).
+    #[arg(long = "max-rna-bulge", default_value_t = 0)]
+    pub max_rna_bulge: u32,
     /// Increase diagnostic logging verbosity (-v for DEBUG, -vv for TRACE).
     #[arg(short, long, action = ArgAction::Count, global = true)]
     pub verbose: u8,
@@ -221,6 +230,9 @@ pub struct ProductJob {
     pub keep_bam: bool,
     pub intended: Option<PathBuf>,
     pub hypothesis: bool,
+    pub offtarget_association_window: u64,
+    pub max_dna_bulge: u32,
+    pub max_rna_bulge: u32,
 }
 
 pub fn validate_product(cli: &Cli) -> Result<ProductJob, CliError> {
@@ -301,6 +313,9 @@ pub fn validate_product(cli: &Cli) -> Result<ProductJob, CliError> {
         keep_bam: cli.keep_bam,
         intended: cli.intended.clone(),
         hypothesis: !cli.no_hypothesis,
+        offtarget_association_window: cli.offtarget_association_window,
+        max_dna_bulge: cli.max_dna_bulge,
+        max_rna_bulge: cli.max_rna_bulge,
     })
 }
 

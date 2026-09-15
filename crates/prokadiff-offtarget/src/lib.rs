@@ -1,15 +1,23 @@
 #![deny(unsafe_code)]
 
+pub mod associate;
+pub mod io;
 pub mod model;
 pub mod normalize;
 pub mod oracle;
 pub mod rust_search;
+pub mod scoring;
 
+pub use associate::link_mutations_to_sites;
+pub use io::{write_mutation_offtarget_links_tsv, write_offtarget_sites_tsv};
 pub use model::{
     BulgeType, MutationOffTargetLink, NucleaseProfile, OffTargetSite, PamSide, Strand,
 };
 pub use oracle::{parse_cas_offinder, parse_crispritz, parse_flashfry};
-pub use rust_search::{scan_contig, scan_genome};
+pub use rust_search::{
+    scan_contig, scan_contig_bulge, scan_genome, scan_genome_bulge, BulgeSearchOptions,
+};
+pub use scoring::{calculate_cfd_score, calculate_hsu_score};
 
 #[cfg(test)]
 mod tests {

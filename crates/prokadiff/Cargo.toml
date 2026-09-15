@@ -18,6 +18,7 @@ prokadiff-gd = { workspace = true }
 prokadiff-evidence = { workspace = true }
 prokadiff-classify = { workspace = true }
 prokadiff-report = { workspace = true }
+prokadiff-offtarget = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

@@ -15,6 +15,10 @@ use prokadiff_evidence::align::FastqInput;
 use prokadiff_evidence::engine::{run_sample, EngineOptions};
 use prokadiff_evidence::fasta::{read_reference, read_references, write_combined_fasta};
 use prokadiff_gd::GenomeDiff;
+use prokadiff_offtarget::{
+    link_mutations_to_sites, scan_genome_bulge, write_mutation_offtarget_links_tsv,
+    write_offtarget_sites_tsv, BulgeSearchOptions, NucleaseProfile, PamSide,
+};
 use prokadiff_report::{write_summary, write_unintended_tsv};
 
 use cli::{
@@ -229,10 +233,59 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
         editor_kind.as_str(),
     )?;
 
+    let offtarget_tsv = job.outdir.join("offtarget_sites.tsv");
+    let links_tsv = job.outdir.join("mutation_offtarget_links.tsv");
+
+    let (offtarget_sites, offtarget_links) = if let Some(spacer) = &job.spacer {
+        let profile = match job.editor {
+            Editor::Cas9 => {
+                let pam = job.pam.as_deref().unwrap_or("NGG");
+                NucleaseProfile::custom("SpCas9", spacer.len(), pam, PamSide::ThreePrime)
+            }
+            Editor::Cas12a => {
+                let pam = job.pam.as_deref().unwrap_or("TTTV");
+                NucleaseProfile::custom("Cas12a", spacer.len(), pam, PamSide::FivePrime)
+            }
+            Editor::Dsb => NucleaseProfile::custom("DSB", spacer.len(), "", PamSide::ThreePrime),
+        };
+        if job.editor != Editor::Dsb {
+            let ref_tuples: Vec<(String, Vec<u8>)> = refs
+                .iter()
+                .map(|r| (r.name.clone(), r.seq.clone()))
+                .collect();
+            let bulge_opts = BulgeSearchOptions {
+                max_mismatches: DEFAULT_MAX_MISMATCHES,
+                max_dna_bulge: job.max_dna_bulge,
+                max_rna_bulge: job.max_rna_bulge,
+            };
+            let sites = scan_genome_bulge(&ref_tuples, spacer, &profile, bulge_opts);
+            let unintended_entries: Vec<prokadiff_gd::GdEntry> = classified
+                .unintended
+                .iter()
+                .map(|u| u.entry.clone())
+                .collect();
+            let links = link_mutations_to_sites(
+                &unintended_entries,
+                &sites,
+                job.offtarget_association_window,
+            );
+            (sites, links)
+        } else {
+            (Vec::new(), Vec::new())
+        }
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    write_offtarget_sites_tsv(&offtarget_sites, &offtarget_tsv)?;
+    write_mutation_offtarget_links_tsv(&offtarget_links, &links_tsv)?;
+
     info!("wrote {}", starter_out.display());
     info!("wrote {}", edited_out.display());
     info!("wrote {}", tsv.display());
     info!("wrote {}", summary.display());
+    info!("wrote {}", offtarget_tsv.display());
+    info!("wrote {}", links_tsv.display());
     Ok(())
 }
 

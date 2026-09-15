@@ -55,3 +55,18 @@ This registry tracks discrepancies identified between ProkaDiff and breseq oracl
 - **status**: tolerant-match
 - **minimal_fixture**: `benchmark/results/synth_is_mob_2432998/`
 - **parity_after_fix**: Strict mismatch (different representative coordinate), matched under Tier 3 tolerant matching ($\pm 5$ bp).
+
+---
+
+## CASE-005: Structural 50 bp Deletion and Breakpoint Junction Parity
+
+- **dataset**: `structural_del` (`testdata/parity/synthetic_del`)
+- **mutation**: Consensus `DEL` (50 bp structural deletion) & supporting `JC` breakpoint
+- **breseq**: Emits `DEL 1 2,3 ref_del 501 50`, `MC 2 . ref_del 501 550`, `JC 3 . ref_del 500 -1 ref_del 551 1 0`
+- **prokadiff**: Emits `DEL 2 1 ref_del 501 50`, `MC 1 . ref_del 500 551`, `JC 3 . ref_del 551 1 ref_del 500 -1 0`
+- **category**: DEL / JC
+- **status**: resolved / parity verified
+- **minimal_fixture**: `testdata/parity/synthetic_del/`
+- **benchmark_run**: `benchmark/results/synthetic_del_2646780/`
+- **notes**: Consensus DEL is a 100% exact match (`del_over = 0`, `del_under = 0`). Supporting JC breakpoint matches with exact canonical coordinates (500 and 551) under Tier 2 tolerant matching. ProkaDiff execution time was 0.86s vs breseq 3.31s (3.8x faster) with identical memory footprint.
+

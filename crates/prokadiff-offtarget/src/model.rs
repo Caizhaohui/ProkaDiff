@@ -134,18 +134,17 @@ pub struct OffTargetSite {
 
 impl OffTargetSite {
     pub fn tsv_header() -> &'static str {
-        "site_id\tseq_id\tstart\tend\tstrand\tguide\ttarget_seq\tpam\tmismatches\tbulge_type\tbulge_size\tsearch_backend\tcfd_score\thsu_score"
+        "site_id\tseq_id\tstart\tend\tstrand\ttarget_seq\tpam\tmismatches\tbulge_type\tbulge_size\tsearch_backend\tcfd_score\thsu_score"
     }
 
     pub fn to_tsv_row(&self) -> String {
         format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             self.site_id,
             self.seq_id,
             self.start,
             self.end,
             self.strand,
-            self.guide,
             self.target_seq,
             self.pam,
             self.mismatches,
