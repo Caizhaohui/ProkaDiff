@@ -52,6 +52,7 @@ pub fn is_product_mutation(kind: GdKind) -> bool {
     matches!(
         kind,
         GdKind::Snp
+            | GdKind::Sub
             | GdKind::Ins
             | GdKind::Del
             | GdKind::Mob
@@ -146,6 +147,27 @@ mod tests {
         .unwrap();
         let out = classify(&edited, &gd(vec![]), &intended, &[], &cas9_opts(false));
         assert_eq!(out.intended_declared, 2);
+        assert_eq!(out.intended_observed.len(), 1);
+        assert_eq!(out.unintended.len(), 0);
+    }
+
+    #[test]
+    fn intended_parses_legacy_aliases_with_warning() {
+        let legacy_tsv = "seq_id\tposition\tend\tgd_type\tref\talt\nchr\t100\t100\tSNP\tA\tG\n";
+        let parsed = parse_intended(legacy_tsv).expect("should parse legacy aliases");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].start, 100);
+        assert_eq!(parsed[0].kind, "snp");
+    }
+
+    #[test]
+    fn intended_masks_sub_mutation() {
+        let edited = gd(vec![GdEntry::sub(1, "chr", 100, 2, "TT")]);
+        let intended =
+            parse_intended("seq_id\tstart\tend\tref\talt\tkind\nchr\t100\t101\tAC\tTT\tsub\n")
+                .unwrap();
+        let out = classify(&edited, &gd(vec![]), &intended, &[], &cas9_opts(false));
+        assert_eq!(out.intended_declared, 1);
         assert_eq!(out.intended_observed.len(), 1);
         assert_eq!(out.unintended.len(), 0);
     }

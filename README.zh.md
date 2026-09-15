@@ -151,16 +151,16 @@ prokadiff evidence \
 可选的制表符分隔（TSV）文件，用于声明预期的编辑设计。吻合的变异将被自动标记并在非预期突变列表中屏蔽。
 
 ```tsv
-seq_id	position	end	gd_type	ref	alt
-NC_000913.3	123456	123456	SNP	A	G
-NC_000913.3	234567	234582	DEL	.	16
-NC_000913.3	345678	345678	INS	.	ATCG
+seq_id	start	end	kind	ref	alt
+NC_000913.3	123456	123456	snp	A	G
+NC_000913.3	234567	234582	del	.	16
+NC_000913.3	345678	345678	ins	.	ATCG
 ```
 
 - `seq_id`：参考基因组 contig 名称。
-- `position`：1-based 起始物理坐标。
-- `end`：1-based 包含性终止物理坐标（点突变及单点插入与 `position` 一致）。
-- `gd_type`：变异类别（`SNP`, `INS`, `DEL`, `MOB`, `JC`）。
+- `start`：1-based 起始物理坐标（`position` 仅作为兼容旧字段别名保留）。
+- `end`：1-based 包含性终止物理坐标（点突变及单点插入与 `start` 一致）。
+- `kind`：变异类别（`snp`, `sub`, `del`, `ins`, `cassette`；`gd_type` 仅作为兼容旧字段别名保留）。
 - `ref`：参考碱基（不适用填 `.`）。
 - `alt`：变异等位碱基或缺失长度。
 

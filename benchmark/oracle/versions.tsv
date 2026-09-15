@@ -1,0 +1,7 @@
+tool	version	role
+breseq	0.40.2	variant_oracle
+bowtie2	2.5.4	aligner
+gdtools	0.40.2	genomediff_oracle
+cas-offinder	2.4.1	offtarget_search_oracle
+flashfry	1.3.4	offtarget_score_oracle
+crispritz	2.6.2	bulge_oracle

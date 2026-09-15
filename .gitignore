@@ -3,6 +3,7 @@ DEVELOPMENT_PLAN.md
 DEVELOPMENT.md
 AGENTS.md
 原核基因编辑脱靶检测-开发计划.md
+markdown/
 
 /target/
 **/*.rs.bk
@@ -30,6 +31,7 @@ testdata/layer2/
 benchmark/results/*
 !benchmark/results/.gitkeep
 !benchmark/results/README.md
+!benchmark/results/parity_summary.tsv
 !benchmark/results/verified/
 !benchmark/results/verified/*.md
 benchmark/logs/

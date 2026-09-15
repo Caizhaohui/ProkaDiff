@@ -141,6 +141,33 @@ fn repeat_like_low_mapq_coverage_is_not_del() {
 }
 
 #[test]
+fn adjacent_snps_merge_into_sub() {
+    // Reference 40 bp
+    let mut ref_seq = vec![b'A'; 40];
+    ref_seq[15] = b'C';
+    ref_seq[16] = b'G';
+
+    // Reads have TT at index 15..17 (1-based 16..17, size 2)
+    let mut mut_seq = ref_seq.clone();
+    mut_seq[15] = b'T';
+    mut_seq[16] = b'T';
+
+    let reads = covering_reads(&mut_seq, 0, 40, 6, 6, UNIQUE_MAPQ);
+    let gd = call_from_aligned(&fasta_chr(&ref_seq), &reads, &opts_single_thread());
+
+    let subs: Vec<_> = gd
+        .entries
+        .iter()
+        .filter(|e| e.kind == prokadiff_gd::GdKind::Sub)
+        .collect();
+    assert_eq!(subs.len(), 1, "expected 1 SUB entry, got {:?}", gd.entries);
+    assert_eq!(subs[0].fields[0], "chr");
+    assert_eq!(subs[0].fields[1], "16"); // 1-based pos
+    assert_eq!(subs[0].fields[2], "2"); // size
+    assert_eq!(subs[0].fields[3], "TT"); // new_seq
+}
+
+#[test]
 fn long_internal_true_gap_emits_del() {
     let seq = vec![b'A'; 80];
     let mut reads = covering_reads(&seq, 0, 10, 6, 6, UNIQUE_MAPQ);

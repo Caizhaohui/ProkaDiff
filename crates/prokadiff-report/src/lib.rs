@@ -129,7 +129,7 @@ fn opt_u64(v: Option<u64>) -> String {
 fn coords(e: &GdEntry) -> (String, u64, u64) {
     let seq = e.seq_id().unwrap_or("").to_string();
     let pos = e.position().unwrap_or(0);
-    if e.kind == GdKind::Del {
+    if e.kind == GdKind::Del || e.kind == GdKind::Sub {
         let size = e
             .fields
             .get(2)
@@ -152,12 +152,43 @@ fn alleles<'a>(e: &'a GdEntry, refs: &[RefContig]) -> (String, &'a str) {
                 e.fields.get(2).map(String::as_str).unwrap_or("."),
             )
         }
+        GdKind::Sub => {
+            let seq_id = e.seq_id().unwrap_or("");
+            let pos = e.position().unwrap_or(0);
+            let size = e
+                .fields
+                .get(2)
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(1);
+            (
+                sub_ref_seq(seq_id, pos, size, refs),
+                e.fields.get(3).map(String::as_str).unwrap_or("."),
+            )
+        }
         GdKind::Ins => (
             ".".into(),
             e.fields.get(2).map(String::as_str).unwrap_or("."),
         ),
         _ => (".".into(), "."),
     }
+}
+
+fn sub_ref_seq(seq_id: &str, pos: u64, size: usize, refs: &[RefContig]) -> String {
+    if pos == 0 {
+        return ".".into();
+    }
+    let start_idx = (pos - 1) as usize;
+    for c in refs {
+        if c.name == seq_id && start_idx < c.seq.len() {
+            let end_idx = (start_idx + size).min(c.seq.len());
+            let slice = &c.seq[start_idx..end_idx];
+            return slice
+                .iter()
+                .map(|&b| (b as char).to_ascii_uppercase())
+                .collect();
+        }
+    }
+    ".".into()
 }
 
 fn snp_ref_base(seq_id: &str, pos: u64, refs: &[RefContig]) -> String {
@@ -407,6 +438,22 @@ mod tests {
         assert_eq!(kv(&text, "intended_observed"), "0");
         assert_eq!(kv(&text, "intended_status"), "none_observed");
         assert_eq!(kv(&text, "intended_missing"), "1");
+    }
+
+    #[test]
+    fn sub_tsv_writes_expected_coordinates_and_alleles() {
+        let refs = vec![RefContig {
+            name: "chr".into(),
+            seq: b"ACGTACGT".to_vec(),
+        }];
+        let e = GdEntry::sub(1, "chr", 3, 2, "TT");
+        let (s, a, b) = coords(&e);
+        assert_eq!(s, "chr");
+        assert_eq!(a, 3);
+        assert_eq!(b, 4);
+        let (ref_al, alt_al) = alleles(&e, &refs);
+        assert_eq!(ref_al, "GT");
+        assert_eq!(alt_al, "TT");
     }
 
     #[test]

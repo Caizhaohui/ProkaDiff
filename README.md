@@ -148,16 +148,16 @@ prokadiff evidence \
 `--intended` provides an optional tab-delimited file describing on-target expected edits. When supplied, matching mutations are masked from the unintended mutations report.
 
 ```tsv
-seq_id	position	end	gd_type	ref	alt
-NC_000913.3	123456	123456	SNP	A	G
-NC_000913.3	234567	234582	DEL	.	16
-NC_000913.3	345678	345678	INS	.	ATCG
+seq_id	start	end	kind	ref	alt
+NC_000913.3	123456	123456	snp	A	G
+NC_000913.3	234567	234582	del	.	16
+NC_000913.3	345678	345678	ins	.	ATCG
 ```
 
 - `seq_id`: Reference contig name matching reference header.
-- `position`: 1-based start position.
-- `end`: 1-based inclusive end position (for SNPs/INS, same as `position`).
-- `gd_type`: Mutation type (`SNP`, `INS`, `DEL`, `MOB`, `JC`).
+- `start`: 1-based start position (`position` is accepted as a deprecated legacy alias).
+- `end`: 1-based inclusive end position (for SNPs/INS, same as `start`).
+- `kind`: Mutation type (`snp`, `sub`, `del`, `ins`, `cassette`; `gd_type` is accepted as a deprecated legacy alias).
 - `ref`: Reference allele (or `.` if not applicable).
 - `alt`: Alternate allele or length.
 

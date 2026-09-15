@@ -30,17 +30,31 @@ pub fn parse_intended(text: &str) -> Result<Vec<IntendedEdit>, IntendedError> {
         .split('\t')
         .map(|s| s.trim().to_ascii_lowercase())
         .collect();
+    let idx_or_alias = |primary: &str, alias: &str| -> Result<usize, IntendedError> {
+        if let Some(pos) = cols.iter().position(|c| c == primary) {
+            Ok(pos)
+        } else if let Some(pos) = cols.iter().position(|c| c == alias) {
+            eprintln!(
+                "warning: deprecated column name '{alias}' in intended table; please use '{primary}'"
+            );
+            Ok(pos)
+        } else {
+            Err(IntendedError::Parse(format!(
+                "missing column {primary} (or legacy alias {alias})"
+            )))
+        }
+    };
     let idx = |name: &str| -> Result<usize, IntendedError> {
         cols.iter()
             .position(|c| c == name)
             .ok_or_else(|| IntendedError::Parse(format!("missing column {name}")))
     };
     let i_seq = idx("seq_id")?;
-    let i_start = idx("start")?;
+    let i_start = idx_or_alias("start", "position")?;
     let i_end = idx("end")?;
     let i_ref = idx("ref")?;
     let i_alt = idx("alt")?;
-    let i_kind = idx("kind")?;
+    let i_kind = idx_or_alias("kind", "gd_type")?;
     let mut out = Vec::new();
     for (n, line) in lines.enumerate() {
         let parts: Vec<&str> = line.split('\t').collect();
@@ -107,7 +121,7 @@ pub(crate) fn entry_intervals(e: &GdEntry) -> Vec<(String, u64, u64)> {
             }
             v
         }
-        GdKind::Del => {
+        GdKind::Del | GdKind::Sub => {
             let Some(seq) = e.fields.first() else {
                 return Vec::new();
             };
@@ -132,6 +146,7 @@ pub(crate) fn entry_intervals(e: &GdEntry) -> Vec<(String, u64, u64)> {
 fn allele(e: &GdEntry) -> Option<&str> {
     match e.kind {
         GdKind::Snp | GdKind::Ins => e.fields.get(2).map(String::as_str),
+        GdKind::Sub => e.fields.get(3).map(String::as_str),
         _ => None,
     }
 }
@@ -158,6 +173,7 @@ fn matches_intended(e: &GdEntry, t: &IntendedEdit) -> bool {
     }
     match t.kind.as_str() {
         "snp" => e.kind == GdKind::Snp && alt_ok(e, t),
+        "sub" => e.kind == GdKind::Sub && alt_ok(e, t),
         "ins" => e.kind == GdKind::Ins && alt_ok(e, t),
         "del" | "indel" => del_matches_intended(e, t),
         "cassette" => {

@@ -45,12 +45,33 @@ pub(crate) fn emit_from_pileup(
             splits,
         } = &contig_results[idx];
         let mut pending_del: Option<(u64, u8)> = None;
+        let mut pending_snp: Option<(u64, Vec<u8>)> = None;
         let flush_del = |gd: &mut GenomeDiff, id: &mut u32, start: u64, size: u8| {
             // Match breseq mutation coordinates (RA evidence may stay 5′).
             let start = right_align_del(&rec.seq, start, u64::from(size));
             gd.entries
                 .push(GdEntry::del(*id, rec.name.clone(), start, u64::from(size)));
             *id += 1;
+        };
+        let flush_snp = |gd: &mut GenomeDiff, id: &mut u32, start: u64, seq: Vec<u8>| {
+            if seq.len() == 1 {
+                gd.entries.push(GdEntry::snp(
+                    *id,
+                    rec.name.clone(),
+                    start,
+                    (seq[0] as char).to_string(),
+                ));
+                *id += 1;
+            } else if seq.len() > 1 {
+                gd.entries.push(GdEntry::sub(
+                    *id,
+                    rec.name.clone(),
+                    start,
+                    seq.len() as u64,
+                    String::from_utf8_lossy(&seq).into_owned(),
+                ));
+                *id += 1;
+            }
         };
 
         for (i, col) in columns.iter().enumerate() {
@@ -60,17 +81,24 @@ pub(crate) fn emit_from_pileup(
                     if let Some((s, sz)) = pending_del.take() {
                         flush_del(&mut gd, &mut next_id, s, sz);
                     }
-                    gd.entries.push(GdEntry::snp(
-                        next_id,
-                        rec.name.clone(),
-                        pos,
-                        (alt as char).to_string(),
-                    ));
-                    next_id += 1;
+                    match pending_snp {
+                        Some((s, mut seq)) if s + seq.len() as u64 == pos => {
+                            seq.push(alt);
+                            pending_snp = Some((s, seq));
+                        }
+                        Some((s, seq)) => {
+                            flush_snp(&mut gd, &mut next_id, s, seq);
+                            pending_snp = Some((pos, vec![alt]));
+                        }
+                        None => pending_snp = Some((pos, vec![alt])),
+                    }
                 }
                 ConsensusCall::Ins { seq } => {
                     if let Some((s, sz)) = pending_del.take() {
                         flush_del(&mut gd, &mut next_id, s, sz);
+                    }
+                    if let Some((s, seq)) = pending_snp.take() {
+                        flush_snp(&mut gd, &mut next_id, s, seq);
                     }
                     let (pos, seq) = right_align_ins(&rec.seq, pos, &seq);
                     let s = String::from_utf8_lossy(&seq).into_owned();
@@ -78,25 +106,36 @@ pub(crate) fn emit_from_pileup(
                         .push(GdEntry::ins(next_id, rec.name.clone(), pos, s));
                     next_id += 1;
                 }
-                ConsensusCall::Del { size } => match pending_del {
-                    Some((s, sz)) if s + u64::from(sz) == pos && sz + size <= 2 => {
-                        pending_del = Some((s, sz + size));
+                ConsensusCall::Del { size } => {
+                    if let Some((s, seq)) = pending_snp.take() {
+                        flush_snp(&mut gd, &mut next_id, s, seq);
                     }
-                    Some((s, sz)) => {
-                        flush_del(&mut gd, &mut next_id, s, sz);
-                        pending_del = Some((pos, size));
+                    match pending_del {
+                        Some((s, sz)) if s + u64::from(sz) == pos && sz + size <= 2 => {
+                            pending_del = Some((s, sz + size));
+                        }
+                        Some((s, sz)) => {
+                            flush_del(&mut gd, &mut next_id, s, sz);
+                            pending_del = Some((pos, size));
+                        }
+                        None => pending_del = Some((pos, size)),
                     }
-                    None => pending_del = Some((pos, size)),
-                },
+                }
                 _ => {
                     if let Some((s, sz)) = pending_del.take() {
                         flush_del(&mut gd, &mut next_id, s, sz);
+                    }
+                    if let Some((s, seq)) = pending_snp.take() {
+                        flush_snp(&mut gd, &mut next_id, s, seq);
                     }
                 }
             }
         }
         if let Some((s, sz)) = pending_del.take() {
             flush_del(&mut gd, &mut next_id, s, sz);
+        }
+        if let Some((s, seq)) = pending_snp.take() {
+            flush_snp(&mut gd, &mut next_id, s, seq);
         }
 
         // Junction clustering (replaces exact-key aggregation). Do not key
@@ -490,6 +529,18 @@ pub(crate) fn emit_from_pileup(
                 !dels
                     .iter()
                     .any(|(d_seq, start, end)| d_seq == seq_id && pos >= *start && pos <= *end)
+            } else if e.kind == GdKind::Sub {
+                let Some(seq_id) = e.seq_id() else {
+                    return true;
+                };
+                let Some(pos) = e.position() else {
+                    return true;
+                };
+                let sz = e.sub_size().unwrap_or(1);
+                let end_pos = pos + sz.saturating_sub(1);
+                !dels
+                    .iter()
+                    .any(|(d_seq, start, end)| d_seq == seq_id && pos <= *end && end_pos >= *start)
             } else {
                 true
             }

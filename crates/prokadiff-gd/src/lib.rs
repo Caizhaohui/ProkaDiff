@@ -26,6 +26,7 @@ pub type Result<T> = std::result::Result<T, GdError>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GdKind {
     Snp,
+    Sub,
     Ins,
     Del,
     Mob,
@@ -41,6 +42,7 @@ impl GdKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Snp => "SNP",
+            Self::Sub => "SUB",
             Self::Ins => "INS",
             Self::Del => "DEL",
             Self::Mob => "MOB",
@@ -56,6 +58,7 @@ impl GdKind {
     fn field_count(self) -> usize {
         match self {
             Self::Snp | Self::Ins => 3,
+            Self::Sub => 4,
             Self::Del | Self::Un => 3,
             Self::Mob => 5,
             Self::Amp => 4,
@@ -73,6 +76,7 @@ impl FromStr for GdKind {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         Ok(match s {
             "SNP" => Self::Snp,
+            "SUB" => Self::Sub,
             "INS" => Self::Ins,
             "DEL" => Self::Del,
             "MOB" => Self::Mob,
@@ -110,6 +114,27 @@ impl GdEntry {
             id,
             parent_ids: Vec::new(),
             fields: vec![seq_id.into(), position.to_string(), new_seq.into()],
+            attrs: BTreeMap::new(),
+        }
+    }
+
+    pub fn sub(
+        id: u32,
+        seq_id: impl Into<String>,
+        position: u64,
+        size: u64,
+        new_seq: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: GdKind::Sub,
+            id,
+            parent_ids: Vec::new(),
+            fields: vec![
+                seq_id.into(),
+                position.to_string(),
+                size.to_string(),
+                new_seq.into(),
+            ],
             attrs: BTreeMap::new(),
         }
     }
@@ -229,6 +254,14 @@ impl GdEntry {
 
     pub fn del_size(&self) -> Option<u64> {
         if self.kind == GdKind::Del {
+            self.fields.get(2).and_then(|s| s.parse().ok())
+        } else {
+            None
+        }
+    }
+
+    pub fn sub_size(&self) -> Option<u64> {
+        if self.kind == GdKind::Sub {
             self.fields.get(2).and_then(|s| s.parse().ok())
         } else {
             None
@@ -907,5 +940,55 @@ UN\t6\t.\tNC_000913\t900\t910
         };
         let out = edited.subtract(&starter);
         assert_eq!(out.entries.len(), 2);
+    }
+
+    #[test]
+    fn parses_sub_and_roundtrip() {
+        let line = "SUB\t1\t2,3\tchr\t201\t2\tTT\tfoo=bar\n";
+        let gd = GenomeDiff::parse(line).expect("should parse SUB");
+        assert_eq!(gd.entries.len(), 1);
+        let e = &gd.entries[0];
+        assert_eq!(e.kind, GdKind::Sub);
+        assert_eq!(e.id, 1);
+        assert_eq!(e.parent_ids, vec![2, 3]);
+        assert_eq!(e.seq_id(), Some("chr"));
+        assert_eq!(e.position(), Some(201));
+        assert_eq!(e.sub_size(), Some(2));
+        assert_eq!(e.fields.get(3).map(String::as_str), Some("TT"));
+        assert_eq!(e.attrs.get("foo").map(String::as_str), Some("bar"));
+        assert_eq!(e.to_line(), "SUB\t1\t2,3\tchr\t201\t2\tTT\tfoo=bar");
+    }
+
+    #[test]
+    fn subtract_removes_matching_sub() {
+        let edited = GenomeDiff {
+            metadata: vec![],
+            entries: vec![
+                GdEntry::sub(1, "chr", 100, 2, "TT"),
+                GdEntry::snp(2, "chr", 300, "G"),
+            ],
+        };
+        let starter = GenomeDiff {
+            metadata: vec![],
+            entries: vec![GdEntry::sub(1, "chr", 100, 2, "TT")],
+        };
+        let out = edited.subtract(&starter);
+        assert_eq!(out.entries.len(), 1);
+        assert_eq!(out.entries[0].kind, GdKind::Snp);
+    }
+
+    #[test]
+    fn subtract_keeps_sub_when_allele_differs() {
+        let edited = GenomeDiff {
+            metadata: vec![],
+            entries: vec![GdEntry::sub(1, "chr", 100, 2, "TT")],
+        };
+        let starter = GenomeDiff {
+            metadata: vec![],
+            entries: vec![GdEntry::sub(1, "chr", 100, 2, "TG")],
+        };
+        let out = edited.subtract(&starter);
+        assert_eq!(out.entries.len(), 1);
+        assert_eq!(out.entries[0].kind, GdKind::Sub);
     }
 }

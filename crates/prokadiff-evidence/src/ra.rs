@@ -70,14 +70,18 @@ pub fn call_consensus(col: &PileupColumn, opts: &RaOptions) -> ConsensusCall {
     let mut plus = [0usize; 5];
     let mut minus = [0usize; 5];
     for obs in &col.observations {
-        let i = base_index(obs.base);
-        counts[i] += 1;
-        match obs.strand {
-            Strand::Plus => plus[i] += 1,
-            Strand::Minus => minus[i] += 1,
+        if let Some(i) = base_index(obs.base) {
+            counts[i] += 1;
+            match obs.strand {
+                Strand::Plus => plus[i] += 1,
+                Strand::Minus => minus[i] += 1,
+            }
         }
     }
     let (best_i, best_n) = counts.iter().enumerate().max_by_key(|(_, n)| *n).unwrap();
+    if *best_n == 0 {
+        return ConsensusCall::MatchRef;
+    }
     let freq = *best_n as f64 / cov as f64;
     if freq < opts.min_frequency {
         return ConsensusCall::MatchRef;
@@ -141,14 +145,14 @@ fn call_insertion(col: &PileupColumn, opts: &RaOptions) -> ConsensusCall {
     ConsensusCall::Ins { seq }
 }
 
-fn base_index(b: u8) -> usize {
+fn base_index(b: u8) -> Option<usize> {
     match b.to_ascii_uppercase() {
-        b'A' => 0,
-        b'C' => 1,
-        b'G' => 2,
-        b'T' => 3,
-        b'-' => 4,
-        _ => 0,
+        b'A' => Some(0),
+        b'C' => Some(1),
+        b'G' => Some(2),
+        b'T' => Some(3),
+        b'-' => Some(4),
+        _ => None,
     }
 }
 
@@ -256,6 +260,62 @@ mod tests {
         assert_eq!(
             call_consensus(&c, &RaOptions::default()),
             ConsensusCall::RejectedStrandBias
+        );
+    }
+
+    #[test]
+    fn ambiguous_n_does_not_convert_to_a_or_call_fake_snp() {
+        // Ref is G. We have 2 G's and 10 N's.
+        // N must not be counted as A (which would call a G->A SNP).
+        let mut obs = vec![(b'G', Strand::Plus), (b'G', Strand::Minus)];
+        for _ in 0..5 {
+            obs.push((b'N', Strand::Plus));
+            obs.push((b'N', Strand::Minus));
+        }
+        let c = col(b'G', &obs);
+        assert_eq!(
+            call_consensus(&c, &RaOptions::default()),
+            ConsensusCall::MatchRef
+        );
+    }
+
+    #[test]
+    fn ambiguous_n_only_column_matches_ref() {
+        let obs = vec![
+            (b'N', Strand::Plus),
+            (b'N', Strand::Plus),
+            (b'N', Strand::Minus),
+            (b'N', Strand::Minus),
+            (b'N', Strand::Plus),
+            (b'N', Strand::Minus),
+        ];
+        let c = col(b'C', &obs);
+        assert_eq!(
+            call_consensus(&c, &RaOptions::default()),
+            ConsensusCall::MatchRef
+        );
+    }
+
+    #[test]
+    fn majority_valid_base_with_some_n_calls_majority_correctly() {
+        // Ref is A. We have 9 G's (both strands) and 1 N. Total cov = 10.
+        // G frequency = 9/10 = 0.9 >= 0.8 min_frequency. Calls SNP A -> G.
+        let obs = vec![
+            (b'G', Strand::Plus),
+            (b'G', Strand::Plus),
+            (b'G', Strand::Plus),
+            (b'G', Strand::Plus),
+            (b'G', Strand::Plus),
+            (b'G', Strand::Minus),
+            (b'G', Strand::Minus),
+            (b'G', Strand::Minus),
+            (b'G', Strand::Minus),
+            (b'N', Strand::Plus),
+        ];
+        let c = col(b'A', &obs);
+        assert_eq!(
+            call_consensus(&c, &RaOptions::default()),
+            ConsensusCall::Snp { alt: b'G' }
         );
     }
 }

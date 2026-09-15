@@ -34,3 +34,25 @@ jobs:
 
       - name: Run pure workspace unit and integration tests
         run: cargo test --workspace
+
+  bowtie2-e2e:
+    name: Bowtie2 E2E Smoke Test
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Bowtie2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bowtie2
+
+      - name: Run Bowtie2 E2E Smoke Test
+        run: bash scripts/smoke_e2e.sh

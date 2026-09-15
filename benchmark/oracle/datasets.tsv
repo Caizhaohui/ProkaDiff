@@ -1,0 +1,6 @@
+dataset_id	category	reference	description	oracle_gd
+clonal	real_world	NC_000913.3	E. coli clonal evolution paired-end dataset	benchmark/oracle/expected/clonal.gd
+synth_snp_indel	synthetic	synthetic_ecoli_mini	Synthetic point mutations and 1-2bp indels	benchmark/oracle/expected/synth_snp_indel.gd
+synth_is_mob	synthetic	REL606_mini	Synthetic mobile element insertions (IS1/IS150)	benchmark/oracle/expected/synth_is_mob.gd
+ambiguous_n	synthetic	test_ref_mini	N-containing reads pileup / calling regression	benchmark/oracle/expected/ambiguous_n.gd
+sub_adjacent	synthetic	test_ref_mini	Adjacent substitutions calling / representation	benchmark/oracle/expected/sub_adjacent.gd
