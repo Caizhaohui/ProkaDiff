@@ -1,0 +1,21 @@
+case_id	guide	bulge_type	bulge_size	bulge_position	mismatches	strand	notes
+b001_dna_1_5prime	GAGTCCGAGCAGAAGAAGAA	DNA	1	5prime	0	plus	DNA bulge at guide 5-prime end, plus strand
+b002_dna_1_middle	GAGTCCGAGCAGAAGAAGAA	DNA	1	middle	0	plus	DNA bulge at position 10
+b003_dna_1_pam_prox	GAGTCCGAGCAGAAGAAGAA	DNA	1	pam_proximal	0	plus	DNA bulge near PAM
+b004_dna_1_minus	GAGTCCGAGCAGAAGAAGAA	DNA	1	middle	0	minus	DNA bulge on minus strand
+b005_dna_2_5prime	GAGTCCGAGCAGAAGAAGAA	DNA	2	5prime	0	plus	DNA 2-bp bulge 5-prime
+b006_dna_2_middle	GAGTCCGAGCAGAAGAAGAA	DNA	2	middle	0	plus	DNA 2-bp bulge middle
+b007_dna_2_pam_prox	GAGTCCGAGCAGAAGAAGAA	DNA	2	pam_proximal	0	plus	DNA 2-bp bulge PAM-proximal
+b008_dna_2_minus	GAGTCCGAGCAGAAGAAGAA	DNA	2	middle	0	minus	DNA 2-bp bulge minus strand
+b009_rna_1_5prime	GAGTCCGAGCAGAAGAAGAA	RNA	1	5prime	0	plus	RNA bulge at guide 5-prime end
+b010_rna_1_middle	GAGTCCGAGCAGAAGAAGAA	RNA	1	middle	0	plus	RNA bulge at position 10
+b011_rna_1_pam_prox	GAGTCCGAGCAGAAGAAGAA	RNA	1	pam_proximal	0	plus	RNA bulge near PAM
+b012_rna_1_minus	GAGTCCGAGCAGAAGAAGAA	RNA	1	middle	0	minus	RNA bulge on minus strand
+b013_rna_2_5prime	GAGTCCGAGCAGAAGAAGAA	RNA	2	5prime	0	plus	RNA 2-bp bulge 5-prime
+b014_rna_2_middle	GAGTCCGAGCAGAAGAAGAA	RNA	2	middle	0	plus	RNA 2-bp bulge middle
+b015_rna_2_pam_prox	GAGTCCGAGCAGAAGAAGAA	RNA	2	pam_proximal	0	plus	RNA 2-bp bulge PAM-proximal
+b016_rna_2_minus	GAGTCCGAGCAGAAGAAGAA	RNA	2	middle	0	minus	RNA 2-bp bulge minus strand
+b017_dna1_1mm	GAGTCCGAGCAGAAGAAGAA	DNA	1	middle	1	plus	DNA 1-bp bulge + 1 mismatch
+b018_dna1_2mm	GAGTCCGAGCAGAAGAAGAA	DNA	1	middle	2	plus	DNA 1-bp bulge + 2 mismatches
+b019_rna1_1mm	GAGTCCGAGCAGAAGAAGAA	RNA	1	middle	1	plus	RNA 1-bp bulge + 1 mismatch
+b020_rna1_2mm	GAGTCCGAGCAGAAGAAGAA	RNA	1	middle	2	plus	RNA 1-bp bulge + 2 mismatches

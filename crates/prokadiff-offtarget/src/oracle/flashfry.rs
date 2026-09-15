@@ -1,6 +1,22 @@
 use crate::model::{BulgeType, OffTargetSite, Strand};
 use crate::normalize::clean_nucleotide_string;
 
+/// FlashFry 1.15 native output columns (lowercase for matching):
+///   contig  start  stop  target  orientation  numberOfMismatches
+///   Doench2016CFDScore  Hsu2013  [other score columns...]
+///
+/// Coordinate convention (to be confirmed against real FlashFry 1.15 output):
+///   FlashFry start: 0-based inclusive
+///   FlashFry stop:  0-based exclusive (half-open)
+///   → ProkaDiff: start = ff_start + 1, end = ff_stop (1-based inclusive)
+///
+/// Orientation:
+///   FlashFry "FWD" → Strand::Plus
+///   FlashFry "RVS" → Strand::Minus
+///
+/// Status: BLOCKED_EXTERNAL_DEPENDENCY — coordinate convention confirmed only
+/// when real FlashFry 1.15 output is available.  Parser infrastructure is
+/// ready; coordinate conversion follows the documented FlashFry convention.
 #[derive(Debug, thiserror::Error)]
 pub enum FlashFryParseError {
     #[error("I/O error: {0}")]
@@ -9,7 +25,10 @@ pub enum FlashFryParseError {
     Format { line: usize, msg: String },
 }
 
-/// Parses FlashFry output TSV files with flexible header inspection.
+/// Parses FlashFry 1.15 output TSV.
+///
+/// Prioritizes native 1.15 column names; falls back to common aliases so the
+/// parser tolerates minor header variations without breaking.
 pub fn parse_flashfry(text: &str) -> Result<Vec<OffTargetSite>, FlashFryParseError> {
     let mut lines = text.lines().enumerate().filter(|(_, l)| {
         let t = l.trim();
@@ -26,6 +45,7 @@ pub fn parse_flashfry(text: &str) -> Result<Vec<OffTargetSite>, FlashFryParseErr
         .map(|s| s.trim().to_ascii_lowercase())
         .collect();
 
+    // Resolve a column by trying a list of names in priority order.
     let find_col = |names: &[&str]| -> Option<usize> {
         for name in names {
             if let Some(pos) = headers.iter().position(|h| h == name) {
@@ -35,6 +55,8 @@ pub fn parse_flashfry(text: &str) -> Result<Vec<OffTargetSite>, FlashFryParseErr
         None
     };
 
+    // ── required columns ────────────────────────────────────────────────────
+    // FlashFry 1.15 native name first, then common aliases.
     let col_contig = find_col(&["contig", "chrom", "chr", "seq_id"]).ok_or_else(|| {
         FlashFryParseError::Format {
             line: hdr_idx + 1,
@@ -48,10 +70,11 @@ pub fn parse_flashfry(text: &str) -> Result<Vec<OffTargetSite>, FlashFryParseErr
         }
     })?;
     let col_stop = find_col(&["stop", "end", "end_pos"]);
-    let col_strand = find_col(&["strand", "direction", "orientation"]).ok_or_else(|| {
+    // FlashFry 1.15 uses "orientation"; also accept "strand", "direction".
+    let col_strand = find_col(&["orientation", "strand", "direction"]).ok_or_else(|| {
         FlashFryParseError::Format {
             line: hdr_idx + 1,
-            msg: "missing strand column".into(),
+            msg: "missing orientation/strand column".into(),
         }
     })?;
     let col_target =
@@ -61,10 +84,14 @@ pub fn parse_flashfry(text: &str) -> Result<Vec<OffTargetSite>, FlashFryParseErr
                 msg: "missing target sequence column".into(),
             }
         })?;
+
+    // ── optional columns ────────────────────────────────────────────────────
     let col_guide = find_col(&["guide", "crrna", "spacer"]);
-    let col_mm = find_col(&["mismatches", "mismatch_count", "mm"]);
-    let col_cfd = find_col(&["cfd", "cfd_score", "doench2016cfd"]);
-    let col_hsu = find_col(&["hsu", "hsu_score", "hsu2013"]);
+    // FlashFry 1.15 mismatch column: "numberOfMismatches"
+    let col_mm = find_col(&["numberofmismatches", "mismatches", "mismatch_count", "mm"]);
+    // FlashFry 1.15 score columns: "Doench2016CFDScore", "Hsu2013"
+    let col_cfd = find_col(&["doench2016cfdscore", "cfd", "cfd_score", "doench2016cfd"]);
+    let col_hsu = find_col(&["hsu2013", "hsu", "hsu_score"]);
 
     let mut sites = Vec::new();
     for (line_idx, line) in lines {
@@ -73,18 +100,26 @@ pub fn parse_flashfry(text: &str) -> Result<Vec<OffTargetSite>, FlashFryParseErr
         let get = |idx: usize| -> &str { parts.get(idx).copied().unwrap_or("") };
 
         let seq_id = get(col_contig).to_string();
-        let raw_start: u64 = get(col_start)
+
+        // Coordinate conversion: FlashFry 0-based half-open → 1-based inclusive.
+        // prokadiff_start = ff_start + 1
+        // prokadiff_end   = ff_stop  (half-open exclusive → last nt at ff_stop - 1; +1 for 1-based → ff_stop)
+        let ff_start: u64 = get(col_start)
             .parse()
             .map_err(|_| FlashFryParseError::Format {
                 line: line_num,
                 msg: format!("invalid start coordinate '{}'", get(col_start)),
             })?;
+
         let target_seq = clean_nucleotide_string(get(col_target));
         let len = target_seq.len() as u64;
 
-        let start = raw_start;
+        let start = ff_start + 1; // 0-based → 1-based
         let end = match col_stop {
-            Some(idx) => get(idx).parse().unwrap_or(start + len.saturating_sub(1)),
+            Some(idx) => {
+                let ff_stop: u64 = get(idx).parse().unwrap_or(ff_start + len);
+                ff_stop // half-open exclusive → 1-based inclusive end = ff_stop
+            }
             None => start + len.saturating_sub(1),
         };
 
@@ -92,7 +127,7 @@ pub fn parse_flashfry(text: &str) -> Result<Vec<OffTargetSite>, FlashFryParseErr
             .parse::<Strand>()
             .map_err(|e| FlashFryParseError::Format {
                 line: line_num,
-                msg: format!("invalid strand '{}': {e}", get(col_strand)),
+                msg: format!("invalid orientation '{}': {e}", get(col_strand)),
             })?;
 
         let guide = col_guide
@@ -101,6 +136,8 @@ pub fn parse_flashfry(text: &str) -> Result<Vec<OffTargetSite>, FlashFryParseErr
 
         let mismatches: u32 = col_mm.and_then(|i| get(i).parse().ok()).unwrap_or(0);
 
+        // CFD and Hsu2013 are parsed from golden data but may be NA when scores
+        // are disabled in production (calculate_cfd_score returns None).
         let cfd_score: Option<f64> = col_cfd.and_then(|i| {
             let s = get(i);
             if s.is_empty() || s.eq_ignore_ascii_case("na") {
@@ -137,11 +174,79 @@ pub fn parse_flashfry(text: &str) -> Result<Vec<OffTargetSite>, FlashFryParseErr
             mismatches,
             bulge_type: BulgeType::None,
             bulge_size: 0,
-            search_backend: "flashfry".to_string(),
+            search_backend: "flashfry-1.15".to_string(),
             cfd_score,
             hsu_score,
         });
     }
 
     Ok(sites)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Strand;
+
+    /// Parser accepts the documented FlashFry 1.15 column layout (native column
+    /// names: `contig`, `start`, `stop`, `target`, `orientation`,
+    /// `Doench2016CFDScore`, `Hsu2013`).
+    /// This is a unit-parser test — NOT an E2E oracle parity test.
+    #[test]
+    fn parser_accepts_flashfry_1_15_fixture() {
+        // Synthetic fixture matching documented FlashFry 1.15 output schema.
+        // Coordinate convention: start=0-based, stop=0-based exclusive.
+        let tsv = "\
+contig\tstart\tstop\ttarget\torientation\tnumberOfMismatches\tDoench2016CFDScore\tHsu2013
+chr\t99\t119\tGAGTCCGAGCAGAAGAAGAANGG\tFWD\t0\t1.0\t100.0
+chr\t499\t519\tGAGTCCGAGCAGAAGAAGAANGG\tRVS\t2\t0.45\t72.3
+";
+        let sites = parse_flashfry(tsv).expect("parse should succeed");
+        assert_eq!(sites.len(), 2);
+
+        // Coordinate convention: start 99 (0-based) → 100 (1-based)
+        // stop 119 (exclusive) → end = 119 (1-based inclusive last nt)
+        assert_eq!(
+            sites[0].start, 100,
+            "0-based start should be converted to 1-based"
+        );
+        assert_eq!(
+            sites[0].end, 119,
+            "0-based exclusive stop → 1-based inclusive end"
+        );
+        assert_eq!(sites[0].strand, Strand::Plus, "FWD → Plus");
+        // CFD and Hsu parsed from golden data
+        assert_eq!(sites[0].cfd_score, Some(1.0));
+        assert_eq!(sites[0].hsu_score, Some(100.0));
+
+        assert_eq!(sites[1].strand, Strand::Minus, "RVS → Minus");
+        assert_eq!(sites[1].mismatches, 2);
+        assert_eq!(sites[1].search_backend, "flashfry-1.15");
+    }
+
+    /// Strand parser correctly maps FlashFry orientation tokens.
+    #[test]
+    fn strand_parser_accepts_fwd_rvs() {
+        assert_eq!("FWD".parse::<Strand>(), Ok(Strand::Plus));
+        assert_eq!("RVS".parse::<Strand>(), Ok(Strand::Minus));
+        // Legacy tokens still work
+        assert_eq!("+".parse::<Strand>(), Ok(Strand::Plus));
+        assert_eq!("-".parse::<Strand>(), Ok(Strand::Minus));
+    }
+
+    /// NA / empty score fields are parsed as None (not a parse error).
+    #[test]
+    fn parser_handles_na_scores() {
+        let tsv = "\
+contig\tstart\tstop\ttarget\torientation\tnumberOfMismatches\tDoench2016CFDScore\tHsu2013
+chr\t0\t23\tGAGTCCGAGCAGAAGAAGAANGG\tFWD\t0\tNA\tNA
+";
+        let sites = parse_flashfry(tsv).expect("parse should succeed");
+        assert_eq!(sites[0].cfd_score, None);
+        assert_eq!(sites[0].hsu_score, None);
+    }
 }

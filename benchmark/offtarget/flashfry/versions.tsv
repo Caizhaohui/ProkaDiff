@@ -1,0 +1,4 @@
+tool	version	status	notes
+flashfry	NOT_AVAILABLE	BLOCKED_EXTERNAL_DEPENDENCY	FlashFry 1.15 not installed; scores remain disabled
+java	NOT_CHECKED	BLOCKED_EXTERNAL_DEPENDENCY	Required to run FlashFry JAR
+prokadiff	f46a64c	available	current HEAD at harness creation

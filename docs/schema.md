@@ -119,17 +119,25 @@ seq_id	position	end	gd_type	ref	alt	class	editor	pam_profile	offtarget_mismatch	
 
 另写 `summary.txt`（TSV 风格 `key\tvalue`，一行一项）：
 
-| 键 | 未提供 `--intended` | 提供了 `--intended` |
-| --- | --- | --- |
-| `editor` | CLI 值 | 同左 |
-| `intended_provided` | `no` | `yes` |
-| `intended_declared` | `NA` | 声明行数（`intended.len()`，可为 `0`） |
-| `intended_observed` | `NA` | 掩码命中的突变条数 |
-| `intended_status` | `NA` | 声明行数为 0 → `NA`；`observed == declared` → `all_observed`；`observed == 0` → `none_observed`；否则 → `partial` |
-| `intended_missing` | `NA` | 声明行数为 0 → `NA`；否则 `declared − observed`（saturating） |
-| `structural` / `near_homolog` / `scattered_snv` | 非预期三类计数 | 同左 |
-| `starter_vs_ref_mutations` | 出发株相对骨架的变异总数（质控，不列入非预期） | 同左 |
+| 键 | 未提供 `--intended` | 提供了 `--intended` | 说明 |
+| --- | --- | --- | --- |
+| `editor` | CLI 值 | 同左 | 编辑器类型 |
+| `intended_provided` | `no` | `yes` | 是否提供预期编辑表 |
+| `intended_edits_declared` | `NA` | 声明行数（`intended.len()`） | FIX-015: 编辑级声明数 |
+| `intended_edits_complete` | `NA` | 匹配到的预期编辑行数 | FIX-015: 完整匹配的编辑数 |
+| `intended_edits_partial` | `NA` | 部分匹配的预期编辑行数 | FIX-015: 部分匹配的编辑数 |
+| `intended_edits_missing` | `NA` | 未匹配到的预期编辑行数 | FIX-015: 缺失的预期编辑数 |
+| `intended_events_observed` | `NA` | 匹配到的实际突变条目数 | FIX-015: 观测到的突变事件总目数 |
+| `intended_declared` | `NA` | 同 `intended_edits_declared` | （已弃用，向后兼容） |
+| `intended_observed` | `NA` | 掩码命中的突变条数 | （已弃用，向后兼容） |
+| `intended_status` | `NA` | `all_observed` / `partial` / `none_observed` | FIX-015: 基于编辑级状态判定 |
+| `intended_missing` | `NA` | 声明行数 − 观测突变数 | （已弃用，向后兼容） |
+| `structural` / `near_homolog` / `scattered_snv` | 非预期三类计数 | 同左 | 各类别非预期突变数 |
+| `starter_vs_ref_mutations` | 出发株相对骨架的变异总数（质控，不列入非预期） | 同左 | 亲本背景变异计数 |
+| `offtarget_search_validation_status` | `validated_via_self_test` | 同左 | FIX-018 验证状态元数据 |
+| `cfd_validation_status` | `disabled` | 同左 | FIX-018 验证状态元数据 |
+| `hsu_validation_status` | `experimental` | 同左 | FIX-018 验证状态元数据 |
+| `bulge_validation_status` | `experimental` | 同左 | FIX-018 验证状态元数据 |
 
-`intended_observed` 计的是**被掩码的突变条目**，不是「声明行中被命中的行数」。一条 cassette 声明匹配两条 JC 时，`observed` 可为 2 而 `declared` 为 1，此时 `intended_status=partial`。不做 HTML，不做逐突变长篇报告。
+`intended_events_observed` 计的是**被掩码的突变条目**，而 `intended_edits_*` 按**声明的编辑行**为单位进行评估。一条 cassette 声明匹配两条 JC 时，在 FIX-015 语义下该编辑行被评为 `complete`，`intended_events_observed` 计为 2，不会再错误地因为 `observed > declared` 导致判定偏差。
 
-`ClassifyResult.intended_declared` 等于传入 `classify()` 的 `intended` slice 长度。

@@ -51,6 +51,12 @@ pub fn write_unintended_tsv(
     Ok(())
 }
 
+/// Write the run summary.  Includes:
+///  - FIX-015 edit-level fields: `intended_edits_complete`, `intended_edits_partial`,
+///    `intended_edits_missing`, `intended_events_observed`
+///  - Deprecated (backward-compat): `intended_declared`, `intended_observed`,
+///    `intended_status`, `intended_missing`
+///  - FIX-018 provenance: validation status for scoring components
 pub fn write_summary(
     path: impl AsRef<Path>,
     result: &ClassifyResult,
@@ -68,22 +74,87 @@ pub fn write_summary(
         }
     }
     let (declared, observed, status, missing) = intended_summary_fields(intended_provided, result);
+    // FIX-015: edit-level breakdown (requires assess_intended_edits call upstream)
+    let (edits_complete, edits_partial, edits_missing, events_observed) =
+        intended_edit_level_fields(intended_provided, result);
     let text = format!(
         "editor\t{editor}\n\
+# -- Intended edit summary (FIX-015) --\n\
 intended_provided\t{}\n\
+intended_edits_declared\t{declared}\n\
+intended_edits_complete\t{edits_complete}\n\
+intended_edits_partial\t{edits_partial}\n\
+intended_edits_missing\t{edits_missing}\n\
+intended_events_observed\t{events_observed}\n\
+# -- Deprecated fields (backward compatibility) --\n\
 intended_declared\t{declared}\n\
 intended_observed\t{observed}\n\
 intended_status\t{status}\n\
 intended_missing\t{missing}\n\
+# -- Mutation class counts --\n\
 structural\t{n_s}\n\
 near_homolog\t{n_n}\n\
 scattered_snv\t{n_c}\n\
-starter_vs_ref_mutations\t{}\n",
+starter_vs_ref_mutations\t{}\n\
+# -- FIX-018 validation status --\n\
+offtarget_search_validation_status\tvalidated_via_self_test\n\
+cfd_validation_status\tdisabled\n\
+hsu_validation_status\texperimental\n\
+bulge_validation_status\texperimental\n",
         if intended_provided { "yes" } else { "no" },
         result.starter_vs_ref,
     );
     std::fs::write(path, text)?;
     Ok(())
+}
+
+/// Returns (complete, partial, missing, events_observed) for edit-level summary.
+///
+/// Uses `ClassifyResult.intended_edit_assessments` when available;
+/// falls back to approximate event-count logic for backward compatibility.
+fn intended_edit_level_fields(
+    provided: bool,
+    result: &ClassifyResult,
+) -> (String, String, String, String) {
+    if !provided {
+        return ("NA".into(), "NA".into(), "NA".into(), "NA".into());
+    }
+    if let Some(assessments) = &result.intended_edit_assessments {
+        use prokadiff_classify::IntendedEditStatus;
+        let complete = assessments
+            .iter()
+            .filter(|a| a.status == IntendedEditStatus::Complete)
+            .count();
+        let partial = assessments
+            .iter()
+            .filter(|a| a.status == IntendedEditStatus::Partial)
+            .count();
+        let missing = assessments
+            .iter()
+            .filter(|a| a.status == IntendedEditStatus::Missing)
+            .count();
+        let events: usize = assessments.iter().map(|a| a.matched_event_ids.len()).sum();
+        (
+            complete.to_string(),
+            partial.to_string(),
+            missing.to_string(),
+            events.to_string(),
+        )
+    } else {
+        // Approximate from event count (pre-FIX-015 path)
+        let declared = result.intended_declared;
+        let observed = result.intended_observed.len();
+        if declared == 0 {
+            return ("NA".into(), "NA".into(), "NA".into(), "NA".into());
+        }
+        // Treat observed events as complete edits (approximate)
+        (
+            observed.to_string(),
+            "0".into(),
+            declared.saturating_sub(observed).to_string(),
+            observed.to_string(),
+        )
+    }
 }
 
 fn intended_summary_fields(
@@ -103,12 +174,34 @@ fn intended_summary_fields(
             "NA".into(),
         );
     }
-    let status = if observed == declared {
-        "all_observed"
-    } else if observed == 0 {
-        "none_observed"
+    // FIX-015: status is now determined by edit-level assessment, not raw event counts
+    // Use assessments if available; fall back to event count for backward compat.
+    let status = if let Some(assessments) = &result.intended_edit_assessments {
+        use prokadiff_classify::IntendedEditStatus;
+        let missing = assessments
+            .iter()
+            .filter(|a| a.status == IntendedEditStatus::Missing)
+            .count();
+        let partial = assessments
+            .iter()
+            .filter(|a| a.status == IntendedEditStatus::Partial)
+            .count();
+        if missing == 0 && partial == 0 {
+            "all_observed"
+        } else if missing == declared {
+            "none_observed"
+        } else {
+            "partial"
+        }
     } else {
-        "partial"
+        // Legacy event-count comparison
+        if observed >= declared {
+            "all_observed"
+        } else if observed == 0 {
+            "none_observed"
+        } else {
+            "partial"
+        }
     };
     (
         declared.to_string(),
@@ -257,6 +350,7 @@ mod tests {
                 .collect(),
             intended_declared: declared,
             starter_vs_ref,
+            intended_edit_assessments: None,
         }
     }
 

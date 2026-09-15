@@ -54,24 +54,37 @@ GAGTCCGAGCAGAAGAAGAA	chr1	250	GAGTCCGAGCAGAAGAACAAGGG	-	1
         assert_eq!(sites[1].pam, "GGG");
     }
 
+    /// Parser unit test for the FlashFry adapter.
+    /// Uses FlashFry 1.15 native column names and the documented 0-based half-open
+    /// coordinate convention.  NOT an E2E oracle parity test.
     #[test]
     fn parses_flashfry_output() {
+        // FlashFry 1.15 native column layout:
+        //   contig  start(0-based)  stop(0-based exclusive)  target  orientation(FWD/RVS)  ...
+        // ProkaDiff conversion: start = ff_start + 1, end = ff_stop
         let sample = "\
-contig	start	stop	strand	target	mismatches	cfd	hsu
-NC_000913.3	500	523	+	GAGTCCGAGCAGAAGAAGAATGG	0	1.0000	99.5
-NC_000913.3	1200	1223	-	GAGTCCGAGCAGAAGAACAACGG	1	0.7500	82.1
+contig\tstart\tstop\torientation\ttarget\tnumberOfMismatches\tDoench2016CFDScore\tHsu2013
+NC_000913.3\t500\t523\tFWD\tGAGTCCGAGCAGAAGAAGAATGG\t0\t1.0000\t99.5
+NC_000913.3\t1200\t1223\tRVS\tGAGTCCGAGCAGAAGAACAACGG\t1\t0.7500\t82.1
 ";
         let sites = parse_flashfry(sample).expect("should parse FlashFry output");
         assert_eq!(sites.len(), 2);
         assert_eq!(sites[0].seq_id, "NC_000913.3");
-        assert_eq!(sites[0].start, 500);
-        assert_eq!(sites[0].end, 523);
-        assert_eq!(sites[0].strand, Strand::Plus);
+        // Coordinate conversion: 500 (0-based) → 501 (1-based), stop=523 → end=523
+        assert_eq!(sites[0].start, 501, "0-based start 500 → 1-based 501");
+        assert_eq!(
+            sites[0].end, 523,
+            "0-based exclusive stop 523 → 1-based inclusive end 523"
+        );
+        assert_eq!(sites[0].strand, Strand::Plus, "FWD → Plus");
         assert_eq!(sites[0].mismatches, 0);
         assert_eq!(sites[0].cfd_score, Some(1.0));
         assert_eq!(sites[0].hsu_score, Some(99.5));
 
-        assert_eq!(sites[1].strand, Strand::Minus);
+        // 1200 → 1201, stop=1223 → end=1223
+        assert_eq!(sites[1].start, 1201);
+        assert_eq!(sites[1].end, 1223);
+        assert_eq!(sites[1].strand, Strand::Minus, "RVS → Minus");
         assert_eq!(sites[1].mismatches, 1);
         assert_eq!(sites[1].cfd_score, Some(0.75));
     }

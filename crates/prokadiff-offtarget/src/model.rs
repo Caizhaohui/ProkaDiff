@@ -26,8 +26,8 @@ impl FromStr for Strand {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim() {
-            "+" | "plus" | "1" | "F" | "FORWARD" => Ok(Self::Plus),
-            "-" | "minus" | "-1" | "R" | "REVERSE" => Ok(Self::Minus),
+            "+" | "plus" | "1" | "F" | "FORWARD" | "FWD" => Ok(Self::Plus),
+            "-" | "minus" | "-1" | "R" | "REVERSE" | "RVS" => Ok(Self::Minus),
             other => Err(format!("unknown strand: {other}")),
         }
     }

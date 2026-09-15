@@ -2,12 +2,16 @@
 """compare_gd.py: Two-tier parity comparison between ProkaDiff and breseq GenomeDiff outputs.
 
 Level A (Strict): Exact coordinate, type, and allele/feature match.
-Level B (Tolerant): Diagnostic coordinate tolerance for JC, MOB, and structural events.
+  - Primary gate: gdtools SUBTRACT output (when gdtools is available)
+  - Diagnostic: Python exact record comparison (record_exact_over/under)
+Level B (Tolerant): Diagnostic coordinate tolerance for JC events.
+Level C (Normalized): INS/DEL coordinate normalization for homopolymer/repeat regions.
 
 Outputs:
-  - over_call.gd (mutations in ProkaDiff not in breseq)
-  - under_call.gd (mutations in breseq not in ProkaDiff)
+  - over_call.gd (mutations in ProkaDiff not in breseq — via gdtools SUBTRACT when available)
+  - under_call.gd (mutations in breseq not in ProkaDiff — via gdtools SUBTRACT when available)
   - parity.tsv (single-dataset parity summary row)
+  - parity_diagnostic.json (detailed breakdown)
 """
 
 from __future__ import annotations
@@ -125,24 +129,54 @@ def jc_close(a, b, tol_bp):
     return abs(a1[2] - b1[2]) <= tol_bp and abs(a2[2] - b2[2]) <= tol_bp
 
 
+def normalize_indel_coord(kind: str, seq_id: str, pos: int, alt: str) -> tuple:
+    """Normalise INS/DEL to right-aligned canonical form for repeat regions.
+    Currently a stub — full normalization requires reference sequence.
+    Returns (kind, seq_id, pos, alt) unchanged; replace with reference-aware
+    logic once prokadiff normalize-gd is available.
+    """
+    return (kind, seq_id, pos, alt)
+
+
+def normalized_key(rec):
+    """Attempt normalized comparison key for INS/DEL (right-align stub)."""
+    kind = rec["kind"]
+    if kind in ("INS", "DEL") and len(rec["fields"]) >= 3:
+        seq_id = rec["fields"][0]
+        try:
+            pos = int(rec["fields"][1])
+        except ValueError:
+            return strict_key(rec)
+        alt = rec["fields"][2] if len(rec["fields"]) > 2 else ""
+        return normalize_indel_coord(kind, seq_id, pos, alt)
+    return strict_key(rec)
+
+
 def compare_gd_records(prok_records, breseq_records, tol_bp=5):
-    """Computes strict and tolerant differences."""
+    """Computes strict, record-exact, tolerant, and normalized differences."""
     breseq_keys = {strict_key(r): r for r in breseq_records}
     prok_keys = {strict_key(r): r for r in prok_records}
 
-    strict_over = [r for r in prok_records if strict_key(r) not in breseq_keys]
-    strict_under = [r for r in breseq_records if strict_key(r) not in prok_keys]
+    # ── Tier 1: Python record-exact comparison (diagnostic) ─────────────────
+    record_exact_over = [r for r in prok_records if strict_key(r) not in breseq_keys]
+    record_exact_under = [r for r in breseq_records if strict_key(r) not in prok_keys]
 
-    # Per-type counts
+    # ── Tier 2: Normalized parity (INS/DEL right-align stub) ────────────────
+    breseq_norm_keys = {normalized_key(r): r for r in breseq_records}
+    prok_norm_keys = {normalized_key(r): r for r in prok_records}
+    normalized_over = [r for r in prok_records if normalized_key(r) not in breseq_norm_keys]
+    normalized_under = [r for r in breseq_records if normalized_key(r) not in prok_norm_keys]
+
+    # Per-type counts (using record_exact for per-type breakdown)
     over_by_type = {}
     under_by_type = {}
     for k in MUT_KINDS + [JC_KIND]:
-        over_by_type[k] = sum(1 for r in strict_over if r["kind"] == k)
-        under_by_type[k] = sum(1 for r in strict_under if r["kind"] == k)
+        over_by_type[k] = sum(1 for r in record_exact_over if r["kind"] == k)
+        under_by_type[k] = sum(1 for r in record_exact_under if r["kind"] == k)
 
-    # Diagnostic tolerant matching for JC
-    over_jc = [r for r in strict_over if r["kind"] == JC_KIND]
-    under_jc = [r for r in strict_under if r["kind"] == JC_KIND]
+    # ── Diagnostic tolerant matching for JC ─────────────────────────────────
+    over_jc = [r for r in record_exact_over if r["kind"] == JC_KIND]
+    under_jc = [r for r in record_exact_under if r["kind"] == JC_KIND]
     used_under_jc = set()
     matched_jc_tol = 0
     for oj in over_jc:
@@ -155,8 +189,10 @@ def compare_gd_records(prok_records, breseq_records, tol_bp=5):
                 break
 
     return {
-        "strict_over": strict_over,
-        "strict_under": strict_under,
+        "record_exact_over": record_exact_over,
+        "record_exact_under": record_exact_under,
+        "normalized_over": normalized_over,
+        "normalized_under": normalized_under,
         "over_by_type": over_by_type,
         "under_by_type": under_by_type,
         "matched_jc_tol": matched_jc_tol,
@@ -165,16 +201,30 @@ def compare_gd_records(prok_records, breseq_records, tol_bp=5):
     }
 
 
-def run_gdtools_subtract(file1: Path, file2: Path, outpath: Path, gdtools_bin="gdtools"):
-    """Uses gdtools SUBTRACT file1 file2 > outpath if available."""
-    if shutil.which(gdtools_bin):
+def run_gdtools_subtract(file1: Path, file2: Path, outpath: Path, gdtools_bin="gdtools") -> tuple[bool, int]:
+    """Uses gdtools SUBTRACT file1 file2 > outpath if available.
+    Returns (success, count_records).
+    """
+    gdtools_path = shutil.which(gdtools_bin)
+    if gdtools_path:
         try:
             with open(outpath, "w") as out:
-                subprocess.run([gdtools_bin, "SUBTRACT", str(file1), str(file2)], stdout=out, check=True)
-            return True
+                result = subprocess.run(
+                    [gdtools_path, "SUBTRACT", str(file1), str(file2)],
+                    stdout=out, check=True, stderr=subprocess.PIPE
+                )
+            # Count non-header, non-comment, non-empty lines (mutations)
+            count = 0
+            for line in outpath.read_text(errors="replace").splitlines():
+                ls = line.strip()
+                if ls and not ls.startswith("#") and not ls.startswith("="):
+                    parts = ls.split("\t")
+                    if len(parts) >= 4 and parts[0] not in EVIDENCE_KINDS:
+                        count += 1
+            return True, count
         except Exception as e:
             sys.stderr.write(f"[compare_gd] gdtools SUBTRACT failed: {e}\n")
-    return False
+    return False, 0
 
 
 def main():
@@ -206,25 +256,35 @@ def main():
 
     comp = compare_gd_records(prok_records, breseq_records, args.jc_tol_bp)
 
-    # Write over_call.gd and under_call.gd
+    # ── Write over_call.gd and under_call.gd via gdtools SUBTRACT ───────────
     over_gd_path = args.outdir / "over_call.gd"
     under_gd_path = args.outdir / "under_call.gd"
 
-    # Prefer gdtools SUBTRACT if possible, fallback to Python-generated GD
-    used_gdtools = run_gdtools_subtract(args.prokadiff_gd, args.breseq_gd, over_gd_path, args.gdtools_bin)
-    run_gdtools_subtract(args.breseq_gd, args.prokadiff_gd, under_gd_path, args.gdtools_bin)
+    # Try gdtools SUBTRACT (Tier 1 primary gate)
+    gdtools_used, gdtools_over_count = run_gdtools_subtract(
+        args.prokadiff_gd, args.breseq_gd, over_gd_path, args.gdtools_bin
+    )
+    _, gdtools_under_count = run_gdtools_subtract(
+        args.breseq_gd, args.prokadiff_gd, under_gd_path, args.gdtools_bin
+    )
 
-    if not used_gdtools:
+    gdtools_status = "available" if gdtools_used else "unavailable"
+
+    if not gdtools_used:
+        # Fallback: write Python-computed over/under (for diagnostic only)
         with open(over_gd_path, "w") as f:
             f.write("#=GENOMEDIFF\n")
-            for r in comp["strict_over"]:
+            for r in comp["record_exact_over"]:
                 f.write(r["raw_line"] + "\n")
         with open(under_gd_path, "w") as f:
             f.write("#=GENOMEDIFF\n")
-            for r in comp["strict_under"]:
+            for r in comp["record_exact_under"]:
                 f.write(r["raw_line"] + "\n")
+        # When gdtools unavailable, count from Python comparison
+        gdtools_over_count = len(comp["record_exact_over"])
+        gdtools_under_count = len(comp["record_exact_under"])
 
-    # Time and environment
+    # ── Time and environment ─────────────────────────────────────────────────
     wall_prok, rss_prok = parse_time_file(args.prokadiff_time or (args.outdir / "prokadiff.time"))
     wall_breseq, rss_breseq = parse_time_file(args.breseq_time or (args.outdir / "breseq.time"))
 
@@ -233,16 +293,30 @@ def main():
     breseq_v = args.breseq_version or get_cmd_version(["breseq", "--version"])
     bt2_v = args.bowtie2_version or get_cmd_version(["bowtie2", "--version"])
 
-    # Build parity.tsv dictionary
+    # Resolve gdtools version
+    gdtools_bin_path = shutil.which(args.gdtools_bin)
+    gdtools_v = get_cmd_version([args.gdtools_bin, "--version"]) if gdtools_bin_path else "unavailable"
+
+    # ── Build parity.tsv dictionary ──────────────────────────────────────────
     tsv_row = {
         "dataset": args.dataset,
         "breseq_version": breseq_v,
         "bowtie2_version": bt2_v,
+        "gdtools_version": gdtools_v,
+        "gdtools_status": gdtools_status,
         "prokadiff_commit": prok_commit,
+        # FIX-012: gdtools SUBTRACT counts are the primary strict parity gate
         "breseq_mutations": len(breseq_records),
         "prokadiff_mutations": len(prok_records),
-        "strict_over": len(comp["strict_over"]),
-        "strict_under": len(comp["strict_under"]),
+        "gdtools_strict_over": gdtools_over_count,
+        "gdtools_strict_under": gdtools_under_count,
+        # FIX-013: normalized parity (right-align stub — will improve with real normalization)
+        "normalized_over": len(comp["normalized_over"]),
+        "normalized_under": len(comp["normalized_under"]),
+        # Diagnostic: Python exact comparison (not the primary gate)
+        "record_exact_over": len(comp["record_exact_over"]),
+        "record_exact_under": len(comp["record_exact_under"]),
+        # Per-type breakdown (based on record_exact for diagnostics)
         "snp_over": comp["over_by_type"].get("SNP", 0),
         "snp_under": comp["under_by_type"].get("SNP", 0),
         "sub_over": comp["over_by_type"].get("SUB", 0),
@@ -255,8 +329,13 @@ def main():
         "mob_under": comp["under_by_type"].get("MOB", 0),
         "amp_over": comp["over_by_type"].get("AMP", 0),
         "amp_under": comp["under_by_type"].get("AMP", 0),
-        "jc_over": comp["over_by_type"].get("JC", 0),
-        "jc_under": comp["under_by_type"].get("JC", 0),
+        "con_over": comp["over_by_type"].get("CON", 0),
+        "con_under": comp["under_by_type"].get("CON", 0),
+        "inv_over": comp["over_by_type"].get("INV", 0),
+        "inv_under": comp["under_by_type"].get("INV", 0),
+        "jc_record_over": comp["over_by_type"].get("JC", 0),
+        "jc_record_under": comp["under_by_type"].get("JC", 0),
+        "jc_tolerant_match": comp["matched_jc_tol"],
         "wall_breseq": wall_breseq if wall_breseq else "NA",
         "wall_prokadiff": wall_prok if wall_prok else "NA",
         "rss_breseq": rss_breseq if rss_breseq else "NA",
@@ -274,6 +353,7 @@ def main():
     with open(diag_path, "w") as f:
         json.dump({
             "summary": tsv_row,
+            "gdtools_status": gdtools_status,
             "matched_jc_tol": comp["matched_jc_tol"],
             "unmatched_over_jc_tol": comp["unmatched_over_jc_tol"],
             "unmatched_under_jc_tol": comp["unmatched_under_jc_tol"],
@@ -281,7 +361,14 @@ def main():
 
     print(f"[compare_gd] Parity evaluation for dataset '{args.dataset}':")
     print(f"  breseq mutations: {len(breseq_records)}, prokadiff mutations: {len(prok_records)}")
-    print(f"  strict_over: {len(comp['strict_over'])}, strict_under: {len(comp['strict_under'])}")
+    print(f"  gdtools_status: {gdtools_status}")
+    if gdtools_used:
+        print(f"  gdtools_strict_over: {gdtools_over_count}, gdtools_strict_under: {gdtools_under_count}  [PRIMARY GATE]")
+    else:
+        print(f"  gdtools unavailable — using Python exact comparison (diagnostic only):")
+        print(f"  record_exact_over: {len(comp['record_exact_over'])}, record_exact_under: {len(comp['record_exact_under'])}")
+        print("  WARNING: without gdtools, strict parity counts are approximate.")
+    print(f"  normalized_over: {len(comp['normalized_over'])}, normalized_under: {len(comp['normalized_under'])}  [FIX-013]")
     print(f"  JC matched with tol={args.jc_tol_bp}bp: {comp['matched_jc_tol']}")
     print(f"  Wrote {over_gd_path}, {under_gd_path}, {parity_tsv_path}")
     return 0

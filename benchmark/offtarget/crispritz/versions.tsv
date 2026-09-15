@@ -1,0 +1,4 @@
+tool	version	status	notes
+crispritz	NOT_AVAILABLE	BLOCKED_EXTERNAL_DEPENDENCY	CRISPRitz 2.8.1 not installed; bulge gates remain experimental
+prokadiff	f46a64c	available	current HEAD at harness creation
+bowtie2	2.5.4	available	/hpcfs/fhome/caizhh/.conda/envs/BactGenome/bin/bowtie2

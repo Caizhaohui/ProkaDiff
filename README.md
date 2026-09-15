@@ -20,8 +20,8 @@ By comparing whole-genome sequencing (WGS) data of the **starter strain (parent)
 - **Comprehensive Mutation Detection**: Calls single-nucleotide polymorphisms (SNPs), small indels (INS/DEL), large structural deletions, and novel sequence junctions (JC) mediated by mobile elements (e.g., IS transposons) or genomic rearrangements.
 - **Multi-Class Unintended Mutation Categorization**:
   - `structural`: Mobile element insertions, genomic rearrangements, novel junctions, and large deletions (>2 bp).
-  - `near_homolog`: Off-target mutations located near spacer sequence homologs and valid PAM motifs (e.g., Cas9 `NGG`, Cas12a `TTTV`).
-  - `scattered_snv`: Genome-wide scattered point mutations and indels associated with repair machinery or stress responses.
+  - `near_homolog`: Small variants located near computationally predicted guide-homologous candidate sites with valid PAM motifs (e.g., Cas9 `NGG`, Cas12a `TTTV`). Whether these sites represent genuine off-target cleavage events requires experimental validation.
+  - `scattered_snv` (legacy class name): Distal small variants not associated with nearby predicted guide-homologous sites. May arise from various sources including spontaneous mutation or culture drift; specific mechanism is not inferred from sequencing alone.
 - **Rust-Native Engine**: Multi-threaded execution, BAM parsing, and two-stage split-read junction discovery are implemented in Rust around system Bowtie2 alignment.
 - **Intended Edit Masking**: Optional intended-mutation specification to automatically subtract expected edits and assess targeting outcome.
 
@@ -231,19 +231,19 @@ graph TD
     A["Unintended Mutations<br/>(SNP / INS / DEL / MOB / JC)"] --> B{"Is Structural Event?<br/>• MOB, JC, AMP, CON<br/>• Large DEL > 2 bp"}
     B -- "Yes" --> C["Class (3): structural<br/>(Transposons, rearrangements, large deletions)"]
     B -- "No: Point mutations & short indels<br/>(SNP, INS, DEL ≤ 2 bp)" --> D{"Near Spacer Homolog + PAM?<br/>• ≤ 4 mismatches<br/>• Distance ≤ 50 bp<br/>• Cas9 / Cas12a"}
-    D -- "Yes" --> E["Class (1): near_homolog<br/>(Off-target cleavage SNPs & indels)"]
-    D -- "No (or --editor dsb)" --> F["Class (2): scattered_snv<br/>(Genome-wide scattered SNPs & short indels)"]
+    D -- "Yes" --> E["Class (1): near_homolog<br/>(Small variants near predicted guide-homologous sites)"]
+    D -- "No (or --editor dsb)" --> F["Class (2): scattered_snv<br/>(Distal small variants — mechanism not inferred)"]
 ```
 
 1. **`structural` (Class 3)**:
    - Covers all large structural events: **novel sequence junctions (`JC`)**, **mobile genetic element insertions (`MOB`)**, **amplifications (`AMP`)**, **conversions (`CON`)**, and **large deletions (`DEL` > 2 bp)**.
    - Evaluated first to ensure structural rearrangements are never mislabeled as isolated point mutations.
 2. **`near_homolog` (Class 1)**:
-   - Covers **point mutations (`SNP`)** and **short indels (`INS`, `DEL` $\le 2$ bp)** located in close proximity (default $\le 50$ bp) to an off-target homologous spacer sequence ($\le 4$ mismatches) with a valid PAM motif (e.g., Cas9 `NGG`, Cas12a `TTTV`).
-   - Represents canonical RNA-guided Cas endonuclease off-target cleavage and repair.
-3. **`scattered_snv` (Class 2)**:
-   - Covers all remaining **point mutations (`SNP`)** and **short indels (`INS`, `DEL` $\le 2$ bp)** scattered across the chromosome away from homologous target sites.
-   - Associated with global cellular stress, DSB-triggered SOS response (error-prone DNA polymerases IV / V, DinB / UmuDC), or spontaneous culture drift.
+   - Covers **point mutations (`SNP`)** and **short indels (`INS`, `DEL` $\le 2$ bp)** located in close proximity (default $\le 50$ bp) to a computationally predicted guide-homologous candidate site ($\le 4$ mismatches) with a valid PAM motif (e.g., Cas9 `NGG`, Cas12a `TTTV`).
+   - **Note**: Computational proximity to a candidate site does not confirm off-target cleavage. Experimental validation (e.g., GUIDE-seq, CIRCLE-seq) is required to establish causality.
+3. **`scattered_snv` (Class 2, legacy name)**:
+   - Covers all remaining **point mutations (`SNP`)** and **short indels (`INS`, `DEL` $\le 2$ bp)** not associated with nearby predicted guide-homologous sites.
+   - Specific biological mechanism is not inferred from sequencing data alone. May include spontaneous mutation, culture drift, or other sources.
    - In `--editor dsb` mode (unguided DSB), all non-structural mutations directly enter this class.
 
 ---

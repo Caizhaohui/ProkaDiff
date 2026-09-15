@@ -48,6 +48,9 @@ pub struct ClassifyResult {
     /// Number of rows in the `--intended` table (`intended.len()`). Zero when omitted.
     pub intended_declared: usize,
     pub starter_vs_ref: usize,
+    /// Per-edit assessment (FIX-015): one entry per row in the `--intended` table.
+    /// `None` when no intended table was provided.
+    pub intended_edit_assessments: Option<Vec<crate::intended::IntendedEditAssessment>>,
 }
 
 pub fn classify(
@@ -108,11 +111,21 @@ pub fn classify(
         unintended.push(label_one(e, &sites, opts, pam_used.as_deref()));
     }
 
+    // FIX-015: build per-edit assessments using all mutations (including those in unintended)
+    let all_diff_entries: Vec<GdEntry> = diff.entries.clone();
+    let intended_edit_assessments = if intended.is_empty() {
+        None
+    } else {
+        use crate::intended::assess_intended_edits;
+        Some(assess_intended_edits(&all_diff_entries, intended))
+    };
+
     ClassifyResult {
         unintended,
         intended_observed: observed.into_iter().cloned().collect(),
         intended_declared: intended.len(),
         starter_vs_ref: starter_muts.len(),
+        intended_edit_assessments,
     }
 }
 

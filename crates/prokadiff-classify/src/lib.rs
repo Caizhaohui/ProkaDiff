@@ -9,7 +9,8 @@ mod intended;
 pub use classify::{classify, ClassifiedMutation, ClassifyOptions, ClassifyResult, MutationClass};
 pub use homolog::{scan_homologs, HomologSite, DEFAULT_MAX_MISMATCHES, DEFAULT_NEAR_DISTANCE};
 pub use intended::{
-    mask_intended, parse_intended, parse_intended_path, IntendedEdit, IntendedError,
+    assess_intended_edits, mask_intended, parse_intended, parse_intended_path, IntendedEdit,
+    IntendedEditAssessment, IntendedEditStatus, IntendedError,
 };
 
 use prokadiff_gd::GdKind;

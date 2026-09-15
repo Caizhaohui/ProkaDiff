@@ -10,12 +10,92 @@ pub enum IntendedError {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntendedEdit {
+    /// Unique identifier for this edit row.  If the TSV has an `edit_id` column
+    /// it is used; otherwise auto-generated as `edit_1`, `edit_2`, etc.
+    pub edit_id: String,
     pub seq_id: String,
     pub start: u64,
     pub end: u64,
     pub ref_allele: String,
     pub alt: String,
     pub kind: String,
+}
+
+// ── Edit-level assessment (FIX-015) ─────────────────────────────────────────
+
+/// Status of a single intended edit after comparison against observed mutations.
+///
+/// The comparison is at the **edit level** (one `IntendedEdit` row), not the
+/// **event count level**.  This prevents `observed > declared` when a cassette
+/// insertion is matched by multiple JC events.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntendedEditStatus {
+    /// All expected mutation events for this edit are present.
+    Complete,
+    /// At least one but not all expected events match.
+    Partial,
+    /// No matching mutation events found.
+    Missing,
+}
+
+impl IntendedEditStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Partial => "partial",
+            Self::Missing => "missing",
+        }
+    }
+}
+
+/// Per-edit assessment: which mutation IDs (GD record IDs) matched this edit.
+#[derive(Clone, Debug)]
+pub struct IntendedEditAssessment {
+    pub edit_id: String,
+    pub status: IntendedEditStatus,
+    /// IDs of GdEntry records that matched this intended edit.
+    pub matched_event_ids: Vec<u32>,
+}
+
+/// Assess each intended edit against the set of observed mutations.
+///
+/// Returns one `IntendedEditAssessment` per entry in `intended`.
+/// An edit is `Complete` when at least one matching event is found.
+/// (For cassette edits that may produce multiple JC events, the current
+/// implementation treats finding ≥ 1 match as Complete; future versions
+/// can require all expected events.)
+pub fn assess_intended_edits(
+    mutations: &[GdEntry],
+    intended: &[IntendedEdit],
+) -> Vec<IntendedEditAssessment> {
+    intended
+        .iter()
+        .map(|edit| {
+            let matched: Vec<u32> = mutations
+                .iter()
+                .filter_map(|e| {
+                    if matches_intended(e, edit) {
+                        // Use GD record numeric ID if parseable, else 0
+                        e.fields.first().and_then(|f| f.parse().ok()).or(Some(0))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let status = if matched.is_empty() {
+                IntendedEditStatus::Missing
+            } else {
+                // For now, finding any match = Complete (cassette multi-JC handled
+                // by the cassette branch in matches_intended returning true for each).
+                IntendedEditStatus::Complete
+            };
+            IntendedEditAssessment {
+                edit_id: edit.edit_id.clone(),
+                status,
+                matched_event_ids: matched,
+            }
+        })
+        .collect()
 }
 
 pub fn parse_intended(text: &str) -> Result<Vec<IntendedEdit>, IntendedError> {
@@ -49,6 +129,8 @@ pub fn parse_intended(text: &str) -> Result<Vec<IntendedEdit>, IntendedError> {
             .position(|c| c == name)
             .ok_or_else(|| IntendedError::Parse(format!("missing column {name}")))
     };
+    // edit_id column is optional — auto-generated when absent (FIX-015)
+    let i_edit_id: Option<usize> = cols.iter().position(|c| c == "edit_id");
     let i_seq = idx("seq_id")?;
     let i_start = idx_or_alias("start", "position")?;
     let i_end = idx("end")?;
@@ -65,7 +147,20 @@ pub fn parse_intended(text: &str) -> Result<Vec<IntendedEdit>, IntendedError> {
         let end: u64 = get(i_end)
             .parse()
             .map_err(|_| IntendedError::Parse(format!("line {}: bad end", n + 2)))?;
+        // Use provided edit_id or auto-generate (FIX-015)
+        let edit_id = match i_edit_id {
+            Some(idx) => {
+                let s = get(idx);
+                if s.is_empty() {
+                    format!("edit_{}", n + 1)
+                } else {
+                    s.to_string()
+                }
+            }
+            None => format!("edit_{}", n + 1),
+        };
         out.push(IntendedEdit {
+            edit_id,
             seq_id: get(i_seq).to_string(),
             start,
             end,
