@@ -1,0 +1,3 @@
+tool	version	status	notes
+cas-offinder	NOT AVAILABLE	BLOCKED_EXTERNAL_DEPENDENCY	Not installed in local environment; runner exits with descriptive error
+prokadiff	0.1.0	ACTIVE	Standalone search engine

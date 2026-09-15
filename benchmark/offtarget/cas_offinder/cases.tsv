@@ -1,0 +1,13 @@
+case_id	contig	expected_start	expected_end	strand	mismatches	pam	description
+cas9_exact_plus	chr	51	73	+	0	CGG	Exact match on plus strand
+cas9_exact_minus	chr	151	173	-	0	TGG	Exact match on minus strand
+cas9_1mm_plus	chr	251	273	+	1	CGG	1 mismatch at position 1 (distal)
+cas9_1mm_minus	chr	351	373	-	1	CGG	1 mismatch at position 20 (proximal)
+cas9_2mm	chr	451	473	+	2	AGG	2 mismatches
+cas9_3mm	chr	551	573	+	3	CGG	3 mismatches
+cas9_4mm	chr	651	673	+	4	CGG	4 mismatches
+cas9_5mm	chr	751	773	+	5	CGG	5 mismatches
+near_contig_start	chr	1	23	+	0	TGG	Site starting at contig index 1
+near_contig_end	chr	978	1000	+	0	CGG	Site ending at contig terminal index 1000
+plasmid_exact_plus	plasmid	101	123	+	0	TGG	Exact match on plasmid contig
+plasmid_2mm_minus	plasmid	251	273	-	2	TGG	2 mismatches on minus strand of plasmid

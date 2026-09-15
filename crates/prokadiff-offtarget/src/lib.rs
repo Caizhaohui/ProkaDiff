@@ -13,7 +13,10 @@ pub use io::{write_mutation_offtarget_links_tsv, write_offtarget_sites_tsv};
 pub use model::{
     BulgeType, MutationOffTargetLink, NucleaseProfile, OffTargetSite, PamSide, Strand,
 };
-pub use oracle::{parse_cas_offinder, parse_crispritz, parse_flashfry};
+pub use oracle::{
+    parse_cas_offinder, parse_cas_offinder_v2, parse_cas_offinder_v3, parse_crispritz,
+    parse_flashfry,
+};
 pub use rust_search::{
     scan_contig, scan_contig_bulge, scan_genome, scan_genome_bulge, BulgeSearchOptions,
 };
@@ -24,7 +27,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_cas_offinder_output() {
+    fn parser_accepts_cas_offinder_v2_sample() {
         let sample = "\
 GAGTCCGAGCAGAAGAAGAA	chr1	100	GAGTCCGAGCAGAAGAAGAATGG	+	0
 GAGTCCGAGCAGAAGAAGAA	chr1	250	GAGTCCGAGCAGAAGAACAAGGG	-	1
@@ -40,7 +43,7 @@ GAGTCCGAGCAGAAGAAGAA	chr1	250	GAGTCCGAGCAGAAGAACAAGGG	-	1
         assert_eq!(sites[0].strand, Strand::Plus);
         assert_eq!(sites[0].mismatches, 0);
         assert_eq!(sites[0].pam, "TGG");
-        assert_eq!(sites[0].search_backend, "cas-offinder");
+        assert_eq!(sites[0].search_backend, "cas-offinder-v2");
 
         // Site 2: 0-based 250 -> 1-based 251, len 23 -> end 273
         assert_eq!(sites[1].site_id, "cas_offinder_2");
@@ -148,7 +151,7 @@ chr1	2000	2024	GAGTCCGAGCAGAAGAACAATGG	NGG	1	dna	1	-	0.55
     }
 
     #[test]
-    fn rust_exact_matches_cas_offinder_format_output() {
+    fn parser_matches_exact_search_coordinate_convention() {
         let spacer = "GAGTCCGAGCAGAAGAAGAA";
         let profile = NucleaseProfile::spcas9();
 

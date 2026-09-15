@@ -1,0 +1,13 @@
+site_id	seq_id	start	end	strand	target_seq	pam	mismatches	bulge_type	bulge_size	search_backend	cfd_score	hsu_score
+site_1	chr	1	23	+	GAGTCCGAGCAGAAGAAGAATGG	TGG	0	none	0	rust_exact	NA	NA
+site_2	chr	51	73	+	GAGTCCGAGCAGAAGAAGAACGG	CGG	0	none	0	rust_exact	NA	NA
+site_3	chr	251	273	+	AAGTCCGAGCAGAAGAAGAACGG	CGG	1	none	0	rust_exact	NA	NA
+site_4	chr	451	473	+	AAGTCCGAGCAGAAGAACAAAGG	AGG	2	none	0	rust_exact	NA	NA
+site_5	chr	551	573	+	AATTCCGAGCAGAAGAACAACGG	CGG	3	none	0	rust_exact	NA	NA
+site_6	chr	651	673	+	AATTCCGAGCAGAATAACAACGG	CGG	4	none	0	rust_exact	NA	NA
+site_7	chr	751	773	+	AATTCCGAGCAGCATAACAACGG	CGG	5	none	0	rust_exact	NA	NA
+site_8	chr	978	1000	+	GAGTCCGAGCAGAAGAAGAACGG	CGG	0	none	0	rust_exact	NA	NA
+site_9	chr	151	173	-	CCATTCTTCTTCTGCTCGGACTC	TGG	0	none	0	rust_exact	NA	NA
+site_10	chr	351	373	-	CCGGTCTTCTTCTGCTCGGACTC	CGG	1	none	0	rust_exact	NA	NA
+site_11	plasmid	101	123	+	GAGTCCGAGCAGAAGAAGAATGG	TGG	0	none	0	rust_exact	NA	NA
+site_12	plasmid	251	273	-	CCATTGTTCTTCTGCTCGGACTT	TGG	2	none	0	rust_exact	NA	NA
