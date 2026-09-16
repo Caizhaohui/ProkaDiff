@@ -26,6 +26,7 @@ testdata/private/**
 
 testdata/generated/
 testdata/layer2/
+**/work/
 
 # Benchmark job outputs (templates stay tracked)
 benchmark/results/*

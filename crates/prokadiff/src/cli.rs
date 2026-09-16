@@ -21,13 +21,13 @@ pub const EDITOR_ROADMAP: &str =
 )]
 pub struct Cli {
     /// Starter-strain FASTQ. Repeatable: two consecutive files = one PE pair (R1 then R2).
-    #[arg(long, action = ArgAction::Append)]
+    #[arg(long, action = ArgAction::Append, num_args = 1..)]
     pub starter: Vec<PathBuf>,
     /// Edited-strain FASTQ. Same pairing rule as --starter.
-    #[arg(long, action = ArgAction::Append)]
+    #[arg(long, action = ArgAction::Append, num_args = 1..)]
     pub edited: Vec<PathBuf>,
     /// Coordinate-skeleton reference (FASTA or GenBank). Repeatable.
-    #[arg(long = "ref", action = ArgAction::Append)]
+    #[arg(long = "ref", action = ArgAction::Append, num_args = 1..)]
     pub refs: Vec<PathBuf>,
     /// Optional intended-edit table. Omitted → every post-subtract call is unintended.
     #[arg(long)]
@@ -88,10 +88,10 @@ pub enum Commands {
 
 #[derive(Parser, Debug)]
 pub struct EvidenceArgs {
-    #[arg(long = "ref", action = ArgAction::Append, required = true)]
+    #[arg(long = "ref", action = ArgAction::Append, num_args = 1.., required = true)]
     pub refs: Vec<PathBuf>,
     /// FASTQ: one file = SE; two consecutive files = one PE pair.
-    #[arg(long = "fastq", visible_alias = "reads", action = ArgAction::Append, required = true)]
+    #[arg(long = "fastq", visible_alias = "reads", action = ArgAction::Append, num_args = 1.., required = true)]
     pub fastq: Vec<PathBuf>,
     #[arg(long, default_value_t = 8)]
     pub threads: usize,

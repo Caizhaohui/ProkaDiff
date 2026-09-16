@@ -180,7 +180,19 @@ pub fn mask_intended<'a>(
 
 pub(crate) fn entry_intervals(e: &GdEntry) -> Vec<(String, u64, u64)> {
     match e.kind {
-        GdKind::Ra | GdKind::Un | GdKind::Mc => Vec::new(),
+        GdKind::Ra => Vec::new(),
+        GdKind::Un | GdKind::Mc => {
+            let Some(seq) = e.fields.first() else {
+                return Vec::new();
+            };
+            let Some(Ok(start)) = e.fields.get(1).map(|x| x.parse::<u64>()) else {
+                return Vec::new();
+            };
+            let Some(Ok(end)) = e.fields.get(2).map(|x| x.parse::<u64>()) else {
+                return Vec::new();
+            };
+            vec![(seq.clone(), start, end)]
+        }
         GdKind::Jc => {
             let mut v = Vec::new();
             if let (Some(s), Some(Ok(p))) =
@@ -528,11 +540,40 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                     IntendedEditStatus::Partial
                 }
             } else if !jc_matches.is_empty() {
+                let mut matched_valid_jc = false;
                 for jc in &jc_matches {
-                    matched_event_ids.push(jc.id);
+                    let side1_matches_start = jc
+                        .fields
+                        .get(1)
+                        .and_then(|p| p.parse::<u64>().ok())
+                        .map(|p| (p as i64 - edit.start as i64).abs() <= 5)
+                        .unwrap_or(false);
+                    let side2_matches_end = jc
+                        .fields
+                        .get(4)
+                        .and_then(|p| p.parse::<u64>().ok())
+                        .map(|p| (p as i64 - edit.end as i64).abs() <= 5)
+                        .unwrap_or(false);
+                    if side1_matches_start && side2_matches_end {
+                        matched_valid_jc = true;
+                        matched_event_ids.push(jc.id);
+                    } else {
+                        unexpected_event_ids.push(jc.id);
+                    }
                 }
-                notes.push("deletion supported by junction evidence".into());
-                IntendedEditStatus::Complete
+                if matched_valid_jc && unexpected_event_ids.is_empty() {
+                    notes.push("deletion supported by junction evidence".into());
+                    IntendedEditStatus::Complete
+                } else if matched_valid_jc {
+                    notes.push(
+                        "expected deletion junction present with additional aberrant junctions"
+                            .into(),
+                    );
+                    IntendedEditStatus::UnexpectedStructure
+                } else {
+                    notes.push("aberrant junction at deletion locus".into());
+                    IntendedEditStatus::UnexpectedStructure
+                }
             } else if !other_events.is_empty() {
                 for e in &other_events {
                     unexpected_event_ids.push(e.id);
@@ -1006,5 +1047,51 @@ mod tests {
         let assessments = assess_intended_edits(&[], &[edit]);
         assert_eq!(assessments[0].status, IntendedEditStatus::Missing);
         assert!(assessments[0].matched_event_ids.is_empty());
+    }
+
+    #[test]
+    fn test_aberrant_large_del_overlapping_target_yields_unexpected_structure() {
+        // Target: clean deletion 334876..=335735 (860 bp)
+        // Observed: 20 kb missing coverage MC from 331956 to 352202
+        let mc = GdEntry::mc(903, "chr", 331956, 352202, 0, 0);
+        let edit = IntendedEdit {
+            edit_id: "lacZ_del".into(),
+            seq_id: "chr".into(),
+            start: 334876,
+            end: 335735,
+            ref_allele: ".".into(),
+            alt: ".".into(),
+            kind: "del".into(),
+        };
+        let assessments = assess_intended_edits(&[mc], &[edit]);
+        assert_eq!(
+            assessments[0].status,
+            IntendedEditStatus::UnexpectedStructure
+        );
+        assert_eq!(assessments[0].unexpected_event_ids, vec![903]);
+        assert!(assessments[0].notes[0].contains("unexpected variant at deletion locus"));
+    }
+
+    #[test]
+    fn test_aberrant_jc_overlapping_target_yields_unexpected_structure() {
+        // Target: clean deletion 1000..=2000
+        // Observed: JC connecting 1000 to 50000 (aberrant translocation/IS insertion)
+        let jc = GdEntry::jc(77, "chr", 1000, "+", "chr", 50000, "-", 0);
+        let edit = IntendedEdit {
+            edit_id: "del_target".into(),
+            seq_id: "chr".into(),
+            start: 1000,
+            end: 2000,
+            ref_allele: ".".into(),
+            alt: ".".into(),
+            kind: "del".into(),
+        };
+        let assessments = assess_intended_edits(&[jc], &[edit]);
+        assert_eq!(
+            assessments[0].status,
+            IntendedEditStatus::UnexpectedStructure
+        );
+        assert_eq!(assessments[0].unexpected_event_ids, vec![77]);
+        assert!(assessments[0].notes[0].contains("aberrant junction at deletion locus"));
     }
 }
