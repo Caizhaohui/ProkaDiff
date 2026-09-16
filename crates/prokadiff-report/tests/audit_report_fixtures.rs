@@ -1,6 +1,6 @@
 use prokadiff_classify::{
     AnalysisProvenance, AnnotatedVariant, AuditResult, BoundaryAssessment, EvidenceSummary,
-    GuideRelation, IntendedEditAssessment, IntendedEditStatus, IntendedRelation,
+    GeneAnnotation, GuideRelation, IntendedEditAssessment, IntendedEditStatus, IntendedRelation,
     MobileElementAnnotation, OriginStatus, RefContig, ReviewPriority, SampleMetadata, SizeClass,
 };
 use prokadiff_gd::GdEntry;
@@ -327,4 +327,55 @@ fn test_post_edit_variants_and_provenance_tsv() {
 
     let _ = std::fs::remove_file(tmp_var_tsv);
     let _ = std::fs::remove_file(tmp_prov_tsv);
+}
+
+#[test]
+fn test_gene_annotation_rendering_in_report_and_tsv() {
+    let tmp_report = std::env::temp_dir().join("test_gene_report.md");
+    let tmp_tsv = std::env::temp_dir().join("test_gene_post_edit.tsv");
+
+    let gene_var = AnnotatedVariant {
+        variant_id: "VAR_0001".into(),
+        entry: GdEntry::snp(1, "NC_000913.3", 150, "C"),
+        origin_status: OriginStatus::PostEditDifferential,
+        size_class: SizeClass::Small,
+        intended_relation: IntendedRelation::None,
+        guide_relation: GuideRelation::None,
+        mobile_element_relation: None,
+        repeat_relation: None,
+        gene_annotation: Some(GeneAnnotation {
+            locus_tag: Some("b0001".into()),
+            gene_name: Some("dnaA".into()),
+            feature_type: "CDS".into(),
+            product: Some("replication initiator".into()),
+            consequence: Some("within CDS".into()),
+        }),
+        evidence: EvidenceSummary {
+            ra: true,
+            mc: false,
+            jc: false,
+            supporting_reads: Some(25),
+            coverage: Some(40.0),
+        },
+        review_priority: ReviewPriority::Review,
+        legacy_class: None,
+    };
+
+    let audit = AuditResult {
+        sample: mock_sample(),
+        intended_edits: vec![],
+        variants: vec![gene_var.clone()],
+        provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
+    };
+
+    write_markdown_report(&tmp_report, &audit, &mock_refs()).unwrap();
+    let rep_content = std::fs::read_to_string(&tmp_report).unwrap();
+    assert!(rep_content.contains("dnaA (b0001) [CDS]"));
+
+    write_post_edit_variants_tsv(&tmp_tsv, &[gene_var], &mock_refs()).unwrap();
+    let tsv_content = std::fs::read_to_string(&tmp_tsv).unwrap();
+    assert!(tsv_content.contains("dnaA\tb0001\tCDS"));
+
+    let _ = std::fs::remove_file(tmp_report);
+    let _ = std::fs::remove_file(tmp_tsv);
 }

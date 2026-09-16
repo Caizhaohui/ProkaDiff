@@ -180,3 +180,38 @@ fn parses_rel606_gbk_repeats() {
     assert!(is150 >= 5, "expected >=5 IS150 copies, found {}", is150);
     assert!(is186 >= 5, "expected >=5 IS186 copies, found {}", is186);
 }
+
+#[test]
+fn test_parses_genbank_features() {
+    use crate::fasta::parse_genbank_features;
+    let dir = std::env::temp_dir().join(format!("test_gbk_feat_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("feat.gbk");
+    {
+        let mut f = File::create(&path).unwrap();
+        write!(
+            f,
+            "LOCUS       chr1  1000 bp\nFEATURES             Location/Qualifiers\n     CDS             100..300\n                     /gene=\"dnaA\"\n                     /locus_tag=\"b0001\"\n                     /product=\"replication initiator\"\n     tRNA            complement(400..480)\n                     /gene=\"tRNA-Ala\"\n                     /locus_tag=\"b0002\"\nORIGIN\n        1 aaaa\n//\n"
+        )
+        .unwrap();
+    }
+    let feats = parse_genbank_features(&path).unwrap();
+    assert_eq!(feats.len(), 2);
+    assert_eq!(feats[0].seq_id, "chr1");
+    assert_eq!(feats[0].start, 100);
+    assert_eq!(feats[0].end, 300);
+    assert_eq!(feats[0].strand, 1);
+    assert_eq!(feats[0].feature_type, "CDS");
+    assert_eq!(feats[0].gene_name.as_deref(), Some("dnaA"));
+    assert_eq!(feats[0].locus_tag.as_deref(), Some("b0001"));
+    assert_eq!(feats[0].product.as_deref(), Some("replication initiator"));
+
+    assert_eq!(feats[1].seq_id, "chr1");
+    assert_eq!(feats[1].start, 400);
+    assert_eq!(feats[1].end, 480);
+    assert_eq!(feats[1].strand, -1);
+    assert_eq!(feats[1].feature_type, "tRNA");
+    assert_eq!(feats[1].gene_name.as_deref(), Some("tRNA-Ala"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}

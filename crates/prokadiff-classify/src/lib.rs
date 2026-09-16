@@ -8,9 +8,10 @@ mod homolog;
 mod intended;
 
 pub use audit::{
-    build_audit_result, AnalysisProvenance, AnnotatedVariant, AuditResult, EvidenceSummary,
-    GeneAnnotation, GuideRelation, IntendedRelation, MobileElementAnnotation, OriginStatus,
-    RepeatAnnotation, ReviewPriority, SampleMetadata, SizeClass,
+    build_audit_result, classify_is_family, find_gene_annotation, AnalysisProvenance,
+    AnnotatedFeature, AnnotatedVariant, AuditResult, EvidenceSummary, GeneAnnotation,
+    GuideRelation, IntendedRelation, MobileElementAnnotation, OriginStatus, RepeatAnnotation,
+    ReviewPriority, SampleMetadata, SizeClass,
 };
 pub use classify::{classify, ClassifiedMutation, ClassifyOptions, ClassifyResult, MutationClass};
 pub use homolog::{scan_homologs, HomologSite, DEFAULT_MAX_MISMATCHES, DEFAULT_NEAR_DISTANCE};

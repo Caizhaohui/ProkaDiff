@@ -148,6 +148,19 @@ pub struct RepeatAnnotation {
     pub copy_count: Option<u32>,
 }
 
+/// Genomic feature annotation input parsed from reference genome (e.g. GenBank).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnnotatedFeature {
+    pub seq_id: String,
+    pub start: u64,
+    pub end: u64,
+    pub strand: i8,
+    pub feature_type: String, // "CDS", "tRNA", "rRNA", "gene", etc.
+    pub locus_tag: Option<String>,
+    pub gene_name: Option<String>,
+    pub product: Option<String>,
+}
+
 /// Annotation for genomic features / genes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeneAnnotation {
@@ -221,6 +234,7 @@ pub fn build_audit_result(
     unintended_mutations: &[ClassifiedMutation],
     intended_observed: &[GdEntry],
     provenance: AnalysisProvenance,
+    features: &[AnnotatedFeature],
 ) -> AuditResult {
     let mut variants = Vec::new();
     let mut id_counter = 1usize;
@@ -248,6 +262,9 @@ pub fn build_audit_result(
 
         let size_class = classify_size(&entry.kind, entry);
         let evidence = determine_evidence(entry);
+        let pos = entry.position().unwrap_or(0);
+        let seq_id = entry.seq_id().unwrap_or("");
+        let gene_annotation = find_gene_annotation(seq_id, pos, features);
 
         variants.push(AnnotatedVariant {
             variant_id: format!("VAR_{id_counter:04}"),
@@ -258,7 +275,7 @@ pub fn build_audit_result(
             guide_relation: GuideRelation::OnTarget,
             mobile_element_relation: extract_mobile_element(entry),
             repeat_relation: None,
-            gene_annotation: None,
+            gene_annotation,
             evidence,
             review_priority: ReviewPriority::Info,
             legacy_class: None,
@@ -288,6 +305,9 @@ pub fn build_audit_result(
 
         let size_class = classify_size(&entry.kind, entry);
         let evidence = determine_evidence(entry);
+        let pos = entry.position().unwrap_or(0);
+        let seq_id = entry.seq_id().unwrap_or("");
+        let gene_annotation = find_gene_annotation(seq_id, pos, features);
 
         let guide_relation = match cm.class {
             MutationClass::NearHomolog => GuideRelation::CandidateOffTarget {
@@ -322,7 +342,7 @@ pub fn build_audit_result(
             guide_relation,
             mobile_element_relation: extract_mobile_element(entry),
             repeat_relation: None,
-            gene_annotation: None,
+            gene_annotation,
             evidence,
             review_priority,
             legacy_class: Some(cm.class),
@@ -395,15 +415,208 @@ fn determine_evidence(entry: &GdEntry) -> EvidenceSummary {
     }
 }
 
+/// Classify an insertion sequence / mobile element name into its standard IS family.
+pub fn classify_is_family(element_name: &str) -> String {
+    let s = element_name.trim();
+    let upper = s.to_ascii_uppercase();
+    if upper == "IS1"
+        || upper.starts_with("IS1_")
+        || upper.starts_with("IS1A")
+        || upper.starts_with("IS1B")
+        || upper.starts_with("IS1C")
+        || upper.starts_with("IS1D")
+        || upper.starts_with("IS1E")
+        || upper.starts_with("IS1F")
+        || upper.starts_with("IS1R")
+    {
+        "IS1 family".to_string()
+    } else if upper.starts_with("IS150")
+        || upper.starts_with("IS911")
+        || upper.starts_with("IS600")
+        || upper == "IS3"
+        || upper.starts_with("IS3_")
+        || upper.starts_with("IS3A")
+    {
+        "IS3 family".to_string()
+    } else if upper.starts_with("IS186")
+        || upper.starts_with("IS10")
+        || upper.starts_with("IS50")
+        || upper == "IS4"
+        || upper.starts_with("IS4_")
+    {
+        "IS4 family".to_string()
+    } else if upper.starts_with("IS903")
+        || upper.starts_with("IS1182")
+        || upper == "IS5"
+        || upper.starts_with("IS5_")
+    {
+        "IS5 family".to_string()
+    } else if upper == "IS2" || upper.starts_with("IS2_") {
+        "IS2 family".to_string()
+    } else if upper.starts_with("IS30") {
+        "IS30 family".to_string()
+    } else if upper.starts_with("IS110") || upper.starts_with("IS621") {
+        "IS110 family".to_string()
+    } else if upper.starts_with("IS21") {
+        "IS21 family".to_string()
+    } else if upper.starts_with("IS256") {
+        "IS256 family".to_string()
+    } else if upper.starts_with("IS630") {
+        "IS630 family".to_string()
+    } else if upper.starts_with("IS66") {
+        "IS66 family".to_string()
+    } else if upper.starts_with("TN3") || upper.starts_with("TN1000") {
+        "Tn3 family".to_string()
+    } else if upper.starts_with("TN7") {
+        "Tn7 family".to_string()
+    } else if upper.starts_with("IS") {
+        format!("{s} family")
+    } else {
+        "Mobile Element".to_string()
+    }
+}
+
+/// Find gene / genomic feature annotation overlapping or flanking the variant coordinate.
+pub fn find_gene_annotation(
+    seq_id: &str,
+    pos: u64,
+    features: &[AnnotatedFeature],
+) -> Option<GeneAnnotation> {
+    if features.is_empty() {
+        return None;
+    }
+
+    let seq_features: Vec<&AnnotatedFeature> =
+        features.iter().filter(|f| f.seq_id == seq_id).collect();
+
+    if seq_features.is_empty() {
+        return None;
+    }
+
+    // 1. Check if pos is inside any feature
+    let mut overlapping: Vec<&AnnotatedFeature> = seq_features
+        .iter()
+        .filter(|f| f.start <= pos && pos <= f.end)
+        .copied()
+        .collect();
+
+    if !overlapping.is_empty() {
+        // Prioritize CDS > tRNA > rRNA > gene > others
+        overlapping.sort_by_key(|f| match f.feature_type.as_str() {
+            "CDS" => 0,
+            "tRNA" => 1,
+            "rRNA" => 2,
+            "gene" => 3,
+            _ => 4,
+        });
+        let best = overlapping[0];
+        return Some(GeneAnnotation {
+            locus_tag: best.locus_tag.clone(),
+            gene_name: best.gene_name.clone(),
+            feature_type: best.feature_type.clone(),
+            product: best.product.clone(),
+            consequence: Some(format!("within {}", best.feature_type)),
+        });
+    }
+
+    // 2. Intergenic: find closest upstream and downstream features
+    let upstream = seq_features
+        .iter()
+        .filter(|f| f.end < pos)
+        .max_by_key(|f| f.end);
+    let downstream = seq_features
+        .iter()
+        .filter(|f| f.start > pos)
+        .min_by_key(|f| f.start);
+
+    match (upstream, downstream) {
+        (Some(up), Some(down)) => {
+            let up_name = up
+                .gene_name
+                .as_deref()
+                .or(up.locus_tag.as_deref())
+                .unwrap_or("unknown");
+            let down_name = down
+                .gene_name
+                .as_deref()
+                .or(down.locus_tag.as_deref())
+                .unwrap_or("unknown");
+            let up_dist = pos.saturating_sub(up.end);
+            let down_dist = down.start.saturating_sub(pos);
+            Some(GeneAnnotation {
+                locus_tag: None,
+                gene_name: Some(format!("{up_name}/{down_name}")),
+                feature_type: "intergenic".to_string(),
+                product: None,
+                consequence: Some(format!(
+                    "intergenic (+{} bp from {}, -{} bp to {})",
+                    up_dist, up_name, down_dist, down_name
+                )),
+            })
+        }
+        (Some(up), None) => {
+            let up_name = up
+                .gene_name
+                .as_deref()
+                .or(up.locus_tag.as_deref())
+                .unwrap_or("unknown");
+            let up_dist = pos.saturating_sub(up.end);
+            Some(GeneAnnotation {
+                locus_tag: None,
+                gene_name: Some(up_name.to_string()),
+                feature_type: "intergenic".to_string(),
+                product: None,
+                consequence: Some(format!(
+                    "intergenic (+{} bp downstream of {})",
+                    up_dist, up_name
+                )),
+            })
+        }
+        (None, Some(down)) => {
+            let down_name = down
+                .gene_name
+                .as_deref()
+                .or(down.locus_tag.as_deref())
+                .unwrap_or("unknown");
+            let down_dist = down.start.saturating_sub(pos);
+            Some(GeneAnnotation {
+                locus_tag: None,
+                gene_name: Some(down_name.to_string()),
+                feature_type: "intergenic".to_string(),
+                product: None,
+                consequence: Some(format!(
+                    "intergenic ({} bp upstream of {})",
+                    down_dist, down_name
+                )),
+            })
+        }
+        (None, None) => None,
+    }
+}
+
 fn extract_mobile_element(entry: &GdEntry) -> Option<MobileElementAnnotation> {
     if entry.kind != GdKind::Mob {
         return None;
     }
-    // Fields for MOB: [seq_id, position, repeat_name, strand, ...]
+    // Fields for MOB: [seq_id, position, repeat_name, strand, duplication_size]
     let element_name = entry.fields.get(2).cloned();
-    let tsd = entry.attrs.get("repeat_seq").cloned();
+    let family = element_name.as_deref().map(classify_is_family);
+
+    let tsd = entry.attrs.get("repeat_seq").cloned().or_else(|| {
+        entry.fields.get(4).and_then(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() || trimmed == "0" {
+                None
+            } else if trimmed.ends_with("bp") {
+                Some(trimmed.to_string())
+            } else {
+                Some(format!("{trimmed}bp"))
+            }
+        })
+    });
+
     Some(MobileElementAnnotation {
-        family: None,
+        family,
         element_name,
         insertion_site: entry.position(),
         target_site_duplication: tsd,
@@ -471,6 +684,7 @@ mod tests {
             &[unintended_cm],
             &[intended_entry],
             prov,
+            &[],
         );
 
         assert_eq!(audit.variants.len(), 2);
@@ -482,5 +696,80 @@ mod tests {
             OriginStatus::PostEditDifferential
         );
         assert_eq!(audit.variants[1].review_priority, ReviewPriority::Review);
+    }
+
+    #[test]
+    fn test_classify_is_family() {
+        assert_eq!(classify_is_family("IS1"), "IS1 family");
+        assert_eq!(classify_is_family("IS1A"), "IS1 family");
+        assert_eq!(classify_is_family("IS150"), "IS3 family");
+        assert_eq!(classify_is_family("IS186"), "IS4 family");
+        assert_eq!(classify_is_family("IS4"), "IS4 family");
+        assert_eq!(classify_is_family("IS903"), "IS5 family");
+        assert_eq!(classify_is_family("IS5"), "IS5 family");
+        assert_eq!(classify_is_family("IS30"), "IS30 family");
+        assert_eq!(classify_is_family("IS110"), "IS110 family");
+        assert_eq!(classify_is_family("IS621"), "IS110 family");
+        assert_eq!(classify_is_family("Tn1000"), "Tn3 family");
+        assert_eq!(classify_is_family("custom_element"), "Mobile Element");
+    }
+
+    #[test]
+    fn test_extract_mobile_element_with_tsd() {
+        let entry = GdEntry::mob(1, "chr", 1000, "IS1", "+", 9);
+        let mob = extract_mobile_element(&entry).expect("should extract mob");
+        assert_eq!(mob.element_name.as_deref(), Some("IS1"));
+        assert_eq!(mob.family.as_deref(), Some("IS1 family"));
+        assert_eq!(mob.insertion_site, Some(1000));
+        assert_eq!(mob.target_site_duplication.as_deref(), Some("9bp"));
+    }
+
+    #[test]
+    fn test_find_gene_annotation() {
+        let features = vec![
+            AnnotatedFeature {
+                seq_id: "chr".into(),
+                start: 100,
+                end: 300,
+                strand: 1,
+                feature_type: "CDS".into(),
+                locus_tag: Some("b0001".into()),
+                gene_name: Some("dnaA".into()),
+                product: Some("initiator".into()),
+            },
+            AnnotatedFeature {
+                seq_id: "chr".into(),
+                start: 500,
+                end: 700,
+                strand: 1,
+                feature_type: "CDS".into(),
+                locus_tag: Some("b0002".into()),
+                gene_name: Some("dnaN".into()),
+                product: Some("sliding clamp".into()),
+            },
+        ];
+
+        // Inside CDS
+        let ann = find_gene_annotation("chr", 200, &features).expect("should find annotation");
+        assert_eq!(ann.feature_type, "CDS");
+        assert_eq!(ann.gene_name.as_deref(), Some("dnaA"));
+        assert_eq!(ann.locus_tag.as_deref(), Some("b0001"));
+        assert_eq!(ann.consequence.as_deref(), Some("within CDS"));
+
+        // Intergenic between dnaA and dnaN
+        let ann_inter =
+            find_gene_annotation("chr", 400, &features).expect("should find intergenic");
+        assert_eq!(ann_inter.feature_type, "intergenic");
+        assert_eq!(ann_inter.gene_name.as_deref(), Some("dnaA/dnaN"));
+        assert!(ann_inter
+            .consequence
+            .as_ref()
+            .unwrap()
+            .contains("+100 bp from dnaA"));
+        assert!(ann_inter
+            .consequence
+            .as_ref()
+            .unwrap()
+            .contains("-100 bp to dnaN"));
     }
 }

@@ -338,6 +338,26 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
         run_timestamp: "2026-09-16T12:00:00Z".to_string(),
     };
 
+    let mut gbk_features = Vec::new();
+    for ref_path in &job.refs {
+        if let Ok(feats) = prokadiff_evidence::parse_genbank_features(ref_path) {
+            gbk_features.extend(feats);
+        }
+    }
+    let features: Vec<prokadiff_classify::AnnotatedFeature> = gbk_features
+        .into_iter()
+        .map(|f| prokadiff_classify::AnnotatedFeature {
+            seq_id: f.seq_id,
+            start: f.start,
+            end: f.end,
+            strand: f.strand,
+            feature_type: f.feature_type,
+            locus_tag: f.locus_tag,
+            gene_name: f.gene_name,
+            product: f.product,
+        })
+        .collect();
+
     let audit_result = prokadiff_classify::build_audit_result(
         sample_meta,
         classified
@@ -347,6 +367,7 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
         &classified.unintended,
         &classified.intended_observed,
         provenance,
+        &features,
     );
 
     let report_md = job.outdir.join("report.md");

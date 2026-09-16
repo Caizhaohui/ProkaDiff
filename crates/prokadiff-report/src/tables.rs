@@ -106,7 +106,7 @@ pub fn write_post_edit_variants_tsv(
     let mut w = BufWriter::new(File::create(path)?);
     writeln!(
         w,
-        "variant_id\tseq_id\tposition\tend\tgd_type\tref\talt\torigin_status\tintended_relation\tsize_class\treview_priority\tguide_relation\tguide_mismatches\tpam\tdist_to_site\tmobile_element\tevidence\tlegacy_class"
+        "variant_id\tseq_id\tposition\tend\tgd_type\tref\talt\torigin_status\tintended_relation\tsize_class\treview_priority\tguide_relation\tguide_mismatches\tpam\tdist_to_site\tmobile_element\tevidence\tgene\tlocus_tag\tfeature_type\tlegacy_class"
     )?;
 
     for v in variants {
@@ -145,11 +145,20 @@ pub fn write_post_edit_variants_tsv(
             None => "NONE".to_string(),
         };
 
+        let (gene_name, locus_tag, feat_type) = match &v.gene_annotation {
+            Some(g) => (
+                g.gene_name.as_deref().unwrap_or("NA"),
+                g.locus_tag.as_deref().unwrap_or("NA"),
+                g.feature_type.as_str(),
+            ),
+            None => ("NA", "NA", "NA"),
+        };
+
         let legacy_str = v.legacy_class.map(|c| c.as_str()).unwrap_or("none");
 
         writeln!(
             w,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             v.variant_id,
             seq_id,
             pos,
@@ -167,6 +176,9 @@ pub fn write_post_edit_variants_tsv(
             dist_str,
             mob_str,
             v.evidence.format_brief(),
+            gene_name,
+            locus_tag,
+            feat_type,
             legacy_str
         )?;
     }

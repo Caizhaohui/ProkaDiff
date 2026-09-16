@@ -369,11 +369,24 @@ fn write_structural_events(
         );
 
         let desc = match &v.mobile_element_relation {
-            Some(m) => format!(
-                "Mobile element {} insertion (TSD={})",
-                m.element_name.as_deref().unwrap_or("IS"),
-                m.target_site_duplication.as_deref().unwrap_or("none")
-            ),
+            Some(m) => {
+                let el = m.element_name.as_deref().unwrap_or("IS");
+                let fam_part = match &m.family {
+                    Some(f)
+                        if f != el
+                            && !f.to_ascii_uppercase().starts_with(&el.to_ascii_uppercase()) =>
+                    {
+                        format!(" [{f}]")
+                    }
+                    _ => String::new(),
+                };
+                format!(
+                    "Mobile element {}{} insertion (TSD={})",
+                    el,
+                    fam_part,
+                    m.target_site_duplication.as_deref().unwrap_or("none")
+                )
+            }
             None => match v.entry.kind {
                 GdKind::Del => {
                     let sz = v.entry.fields.get(2).cloned().unwrap_or_else(|| ".".into());
@@ -510,9 +523,12 @@ fn write_distal_small_variants(
 
     writeln!(
         w,
-        "| Variant ID | Type | Locus | Reference | Alternate | Evidence | Priority |"
+        "| Variant ID | Type | Locus | Gene / Region | Reference | Alternate | Evidence | Priority |"
     )?;
-    writeln!(w, "| :--- | :---: | :--- | :---: | :---: | :---: | :---: |")?;
+    writeln!(
+        w,
+        "| :--- | :---: | :--- | :--- | :---: | :---: | :---: | :---: |"
+    )?;
 
     for v in distal_vars {
         let locus = format!(
@@ -521,14 +537,38 @@ fn write_distal_small_variants(
             v.entry.position().unwrap_or(0)
         );
 
+        let gene_str = match &v.gene_annotation {
+            Some(g) => {
+                let name = g
+                    .gene_name
+                    .as_deref()
+                    .or(g.locus_tag.as_deref())
+                    .unwrap_or("unnamed");
+                if g.feature_type == "intergenic" {
+                    g.consequence
+                        .clone()
+                        .unwrap_or_else(|| format!("intergenic ({name})"))
+                } else {
+                    let locus_part = g
+                        .locus_tag
+                        .as_deref()
+                        .map(|l| format!(" ({l})"))
+                        .unwrap_or_default();
+                    format!("{name}{locus_part} [{}]", g.feature_type)
+                }
+            }
+            None => "-".to_string(),
+        };
+
         let (ref_b, alt_b) = crate::tables::variant_alleles(v, refs);
 
         writeln!(
             w,
-            "| **{}** | `{}` | {} | `{}` | `{}` | `{}` | {} |",
+            "| **{}** | `{}` | {} | {} | `{}` | `{}` | `{}` | {} |",
             v.variant_id,
             v.entry.kind.as_str(),
             locus,
+            gene_str,
             ref_b,
             alt_b,
             v.evidence.format_brief(),

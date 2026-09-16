@@ -202,6 +202,112 @@ pub fn parse_genbank_repeats(path: impl AsRef<Path>) -> Result<Vec<RepeatRegion>
     Ok(repeats)
 }
 
+/// Genomic feature (CDS, tRNA, rRNA) parsed from GenBank.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GenbankFeature {
+    pub seq_id: String,
+    pub start: u64,
+    pub end: u64,
+    pub strand: i8,
+    pub feature_type: String, // "CDS", "tRNA", "rRNA"
+    pub locus_tag: Option<String>,
+    pub gene_name: Option<String>,
+    pub product: Option<String>,
+}
+
+/// Parse CDS, tRNA, and rRNA features from a GenBank file.
+pub fn parse_genbank_features(path: impl AsRef<Path>) -> Result<Vec<GenbankFeature>> {
+    let path = path.as_ref();
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let reader = BufReader::new(file);
+    let mut features = Vec::new();
+    let mut curr_seq = String::from("chr");
+    let mut pending_feature: Option<GenbankFeature> = None;
+
+    for line in reader.lines() {
+        let line = line?;
+        let t = line.trim_start();
+        if t.to_ascii_uppercase().starts_with("LOCUS") {
+            if let Some(id) = t.split_whitespace().nth(1) {
+                curr_seq = id.to_string();
+            }
+        } else if t.to_ascii_uppercase().starts_with("ORIGIN") {
+            if let Some(feat) = pending_feature.take() {
+                features.push(feat);
+            }
+            break;
+        } else if (line.starts_with("     ") && !line.starts_with("      "))
+            || (!line.trim_start().starts_with('/')
+                && (t.starts_with("CDS")
+                    || t.starts_with("tRNA")
+                    || t.starts_with("rRNA")
+                    || t.starts_with("gene")))
+        {
+            // Feature line (5 spaces indent in standard GenBank)
+            if let Some(feat) = pending_feature.take() {
+                features.push(feat);
+            }
+            let (ftype, rest) = if let Some(r) = t.strip_prefix("CDS") {
+                ("CDS", r.trim())
+            } else if let Some(r) = t.strip_prefix("tRNA") {
+                ("tRNA", r.trim())
+            } else if let Some(r) = t.strip_prefix("rRNA") {
+                ("rRNA", r.trim())
+            } else if let Some(r) = t.strip_prefix("gene") {
+                ("gene", r.trim())
+            } else {
+                ("", "")
+            };
+
+            if !ftype.is_empty() {
+                let is_comp = rest.starts_with("complement(");
+                let clean_coords = rest
+                    .trim_start_matches("complement(")
+                    .trim_end_matches(')')
+                    .trim_start_matches("join(")
+                    .trim_end_matches(')');
+                // Take the first coordinate span if join
+                let first_span = clean_coords.split(',').next().unwrap_or(clean_coords);
+                if let Some((start_s, end_s)) = first_span.split_once("..") {
+                    let start_clean = start_s.trim().trim_start_matches('<');
+                    let end_clean = end_s.trim().trim_start_matches('>');
+                    if let (Ok(start), Ok(end)) =
+                        (start_clean.parse::<u64>(), end_clean.parse::<u64>())
+                    {
+                        let strand = if is_comp { -1 } else { 1 };
+                        pending_feature = Some(GenbankFeature {
+                            seq_id: curr_seq.clone(),
+                            start,
+                            end,
+                            strand,
+                            feature_type: ftype.to_string(),
+                            locus_tag: None,
+                            gene_name: None,
+                            product: None,
+                        });
+                    }
+                }
+            }
+        } else if let Some(ref mut feat) = pending_feature {
+            let sub_t = line.trim();
+            if let Some(rest) = sub_t.strip_prefix("/locus_tag=") {
+                feat.locus_tag = Some(rest.trim_matches('"').to_string());
+            } else if let Some(rest) = sub_t.strip_prefix("/gene=") {
+                feat.gene_name = Some(rest.trim_matches('"').to_string());
+            } else if let Some(rest) = sub_t.strip_prefix("/product=") {
+                feat.product = Some(rest.trim_matches('"').to_string());
+            }
+        }
+    }
+    if let Some(feat) = pending_feature.take() {
+        features.push(feat);
+    }
+    Ok(features)
+}
+
 /// Concatenate one or more FASTA/GBK paths into a single FASTA file for Bowtie2.
 pub fn write_combined_fasta(paths: &[impl AsRef<Path>], dest: &Path) -> Result<()> {
     let recs = read_references(paths)?;
