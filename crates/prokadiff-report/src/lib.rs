@@ -1,6 +1,8 @@
-//! unintended.tsv and a short run summary.
+mod markdown;
+mod tables;
 
-#![deny(unsafe_code)]
+pub use markdown::write_markdown_report;
+pub use tables::{write_edit_outcomes_tsv, write_post_edit_variants_tsv, write_provenance_tsv};
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -178,15 +180,15 @@ fn intended_summary_fields(
     // Use assessments if available; fall back to event count for backward compat.
     let status = if let Some(assessments) = &result.intended_edit_assessments {
         use prokadiff_classify::IntendedEditStatus;
+        let complete = assessments
+            .iter()
+            .filter(|a| a.status == IntendedEditStatus::Complete)
+            .count();
         let missing = assessments
             .iter()
             .filter(|a| a.status == IntendedEditStatus::Missing)
             .count();
-        let partial = assessments
-            .iter()
-            .filter(|a| a.status == IntendedEditStatus::Partial)
-            .count();
-        if missing == 0 && partial == 0 {
+        if complete == declared {
             "all_observed"
         } else if missing == declared {
             "none_observed"

@@ -4,26 +4,46 @@
 
 # ProkaDiff
 
-**Prokaryotic Genome Diff for Gene-Editing Quality Control — Starter vs. Edited WGS**
+**Post-edit Genome Audit & Edit Verification for Engineered Prokaryotes — Starter vs. Edited WGS**
 
-[中文说明](README.zh.md)
+[中文说明](README.zh.md) | [Scientific Model & Evidence Hierarchy](docs/scientific_model.md)
 
-`ProkaDiff` is a high-performance bioinformatics tool written in Rust for whole-genome unintended-mutation detection and quality control (QC) following prokaryotic gene editing. 
+`ProkaDiff` is a high-performance, WGS-first framework written in Rust for post-edit genome auditing, edit verification, and genome integrity assessment in engineered prokaryotes.
 
-By comparing whole-genome sequencing (WGS) data of the **starter strain (parent)** against the **edited strain (child)** using a reference genome as a coordinate skeleton, `ProkaDiff` accurately isolates bona fide editing-induced mutations ($M_{\text{edited}} \setminus M_{\text{starter}} \setminus M_{\text{intended}}$) and categorizes them into structured observational classes.
+### Core Questions Addressed
+
+When evaluating an engineered prokaryotic strain, `ProkaDiff` directly answers two essential questions:
+1. **Was the intended edit achieved?** Is the resulting genomic structure complete, partial, or rearranged?
+2. **What else happened across the genome?** What post-edit differential variants occurred, and what are their sequence and mechanistic associations?
+
+### Analysis Pipeline Order (Observation-First)
+
+`ProkaDiff` strictly follows an observation-first workflow, separating empirical evidence from biological hypothesis:
+```text
+Observed Genome Changes (Starter vs. Edited WGS)
+        ↓
+Edit Verification (Complete / Partial / Missing / UnexpectedStructure)
+        ↓
+Genome-wide Annotation (CDS, IS mobile elements, repeats, structural variants)
+        ↓
+Mechanistic Association (Candidate guide-dependent sites, collateral events)
+        ↓
+Human-readable Genome Audit Report (report.md with Executive Summary & Limitations)
+```
 
 ---
 
 ## Key Features
 
-- **Dual-Strain Differential Calling**: Mandatory starter-strain WGS subtracts background parental polymorphisms and culture drift, eliminating false positives caused by natural divergence from NCBI references.
-- **Comprehensive Mutation Detection**: Calls single-nucleotide polymorphisms (SNPs), small indels (INS/DEL), large structural deletions, and novel sequence junctions (JC) mediated by mobile elements (e.g., IS transposons) or genomic rearrangements.
-- **Multi-Class Unintended Mutation Categorization**:
-  - `structural`: Mobile element insertions, genomic rearrangements, novel junctions, and large deletions (>2 bp).
-  - `near_homolog`: Small variants located near computationally predicted guide-homologous candidate sites with valid PAM motifs (e.g., Cas9 `NGG`, Cas12a `TTTV`). Whether these sites represent genuine off-target cleavage events requires experimental validation.
-  - `scattered_snv` (legacy class name): Distal small variants not associated with nearby predicted guide-homologous sites. May arise from various sources including spontaneous mutation or culture drift; specific mechanism is not inferred from sequencing alone.
-- **Rust-Native Engine**: Multi-threaded execution, BAM parsing, and two-stage split-read junction discovery are implemented in Rust around system Bowtie2 alignment.
-- **Intended Edit Masking**: Optional intended-mutation specification to automatically subtract expected edits and assess targeting outcome.
+- **Dual-Strain Differential Baseline**: Mandatory starter-strain WGS subtracts background parental polymorphisms and culture drift, eliminating thousands of false positives caused by natural divergence from NCBI references.
+- **Intended Edit Verification**: Rigorous structural verification of declared edits (`Complete`, `Partial`, `Missing`, `UnexpectedStructure`), validating breakpoints and junction completeness.
+- **Comprehensive Variant Calling**: Identifies single-nucleotide polymorphisms (SNPs), small indels (INS/DEL), large structural deletions, and novel sequence junctions (JC) mediated by mobile elements (e.g., IS transposons) or rearrangements.
+- **Orthogonal Multi-Dimensional Annotation**:
+  - `structural`: Mobile element insertions (IS/MOB), genomic rearrangements, novel junctions, and large deletions (>2 bp).
+  - `candidate guide-dependent`: Small variants located near computationally predicted guide-homologous candidate sites with compatible PAM motifs.
+  - `collateral / distal`: Distal small variants not associated with nearby predicted guide-homologous sites (culture drift, replication stress, spontaneous events).
+- **Evidence Hierarchy**: Strict adherence to scientific integrity (Level 0: Observation $\to$ Level 1: Association $\to$ Level 2: Hypothesis $\to$ Level 3: Causality; see [docs/scientific_model.md](docs/scientific_model.md)).
+- **Human-Readable Audit Reporting**: Produces an executive `report.md` alongside machine-readable TSV outputs for laboratory decision-making.
 
 ---
 

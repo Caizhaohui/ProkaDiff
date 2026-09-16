@@ -16,7 +16,7 @@ pub const EDITOR_ROADMAP: &str =
 #[command(
     name = "prokadiff",
     version,
-    about = "Prokaryotic genome diff for gene-editing QC — starter vs edited WGS",
+    about = "Post-edit genome audit and edit verification for engineered prokaryotes — starter vs edited WGS",
     subcommand_negates_reqs = true
 )]
 pub struct Cli {

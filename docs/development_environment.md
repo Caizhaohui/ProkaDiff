@@ -17,6 +17,7 @@ ENV_PREFIX=/hpcfs/fhome/caizhh/.conda/envs/prokadiff
 mamba run -p "$ENV_PREFIX" cargo fmt --all --check
 mamba run -p "$ENV_PREFIX" cargo clippy --workspace --all-targets -- -D warnings
 mamba run -p "$ENV_PREFIX" cargo test --workspace
+python3 scripts/test_layer2_gd_compare.py
 ```
 
 The default workspace test command does not run FASTQ/Bowtie2 tests. Tests that

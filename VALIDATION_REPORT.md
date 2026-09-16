@@ -3,9 +3,27 @@
 ## 1. Commit Metadata
 
 - **start_commit**: `ec6be8c0a57377117ffed17c53d4ced34ef0a572`
-- **end_commit**: `40eda5a`
-- **generated_at**: 2026-09-15
-- **environment**: Linux x86_64, Slurm partition `qcpu_18i`, rustc 1.89.0, Bowtie2 2.5.4, breseq 0.40.2, gdtools 0.40.2
+- **end_commit**: `ac30888`
+- **generated_at**: 2026-09-16
+- **environment**: Linux x86_64, Slurm partition `qcpu_18i`, rustc 1.98.1, rust-analyzer 2026.08.24, Bowtie2 2.5.4, breseq 0.40.2, gdtools 0.40.2
+
+## Current requested parity rerun
+
+The pileup changes were validated in the project `prokadiff` environment. All
+FASTQ, Bowtie2, breseq, gdtools, and timing workloads ran on `qcpu_18i`.
+
+| Workload | Slurm job | Node | Result evidence |
+| :--- | :---: | :--- | :--- |
+| Synthetic DEL | `2673370` | `bnode1` | `gdtools SUBTRACT` strict over/under `0/0`; normalized over/under `1/1` for the JC evidence record |
+| Synthetic SNP/INS/DEL | `2673371` | `bnode2` | Bidirectional SNP/INS/DEL subtract empty |
+| Synthetic MOB | `2673372` | `bnode9` | Red-line over/under `0/0`; JC matched `2` within ±5 bp |
+| Clonal | `2673729` | pending at report generation | Full wrapper submitted after the comparator fix; verified record will be added only after successful completion |
+
+The earlier Clonal computation job `2673373` produced matching ProkaDiff and
+same-node breseq GDs. Comparator-only qcpu job `2673577` rechecked those files
+with core-field identity and passed same-node red-line over/under `0/0`.
+The historical official Clonal GD differs at four short-repeat coordinates;
+that diagnostic remains visible and is not counted as same-node oracle parity.
 
 ---
 
@@ -47,7 +65,7 @@ Oracle: **breseq 0.40.2** + **Bowtie2 2.5.4** + **gdtools 0.40.2**
 | `synth_snp_indel`| 7 | 7 | 0 | 0 | 0 | 0 | 0 | 0 | 1.000 | 1.000 |
 | `sub_adjacent` | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 1.000 | 1.000 |
 | `synth_is_mob` | 2 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 1.000 (tol) | 1.000 (tol) |
-| `clonal` (REL606)| 8 | 8 | 0 | 0 | 0 | 0 | 0 | 0 | 0.147* | 1.000 |
+| `clonal` (REL606, historical snapshot)| 8 | 8 | 0 | 0 | 0 | 0 | 0 | 0 | 0.147* | 1.000 |
 
 *\*On `clonal` 36 bp reads, ProkaDiff captures all 5 canonical breseq junctions (100% recall), but emits 29 additional candidate split-read junctions in unpromoted evidence.*
 
@@ -106,6 +124,18 @@ Oracle: **breseq 0.40.2** + **Bowtie2 2.5.4** + **gdtools 0.40.2**
 
 All metrics measured on Slurm partition `qcpu_18i`:
 
+Current requested rerun measurements:
+
+| Dataset | Job | breseq Wall (s) | ProkaDiff Wall (s) | Speedup | breseq Peak RSS (kB) | ProkaDiff Peak RSS (kB) |
+| :--- | :---: | ---: | ---: | ---: | ---: | ---: |
+| `synthetic_del` | `2673370` | 4.22 | 0.88 | 4.80× | 98,596 | 99,312 |
+| `synth_snp_indel` | `2673371` | 5.91 | 1.73 | 3.42× | 97,268 | 105,016 |
+| `synth_is_mob` | `2673372` | 16.72 | 1.80 | 9.29× | 99,892 | 107,160 |
+| `clonal` | `2673373` (computation) | 2,640.95 | 511.27 | 5.17× | 1,857,456 | 3,420,388 |
+
+Job `2673729` was submitted after the comparator fix and was still running at
+report generation; its performance numbers are intentionally not claimed here.
+
 | Dataset | breseq Wall Time (s) | ProkaDiff Wall Time (s) | Speedup | breseq Peak RSS (kB) | ProkaDiff Peak RSS (kB) |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | `clonal` (REL606, 7.6M reads) | 3,098.01 | **544.55** | **5.69×** | 1,856,948 | 3,432,960 |
@@ -136,6 +166,7 @@ All metrics measured on Slurm partition `qcpu_18i`:
 
 The project successfully satisfies all requirements of the **Validation & Scientific-Correctness Sprint**:
 - **Zero fabricated validation claims**: Features lacking verified external tool comparisons are explicitly guarded (`disabled` or `experimental`).
-- **Zero test regressions**: Workspace passes **201 tests with 0 failures**.
+- **Zero test regressions**: Workspace passes **203 tests with 0 failures** and 1 ignored cluster-only test.
+- **Current parity rerun**: Synthetic DEL, SNP/INS/DEL, and MOB completed on `qcpu_18i`; the Clonal calculation output was rechecked against same-node breseq with red-line over/under `0/0`.
 - **Clean scientific communication**: Casual causal language eliminated across documentation.
 - **Robust oracle infrastructure**: All harnesses in place for future activation upon availability of external binaries.

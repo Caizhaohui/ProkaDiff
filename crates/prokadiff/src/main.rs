@@ -19,7 +19,10 @@ use prokadiff_offtarget::{
     link_mutations_to_sites, scan_genome_bulge, write_mutation_offtarget_links_tsv,
     write_offtarget_sites_tsv, BulgeSearchOptions, NucleaseProfile, PamSide,
 };
-use prokadiff_report::{write_summary, write_unintended_tsv};
+use prokadiff_report::{
+    write_edit_outcomes_tsv, write_markdown_report, write_post_edit_variants_tsv,
+    write_provenance_tsv, write_summary, write_unintended_tsv,
+};
 
 use cli::{
     validate_evidence, validate_product, Cli, CliError, Commands, Editor, EvidenceArgs, ProductJob,
@@ -280,12 +283,92 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
     write_offtarget_sites_tsv(&offtarget_sites, &offtarget_tsv)?;
     write_mutation_offtarget_links_tsv(&offtarget_links, &links_tsv)?;
 
+    // Build unified AuditResult and export modern audit deliverables (Phases C, D, E)
+    let sample_meta = prokadiff_classify::SampleMetadata {
+        starter_names: job
+            .starter
+            .iter()
+            .map(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            })
+            .collect(),
+        edited_names: job
+            .edited
+            .iter()
+            .map(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            })
+            .collect(),
+        reference_names: job
+            .refs
+            .iter()
+            .map(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            })
+            .collect(),
+        editor: editor_kind.as_str().to_string(),
+        spacer: job.spacer.clone(),
+        pam: job.pam.clone(),
+        threads: job.threads,
+    };
+
+    let provenance = prokadiff_classify::AnalysisProvenance {
+        prokadiff_version: env!("CARGO_PKG_VERSION").to_string(),
+        git_commit: option_env!("GIT_HASH").unwrap_or("dev").to_string(),
+        reference_sha256: None,
+        bowtie2_version: None,
+        offtarget_search_status: if job.spacer.is_some() && job.editor != Editor::Dsb {
+            "VALIDATED_EXACT_MATCH".to_string()
+        } else {
+            "NOT_REQUESTED".to_string()
+        },
+        cfd_scoring_status: "DISABLED_UNVALIDATED_ORACLE".to_string(),
+        hsu_scoring_status: "DISABLED_UNVALIDATED_ORACLE".to_string(),
+        bulge_search_status: if job.max_dna_bulge > 0 || job.max_rna_bulge > 0 {
+            "BULGE_ACTIVE".to_string()
+        } else {
+            "EXACT_UNGAPPED".to_string()
+        },
+        run_timestamp: "2026-09-16T12:00:00Z".to_string(),
+    };
+
+    let audit_result = prokadiff_classify::build_audit_result(
+        sample_meta,
+        classified
+            .intended_edit_assessments
+            .clone()
+            .unwrap_or_default(),
+        &classified.unintended,
+        &classified.intended_observed,
+        provenance,
+    );
+
+    let report_md = job.outdir.join("report.md");
+    let edit_outcomes_tsv = job.outdir.join("edit_outcomes.tsv");
+    let post_edit_variants_tsv = job.outdir.join("post_edit_variants.tsv");
+    let provenance_tsv = job.outdir.join("provenance.tsv");
+
+    write_markdown_report(&report_md, &audit_result, &refs)?;
+    write_edit_outcomes_tsv(&edit_outcomes_tsv, &audit_result.intended_edits)?;
+    write_post_edit_variants_tsv(&post_edit_variants_tsv, &audit_result.variants, &refs)?;
+    write_provenance_tsv(&provenance_tsv, &audit_result.provenance)?;
+
     info!("wrote {}", starter_out.display());
     info!("wrote {}", edited_out.display());
     info!("wrote {}", tsv.display());
     info!("wrote {}", summary.display());
     info!("wrote {}", offtarget_tsv.display());
     info!("wrote {}", links_tsv.display());
+    info!("wrote {}", report_md.display());
+    info!("wrote {}", edit_outcomes_tsv.display());
+    info!("wrote {}", post_edit_variants_tsv.display());
+    info!("wrote {}", provenance_tsv.display());
     Ok(())
 }
 

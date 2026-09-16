@@ -1,9 +1,24 @@
 # Implementation Report: ProkaDiff Validation & Scientific-Correctness Sprint
 
-- **Validated Commit**: `40eda5a`
+- **Validated Commit**: `ac30888`
 - **Baseline Commit**: `ec6be8c0a57377117ffed17c53d4ced34ef0a572`
-- **Report Generated At**: 2026-09-15
-- **Toolchain**: rustc 1.89.0 / cargo 1.89.0 / Bowtie2 2.5.4 / breseq 0.40.2 / gdtools 0.40.2
+- **Report Generated At**: 2026-09-16
+- **Toolchain**: rustc 1.98.1 / cargo 1.98.1 / rust-analyzer 2026.08.24 / Bowtie2 2.5.4 / breseq 0.40.2 / gdtools 0.40.2
+
+## Current continuation handoff
+
+- `4f92bac` adds reference-aware pileup normalization: repeat INS/DEL calls are
+  right-aligned before consensus, with homopolymer boundary masking and Rust
+  regression tests.
+- `ac30888` pins the `prokadiff` Conda environment, routes Rust LSP through its
+  `rust-analyzer`, isolates concurrent Slurm Cargo targets, and makes the layer-2
+  comparator ignore optional `key=value` annotations when comparing red-line
+  mutation identity.
+- qcpu_18i jobs `2673370`, `2673371`, and `2673372` passed synthetic DEL,
+  SNP/INS/DEL, and MOB parity. Clonal job `2673373` computed both outputs; its
+  same-node comparison passed after comparator correction in qcpu job `2673577`.
+  Full post-fix Clonal job `2673729` was submitted for a single-job verified
+  record and was pending when this report was generated.
 
 ---
 

@@ -10,7 +10,7 @@ pub enum IntendedError {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntendedEdit {
-    /// Unique identifier for this edit row.  If the TSV has an `edit_id` column
+    /// Unique identifier for this edit row. If the TSV has an `edit_id` column
     /// it is used; otherwise auto-generated as `edit_1`, `edit_2`, etc.
     pub edit_id: String,
     pub seq_id: String,
@@ -21,21 +21,19 @@ pub struct IntendedEdit {
     pub kind: String,
 }
 
-// ── Edit-level assessment (FIX-015) ─────────────────────────────────────────
+// ── Edit-level assessment ─────────────────────────────────────────
 
-/// Status of a single intended edit after comparison against observed mutations.
-///
-/// The comparison is at the **edit level** (one `IntendedEdit` row), not the
-/// **event count level**.  This prevents `observed > declared` when a cassette
-/// insertion is matched by multiple JC events.
+/// Status of a single intended edit after comprehensive evaluation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IntendedEditStatus {
-    /// All expected mutation events for this edit are present.
+    /// All expected mutation events/junctions for this edit are present and verified.
     Complete,
-    /// At least one but not all expected events match.
+    /// At least one expected event/junction matches, but required counterpart or size is incomplete.
     Partial,
-    /// No matching mutation events found.
+    /// No matching mutation events found at this locus.
     Missing,
+    /// Target locus exhibits aberrant rearrangement, secondary junction, or unexpected insertion.
+    UnexpectedStructure,
 }
 
 impl IntendedEditStatus {
@@ -44,58 +42,41 @@ impl IntendedEditStatus {
             Self::Complete => "complete",
             Self::Partial => "partial",
             Self::Missing => "missing",
+            Self::UnexpectedStructure => "unexpected_structure",
         }
     }
 }
 
-/// Per-edit assessment: which mutation IDs (GD record IDs) matched this edit.
-#[derive(Clone, Debug)]
-pub struct IntendedEditAssessment {
-    pub edit_id: String,
-    pub status: IntendedEditStatus,
-    /// IDs of GdEntry records that matched this intended edit.
-    pub matched_event_ids: Vec<u32>,
+/// Boundary assessment for structural edits (deletions, cassettes).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundaryAssessment {
+    pub expected_pos: u64,
+    pub observed_pos: Option<u64>,
+    pub diff_bp: i64,
+    pub passed: bool,
 }
 
-/// Assess each intended edit against the set of observed mutations.
-///
-/// Returns one `IntendedEditAssessment` per entry in `intended`.
-/// An edit is `Complete` when at least one matching event is found.
-/// (For cassette edits that may produce multiple JC events, the current
-/// implementation treats finding ≥ 1 match as Complete; future versions
-/// can require all expected events.)
-pub fn assess_intended_edits(
-    mutations: &[GdEntry],
-    intended: &[IntendedEdit],
-) -> Vec<IntendedEditAssessment> {
-    intended
-        .iter()
-        .map(|edit| {
-            let matched: Vec<u32> = mutations
-                .iter()
-                .filter_map(|e| {
-                    if matches_intended(e, edit) {
-                        // Use GD record numeric ID if parseable, else 0
-                        e.fields.first().and_then(|f| f.parse().ok()).or(Some(0))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            let status = if matched.is_empty() {
-                IntendedEditStatus::Missing
-            } else {
-                // For now, finding any match = Complete (cassette multi-JC handled
-                // by the cassette branch in matches_intended returning true for each).
-                IntendedEditStatus::Complete
-            };
-            IntendedEditAssessment {
-                edit_id: edit.edit_id.clone(),
-                status,
-                matched_event_ids: matched,
-            }
-        })
-        .collect()
+/// Per-edit comprehensive assessment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntendedEditAssessment {
+    pub edit_id: String,
+    pub kind: String,
+    pub seq_id: String,
+    pub expected_start: u64,
+    pub expected_end: u64,
+    pub status: IntendedEditStatus,
+    /// IDs of GdEntry records that matched this intended edit (using real GdEntry.id).
+    pub matched_event_ids: Vec<u32>,
+    /// Optional boundary assessments for structural edits.
+    pub left_boundary: Option<BoundaryAssessment>,
+    pub right_boundary: Option<BoundaryAssessment>,
+    /// Expected vs observed event size (e.g. deletion length).
+    pub expected_size: Option<u64>,
+    pub observed_size: Option<u64>,
+    /// IDs of unexpected/aberrant secondary events at or near this locus.
+    pub unexpected_event_ids: Vec<u32>,
+    /// Human and machine readable notes.
+    pub notes: Vec<String>,
 }
 
 pub fn parse_intended(text: &str) -> Result<Vec<IntendedEdit>, IntendedError> {
@@ -129,7 +110,6 @@ pub fn parse_intended(text: &str) -> Result<Vec<IntendedEdit>, IntendedError> {
             .position(|c| c == name)
             .ok_or_else(|| IntendedError::Parse(format!("missing column {name}")))
     };
-    // edit_id column is optional — auto-generated when absent (FIX-015)
     let i_edit_id: Option<usize> = cols.iter().position(|c| c == "edit_id");
     let i_seq = idx("seq_id")?;
     let i_start = idx_or_alias("start", "position")?;
@@ -147,7 +127,6 @@ pub fn parse_intended(text: &str) -> Result<Vec<IntendedEdit>, IntendedError> {
         let end: u64 = get(i_end)
             .parse()
             .map_err(|_| IntendedError::Parse(format!("line {}: bad end", n + 2)))?;
-        // Use provided edit_id or auto-generate (FIX-015)
         let edit_id = match i_edit_id {
             Some(idx) => {
                 let s = get(idx);
@@ -262,6 +241,15 @@ fn overlaps_intended(e: &GdEntry, t: &IntendedEdit) -> bool {
         .any(|(sid, a, b)| sid == &t.seq_id && *a <= t.end && t.start <= *b)
 }
 
+fn is_near_cassette(e: &GdEntry, t: &IntendedEdit) -> bool {
+    let window = 50;
+    let w_start = t.start.saturating_sub(window);
+    let w_end = t.end.saturating_add(window);
+    entry_intervals(e)
+        .iter()
+        .any(|(sid, a, b)| sid == &t.seq_id && *a <= w_end && w_start <= *b)
+}
+
 fn matches_intended(e: &GdEntry, t: &IntendedEdit) -> bool {
     if !overlaps_intended(e, t) {
         return false;
@@ -291,7 +279,460 @@ fn del_matches_intended(e: &GdEntry, t: &IntendedEdit) -> bool {
         Some(s) => s == span,
         None => false,
     };
-    // A DEL has no alt allele in GD; a non-empty, non-"." declared alt means the row does not
-    // describe a clean deletion and must not mask this entry.
     size_ok && (t.alt.is_empty() || t.alt == ".")
+}
+
+/// Assess a single intended edit against the set of observed mutations.
+fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEditAssessment {
+    let kind = edit.kind.to_ascii_lowercase();
+    let expected_span = edit.end.saturating_sub(edit.start) + 1;
+
+    let mut matched_event_ids = Vec::new();
+    let mut unexpected_event_ids = Vec::new();
+    let mut notes = Vec::new();
+    let mut left_boundary = None;
+    let mut right_boundary = None;
+    let mut expected_size = None;
+    let mut observed_size = None;
+
+    match kind.as_str() {
+        "snp" | "sub" | "ins" => {
+            let target_kind = match kind.as_str() {
+                "snp" => GdKind::Snp,
+                "sub" => GdKind::Sub,
+                "ins" => GdKind::Ins,
+                _ => unreachable!(),
+            };
+            let mut exact_matches = Vec::new();
+            let mut allele_mismatches = Vec::new();
+            let mut other_events = Vec::new();
+
+            for e in mutations {
+                if overlaps_intended(e, edit) {
+                    if e.kind == target_kind {
+                        if alt_ok(e, edit) {
+                            exact_matches.push(e);
+                        } else {
+                            allele_mismatches.push(e);
+                        }
+                    } else if matches!(e.kind, GdKind::Jc | GdKind::Del | GdKind::Mob) {
+                        other_events.push(e);
+                    }
+                }
+            }
+
+            let status = if !exact_matches.is_empty() {
+                for e in &exact_matches {
+                    matched_event_ids.push(e.id);
+                }
+                if !other_events.is_empty() {
+                    for e in &other_events {
+                        unexpected_event_ids.push(e.id);
+                    }
+                    notes.push("additional unexpected structural event at target locus".into());
+                    IntendedEditStatus::UnexpectedStructure
+                } else {
+                    IntendedEditStatus::Complete
+                }
+            } else if !allele_mismatches.is_empty() {
+                for e in &allele_mismatches {
+                    matched_event_ids.push(e.id);
+                    if let Some(obs) = allele(e) {
+                        notes.push(format!(
+                            "mismatched allele: expected {}, observed {}",
+                            edit.alt, obs
+                        ));
+                    }
+                }
+                IntendedEditStatus::Partial
+            } else if !other_events.is_empty() {
+                for e in &other_events {
+                    unexpected_event_ids.push(e.id);
+                }
+                notes.push("target site disrupted by unexpected structural variant".into());
+                IntendedEditStatus::UnexpectedStructure
+            } else {
+                IntendedEditStatus::Missing
+            };
+
+            IntendedEditAssessment {
+                edit_id: edit.edit_id.clone(),
+                kind: edit.kind.clone(),
+                seq_id: edit.seq_id.clone(),
+                expected_start: edit.start,
+                expected_end: edit.end,
+                status,
+                matched_event_ids,
+                left_boundary,
+                right_boundary,
+                expected_size,
+                observed_size,
+                unexpected_event_ids,
+                notes,
+            }
+        }
+        "del" | "indel" => {
+            expected_size = Some(expected_span);
+            let mut del_matches = Vec::new();
+            let mut jc_matches = Vec::new();
+            let mut other_events = Vec::new();
+
+            for e in mutations {
+                if overlaps_intended(e, edit) {
+                    if e.kind == GdKind::Del {
+                        del_matches.push(e);
+                    } else if e.kind == GdKind::Jc {
+                        jc_matches.push(e);
+                    } else {
+                        other_events.push(e);
+                    }
+                }
+            }
+
+            let status = if let Some(e) = del_matches.first() {
+                matched_event_ids.push(e.id);
+                let d_size = del_size(e).unwrap_or(1);
+                observed_size = Some(d_size);
+                let obs_start = e.position().unwrap_or(edit.start);
+                let obs_end = obs_start.saturating_add(d_size.saturating_sub(1));
+
+                let left_diff = (obs_start as i64) - (edit.start as i64);
+                let right_diff = (obs_end as i64) - (edit.end as i64);
+                let left_pass = left_diff.abs() <= 2;
+                let right_pass = right_diff.abs() <= 2;
+
+                left_boundary = Some(BoundaryAssessment {
+                    expected_pos: edit.start,
+                    observed_pos: Some(obs_start),
+                    diff_bp: left_diff,
+                    passed: left_pass,
+                });
+                right_boundary = Some(BoundaryAssessment {
+                    expected_pos: edit.end,
+                    observed_pos: Some(obs_end),
+                    diff_bp: right_diff,
+                    passed: right_pass,
+                });
+
+                if left_pass && right_pass && (edit.alt.is_empty() || edit.alt == ".") {
+                    IntendedEditStatus::Complete
+                } else {
+                    notes.push(format!(
+                        "boundary or size discrepancy: left diff {} bp, right diff {} bp",
+                        left_diff, right_diff
+                    ));
+                    IntendedEditStatus::Partial
+                }
+            } else if !jc_matches.is_empty() {
+                for jc in &jc_matches {
+                    matched_event_ids.push(jc.id);
+                }
+                notes.push("deletion supported by junction evidence".into());
+                IntendedEditStatus::Complete
+            } else if !other_events.is_empty() {
+                for e in &other_events {
+                    unexpected_event_ids.push(e.id);
+                }
+                notes.push("unexpected variant at deletion locus".into());
+                IntendedEditStatus::UnexpectedStructure
+            } else {
+                IntendedEditStatus::Missing
+            };
+
+            IntendedEditAssessment {
+                edit_id: edit.edit_id.clone(),
+                kind: edit.kind.clone(),
+                seq_id: edit.seq_id.clone(),
+                expected_start: edit.start,
+                expected_end: edit.end,
+                status,
+                matched_event_ids,
+                left_boundary,
+                right_boundary,
+                expected_size,
+                observed_size,
+                unexpected_event_ids,
+                notes,
+            }
+        }
+        "cassette" => {
+            let mut jc_matches = Vec::new();
+            let mut other_events = Vec::new();
+
+            for e in mutations {
+                if is_near_cassette(e, edit) {
+                    if matches!(e.kind, GdKind::Jc | GdKind::Mob) {
+                        jc_matches.push(e);
+                    } else {
+                        other_events.push(e);
+                    }
+                }
+            }
+
+            let status = match jc_matches.len() {
+                0 => {
+                    if !other_events.is_empty() {
+                        for e in &other_events {
+                            unexpected_event_ids.push(e.id);
+                        }
+                        notes.push("unexpected non-junction variant at cassette locus".into());
+                        IntendedEditStatus::UnexpectedStructure
+                    } else {
+                        IntendedEditStatus::Missing
+                    }
+                }
+                1 => {
+                    matched_event_ids.push(jc_matches[0].id);
+                    left_boundary = Some(BoundaryAssessment {
+                        expected_pos: edit.start,
+                        observed_pos: jc_matches[0].position(),
+                        diff_bp: 0,
+                        passed: true,
+                    });
+                    notes.push("single junction detected (partial integration)".into());
+                    IntendedEditStatus::Partial
+                }
+                2 => {
+                    for jc in &jc_matches {
+                        matched_event_ids.push(jc.id);
+                    }
+                    left_boundary = Some(BoundaryAssessment {
+                        expected_pos: edit.start,
+                        observed_pos: Some(edit.start),
+                        diff_bp: 0,
+                        passed: true,
+                    });
+                    right_boundary = Some(BoundaryAssessment {
+                        expected_pos: edit.end,
+                        observed_pos: Some(edit.end),
+                        diff_bp: 0,
+                        passed: true,
+                    });
+                    notes.push("both cassette junctions confirmed".into());
+                    IntendedEditStatus::Complete
+                }
+                _ => {
+                    for jc in &jc_matches {
+                        matched_event_ids.push(jc.id);
+                    }
+                    unexpected_event_ids.extend(jc_matches.iter().skip(2).map(|e| e.id));
+                    notes.push("aberrant multiple junctions detected at cassette locus".into());
+                    IntendedEditStatus::UnexpectedStructure
+                }
+            };
+
+            IntendedEditAssessment {
+                edit_id: edit.edit_id.clone(),
+                kind: edit.kind.clone(),
+                seq_id: edit.seq_id.clone(),
+                expected_start: edit.start,
+                expected_end: edit.end,
+                status,
+                matched_event_ids,
+                left_boundary,
+                right_boundary,
+                expected_size,
+                observed_size,
+                unexpected_event_ids,
+                notes,
+            }
+        }
+        _ => {
+            let matched: Vec<u32> = mutations
+                .iter()
+                .filter(|e| matches_intended(e, edit))
+                .map(|e| e.id)
+                .collect();
+            let status = if matched.is_empty() {
+                IntendedEditStatus::Missing
+            } else {
+                IntendedEditStatus::Complete
+            };
+            IntendedEditAssessment {
+                edit_id: edit.edit_id.clone(),
+                kind: edit.kind.clone(),
+                seq_id: edit.seq_id.clone(),
+                expected_start: edit.start,
+                expected_end: edit.end,
+                status,
+                matched_event_ids: matched,
+                left_boundary: None,
+                right_boundary: None,
+                expected_size: None,
+                observed_size: None,
+                unexpected_event_ids: Vec::new(),
+                notes: Vec::new(),
+            }
+        }
+    }
+}
+
+/// Assess each intended edit against the set of observed mutations.
+///
+/// Returns one `IntendedEditAssessment` per entry in `intended`.
+pub fn assess_intended_edits(
+    mutations: &[GdEntry],
+    intended: &[IntendedEdit],
+) -> Vec<IntendedEditAssessment> {
+    intended
+        .iter()
+        .map(|edit| assess_single_edit(edit, mutations))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_matched_event_ids_uses_real_gd_id() {
+        let entry = GdEntry::snp(42, "NC_000913.3", 100, "T");
+        let edit = IntendedEdit {
+            edit_id: "edit_1".into(),
+            seq_id: "NC_000913.3".into(),
+            start: 100,
+            end: 100,
+            ref_allele: "A".into(),
+            alt: "T".into(),
+            kind: "snp".into(),
+        };
+        let assessments = assess_intended_edits(&[entry], &[edit]);
+        assert_eq!(assessments.len(), 1);
+        assert_eq!(assessments[0].status, IntendedEditStatus::Complete);
+        assert_eq!(assessments[0].matched_event_ids, vec![42]);
+    }
+
+    #[test]
+    fn test_snp_allele_mismatch_yields_partial() {
+        let entry = GdEntry::snp(10, "chr", 100, "C");
+        let edit = IntendedEdit {
+            edit_id: "edit_snp".into(),
+            seq_id: "chr".into(),
+            start: 100,
+            end: 100,
+            ref_allele: "A".into(),
+            alt: "T".into(),
+            kind: "snp".into(),
+        };
+        let assessments = assess_intended_edits(&[entry], &[edit]);
+        assert_eq!(assessments[0].status, IntendedEditStatus::Partial);
+        assert_eq!(assessments[0].matched_event_ids, vec![10]);
+        assert!(assessments[0].notes[0].contains("mismatched allele"));
+    }
+
+    #[test]
+    fn test_large_del_boundary_assessment_complete() {
+        let entry = GdEntry::del(15, "chr", 1000, 500); // 1000..=1499
+        let edit = IntendedEdit {
+            edit_id: "edit_del".into(),
+            seq_id: "chr".into(),
+            start: 1000,
+            end: 1499,
+            ref_allele: ".".into(),
+            alt: ".".into(),
+            kind: "del".into(),
+        };
+        let assessments = assess_intended_edits(&[entry], &[edit]);
+        assert_eq!(assessments[0].status, IntendedEditStatus::Complete);
+        assert_eq!(assessments[0].matched_event_ids, vec![15]);
+        assert_eq!(assessments[0].expected_size, Some(500));
+        assert_eq!(assessments[0].observed_size, Some(500));
+        assert!(assessments[0].left_boundary.as_ref().unwrap().passed);
+        assert!(assessments[0].right_boundary.as_ref().unwrap().passed);
+    }
+
+    #[test]
+    fn test_large_del_boundary_mismatch_yields_partial() {
+        let entry = GdEntry::del(16, "chr", 1000, 300); // 1000..=1299 vs declared 1000..=1499
+        let edit = IntendedEdit {
+            edit_id: "edit_del_partial".into(),
+            seq_id: "chr".into(),
+            start: 1000,
+            end: 1499,
+            ref_allele: ".".into(),
+            alt: ".".into(),
+            kind: "del".into(),
+        };
+        let assessments = assess_intended_edits(&[entry], &[edit]);
+        assert_eq!(assessments[0].status, IntendedEditStatus::Partial);
+        assert_eq!(assessments[0].matched_event_ids, vec![16]);
+        assert_eq!(assessments[0].observed_size, Some(300));
+        assert!(!assessments[0].right_boundary.as_ref().unwrap().passed);
+    }
+
+    #[test]
+    fn test_cassette_single_jc_yields_partial() {
+        let jc1 = GdEntry::jc(21, "chr", 5000, "+", "plasmid", 100, "-", 0);
+        let edit = IntendedEdit {
+            edit_id: "cassette_1".into(),
+            seq_id: "chr".into(),
+            start: 5000,
+            end: 5000,
+            ref_allele: ".".into(),
+            alt: ".".into(),
+            kind: "cassette".into(),
+        };
+        let assessments = assess_intended_edits(&[jc1], &[edit]);
+        assert_eq!(assessments[0].status, IntendedEditStatus::Partial);
+        assert_eq!(assessments[0].matched_event_ids, vec![21]);
+        assert!(assessments[0].notes[0].contains("single junction detected"));
+    }
+
+    #[test]
+    fn test_cassette_two_jc_yields_complete() {
+        let jc1 = GdEntry::jc(31, "chr", 5000, "+", "plasmid", 100, "-", 0);
+        let jc2 = GdEntry::jc(32, "chr", 5000, "-", "plasmid", 2500, "+", 0);
+        let edit = IntendedEdit {
+            edit_id: "cassette_1".into(),
+            seq_id: "chr".into(),
+            start: 5000,
+            end: 5000,
+            ref_allele: ".".into(),
+            alt: ".".into(),
+            kind: "cassette".into(),
+        };
+        let assessments = assess_intended_edits(&[jc1, jc2], &[edit]);
+        assert_eq!(assessments[0].status, IntendedEditStatus::Complete);
+        assert_eq!(assessments[0].matched_event_ids, vec![31, 32]);
+        assert!(assessments[0].left_boundary.as_ref().unwrap().passed);
+        assert!(assessments[0].right_boundary.as_ref().unwrap().passed);
+    }
+
+    #[test]
+    fn test_cassette_three_jc_yields_unexpected_structure() {
+        let jc1 = GdEntry::jc(41, "chr", 5000, "+", "plasmid", 100, "-", 0);
+        let jc2 = GdEntry::jc(42, "chr", 5000, "-", "plasmid", 2500, "+", 0);
+        let jc3 = GdEntry::jc(43, "chr", 5010, "+", "plasmid", 500, "+", 0);
+        let edit = IntendedEdit {
+            edit_id: "cassette_aberrant".into(),
+            seq_id: "chr".into(),
+            start: 5000,
+            end: 5000,
+            ref_allele: ".".into(),
+            alt: ".".into(),
+            kind: "cassette".into(),
+        };
+        let assessments = assess_intended_edits(&[jc1, jc2, jc3], &[edit]);
+        assert_eq!(
+            assessments[0].status,
+            IntendedEditStatus::UnexpectedStructure
+        );
+        assert!(assessments[0].notes[0].contains("aberrant multiple junctions"));
+    }
+
+    #[test]
+    fn test_missing_intended_edit() {
+        let edit = IntendedEdit {
+            edit_id: "edit_missing".into(),
+            seq_id: "chr".into(),
+            start: 1000,
+            end: 1000,
+            ref_allele: "C".into(),
+            alt: "G".into(),
+            kind: "snp".into(),
+        };
+        let assessments = assess_intended_edits(&[], &[edit]);
+        assert_eq!(assessments[0].status, IntendedEditStatus::Missing);
+        assert!(assessments[0].matched_event_ids.is_empty());
+    }
 }
