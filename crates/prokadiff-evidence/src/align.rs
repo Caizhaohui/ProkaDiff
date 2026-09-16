@@ -117,10 +117,7 @@ pub fn filter_fastq_file(
     let mut lines = reader.lines();
     let mut out = File::create(dest)?;
     let mut n = 0usize;
-    loop {
-        let Some(header) = lines.next() else {
-            break;
-        };
+    while let Some(header) = lines.next() {
         let header = header?;
         let seq = lines.next().ok_or_else(|| {
             EvidenceError::Alignment(format!("truncated FASTQ {}", src.display()))

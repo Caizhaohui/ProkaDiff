@@ -203,6 +203,7 @@ pub(crate) fn pileup_contigs(
                         &mut total_depth,
                         &mut splits,
                         &mut clips,
+                        Some(&rec.seq),
                     );
                 }
                 (

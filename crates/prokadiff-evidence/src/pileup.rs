@@ -160,6 +160,7 @@ pub fn apply_read(
     total_depth: &mut [u32],
     splits: &mut Vec<SplitCandidate>,
     clips: &mut Vec<SoftclipHint>,
+    ref_seq: Option<&[u8]>,
 ) {
     if read.ref_start_0 < 0 {
         return;
@@ -318,24 +319,157 @@ pub fn apply_read(
         }
     }
 
+    // Right-align 1-2 bp deletions within homopolymers / tandem repeats
+    // before end-trimming, ensuring consistent placement matching breseq.
+    if let Some(seq) = ref_seq {
+        right_align_hits_del(&mut hits, seq);
+    }
+
     if hits.len() > END_TRIM * 2 {
         hits = hits[END_TRIM..hits.len() - END_TRIM].to_vec();
     } else {
         hits.clear();
     }
 
-    for (r, _, base) in &hits {
+    for (r, _, _) in &hits {
+        if *r < columns.len() {
+            unique_depth[*r] = unique_depth[*r].saturating_add(1);
+        }
+    }
+
+    // Mask ambiguous matching bases in homopolymer ends (repeats >= 3).
+    // A read that starts or ends inside a homopolymer cannot reliably test
+    // whether the homopolymer expanded or contracted.
+    let mut obs_hits = hits.as_slice();
+    let mut lead_mask = 0;
+    let mut trail_mask = 0;
+    if let Some(seq) = ref_seq {
+        if obs_hits.len() > 1 {
+            let first_r = obs_hits[0].0;
+            if first_r > 0
+                && first_r < seq.len()
+                && seq[first_r].eq_ignore_ascii_case(&seq[first_r - 1])
+                && is_homopolymer_at(seq, first_r)
+            {
+                let b = seq[first_r].to_ascii_uppercase();
+                while lead_mask < obs_hits.len() {
+                    let r = obs_hits[lead_mask].0;
+                    if r < seq.len()
+                        && seq[r].to_ascii_uppercase() == b
+                        && obs_hits[lead_mask].2 == b
+                    {
+                        lead_mask += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            let last_r = obs_hits[obs_hits.len() - 1].0;
+            if last_r + 1 < seq.len()
+                && seq[last_r].eq_ignore_ascii_case(&seq[last_r + 1])
+                && is_homopolymer_at(seq, last_r)
+            {
+                let b = seq[last_r].to_ascii_uppercase();
+                while trail_mask < obs_hits.len().saturating_sub(lead_mask) {
+                    let idx = obs_hits.len() - 1 - trail_mask;
+                    let r = obs_hits[idx].0;
+                    if r < seq.len() && seq[r].to_ascii_uppercase() == b && obs_hits[idx].2 == b {
+                        trail_mask += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            // Only apply masking if the read has anchored non-repeat bases remaining.
+            if lead_mask + trail_mask < obs_hits.len() {
+                obs_hits = &obs_hits[lead_mask..obs_hits.len() - trail_mask];
+            }
+        }
+    }
+
+    for (r, _, base) in obs_hits {
         if *r < columns.len() {
             columns[*r].observations.push(BaseObs {
                 base: *base,
                 strand,
             });
-            unique_depth[*r] = unique_depth[*r].saturating_add(1);
         }
     }
     for (r, oligo) in ins_at {
-        if r < columns.len() {
-            columns[r].insertions.push((oligo, strand));
+        let (norm_pos_1, norm_oligo) = if let Some(seq) = ref_seq {
+            crate::normalize::right_align_ins(seq, (r + 1) as u64, &oligo)
+        } else {
+            ((r + 1) as u64, oligo)
+        };
+        let norm_r = (norm_pos_1 as usize).saturating_sub(1);
+        if norm_r < columns.len() {
+            columns[norm_r].insertions.push((norm_oligo, strand));
+        }
+    }
+}
+
+/// Return true if `pos` is part of a homopolymer run of >= 3 identical bases in `seq`.
+fn is_homopolymer_at(seq: &[u8], pos: usize) -> bool {
+    if pos >= seq.len() {
+        return false;
+    }
+    let b = seq[pos].to_ascii_uppercase();
+    let mut count = 1;
+    let mut p = pos;
+    while p > 0 && seq[p - 1].to_ascii_uppercase() == b {
+        count += 1;
+        p -= 1;
+    }
+    p = pos + 1;
+    while p < seq.len() && seq[p].to_ascii_uppercase() == b {
+        count += 1;
+        p += 1;
+    }
+    count >= 3
+}
+
+/// Slide 1–2 bp deletions in `hits` towards the 3′ end within homopolymers / tandem repeats.
+pub(crate) fn right_align_hits_del(hits: &mut [(usize, usize, u8)], ref_seq: &[u8]) {
+    if hits.is_empty() {
+        return;
+    }
+    let n = hits.len();
+    let mut i = 0;
+    while i < n {
+        if hits[i].2 == b'-' {
+            let mut del_len = 0;
+            while i + del_len < n && hits[i + del_len].2 == b'-' {
+                del_len += 1;
+            }
+            if del_len <= 2 {
+                while i + del_len < n {
+                    let first_del_r = hits[i].0;
+                    let after_del_r = hits[i + del_len].0;
+                    if after_del_r != first_del_r + del_len {
+                        break;
+                    }
+                    if after_del_r >= ref_seq.len() {
+                        break;
+                    }
+                    if !ref_seq[first_del_r].eq_ignore_ascii_case(&ref_seq[after_del_r]) {
+                        break;
+                    }
+                    if hits[i + del_len].2 != ref_seq[after_del_r].to_ascii_uppercase() {
+                        break;
+                    }
+                    let match_hit = hits[i + del_len];
+                    for d in (0..del_len).rev() {
+                        hits[i + d + 1] = (hits[i + d].0 + 1, hits[i + d].1, b'-');
+                    }
+                    hits[i] = (first_del_r, match_hit.1, match_hit.2);
+                    i += 1;
+                }
+            }
+            i += del_len;
+        } else {
+            i += 1;
         }
     }
 }
@@ -746,6 +880,7 @@ mod tests {
                 &mut vec![0u32; ref_seq.len()],
                 &mut splits,
                 &mut clips,
+                Some(ref_seq),
             );
         }
         assert_eq!(
@@ -789,6 +924,7 @@ mod tests {
             &mut [0u32; 40],
             &mut splits,
             &mut Vec::new(),
+            Some(&ref_seq),
         );
         assert_eq!(splits.len(), 1);
         assert!(splits[0].overlap < 0);
@@ -834,6 +970,7 @@ mod tests {
             &mut [0u32; 160],
             &mut splits,
             &mut clips,
+            Some(&ref_seq),
         );
         assert_eq!(clips.len(), 1);
         assert_eq!(clips[0].aligned_pos_1, 90);
@@ -885,6 +1022,7 @@ mod tests {
             &mut [0u32; 160],
             &mut Vec::new(),
             &mut clips,
+            Some(&ref_seq),
         );
         assert_eq!(clips.len(), 1);
         assert_eq!(
@@ -940,6 +1078,7 @@ mod tests {
             &mut [0u32; 160],
             &mut Vec::new(),
             &mut clips,
+            Some(&ref_seq),
         );
         assert_eq!(clips.len(), 1);
         assert_eq!(
@@ -989,6 +1128,7 @@ mod tests {
             &mut [0u32; 160],
             &mut Vec::new(),
             &mut clips,
+            Some(ref_seq),
         );
         assert_eq!(clips.len(), 1);
         clips.pop().unwrap()
@@ -1009,6 +1149,7 @@ mod tests {
             &mut vec![0u32; ref_seq.len()],
             &mut Vec::new(),
             &mut clips,
+            Some(&ref_seq),
         );
         assert!(
             clips.is_empty(),
@@ -1139,5 +1280,156 @@ mod tests {
             assert_eq!(b.side1_pos_1, s.side1_pos_1);
             assert_eq!(b.side2_pos_1, s.side2_pos_1);
         }
+    }
+
+    #[test]
+    fn homopolymer_insertion_aggregates_at_three_prime_end() {
+        // Ref has 7 T's at 0-based 3..10 (indices 3..=9): A(0) C(1) G(2) T T T T T T T(9) C(10)
+        let ref_seq = b"ACGTTTTTTTC";
+        let mut columns = cols(ref_seq);
+        let mut depth = vec![0u32; ref_seq.len()];
+        let mut splits = Vec::new();
+        let mut clips = Vec::new();
+
+        // Three reads with an inserted T placed at different positions in the 7-T run
+        // Read 1: 1I after ref index 4 (2nd T)
+        let r1 = AlignedRead {
+            contig_idx: 0,
+            ref_start_0: 0,
+            minus: false,
+            seq: b"ACGTTTTTTTTC".to_vec(),
+            cigar: vec![
+                CigarOp {
+                    kind: CigarKind::Match,
+                    len: 5,
+                },
+                CigarOp {
+                    kind: CigarKind::Ins,
+                    len: 1,
+                },
+                CigarOp {
+                    kind: CigarKind::Match,
+                    len: 6,
+                },
+            ],
+            mapq: 40,
+        };
+        // Read 2: 1I after ref index 7 (5th T)
+        let r2 = AlignedRead {
+            contig_idx: 0,
+            ref_start_0: 0,
+            minus: false,
+            seq: b"ACGTTTTTTTTC".to_vec(),
+            cigar: vec![
+                CigarOp {
+                    kind: CigarKind::Match,
+                    len: 8,
+                },
+                CigarOp {
+                    kind: CigarKind::Ins,
+                    len: 1,
+                },
+                CigarOp {
+                    kind: CigarKind::Match,
+                    len: 3,
+                },
+            ],
+            mapq: 40,
+        };
+        // Read 3: 1I after ref index 9 (7th T, already 3' end)
+        let r3 = AlignedRead {
+            contig_idx: 0,
+            ref_start_0: 0,
+            minus: true,
+            seq: b"ACGTTTTTTTTC".to_vec(),
+            cigar: vec![
+                CigarOp {
+                    kind: CigarKind::Match,
+                    len: 10,
+                },
+                CigarOp {
+                    kind: CigarKind::Ins,
+                    len: 1,
+                },
+                CigarOp {
+                    kind: CigarKind::Match,
+                    len: 1,
+                },
+            ],
+            mapq: 40,
+        };
+
+        for r in [&r1, &r2, &r3] {
+            apply_read(
+                r,
+                &mut columns,
+                &mut depth,
+                &mut vec![0u32; ref_seq.len()],
+                &mut splits,
+                &mut clips,
+                Some(ref_seq),
+            );
+        }
+
+        // All three reads must aggregate at index 9 (after the 7th T, 1-based pos 10)
+        assert_eq!(columns[9].insertions.len(), 3);
+        assert_eq!(columns[4].insertions.len(), 0);
+        assert_eq!(columns[7].insertions.len(), 0);
+    }
+
+    #[test]
+    fn homopolymer_deletion_slides_to_three_prime_end() {
+        // Ref has 8 T's at 0-based 3..11 (indices 3..=10): A(0) C(1) G(2) T T T T T T T T(10) C(11)
+        let ref_seq = b"ACGTTTTTTTTC";
+        let mut columns = cols(ref_seq);
+        let mut depth = vec![0u32; ref_seq.len()];
+        let mut splits = Vec::new();
+        let mut clips = Vec::new();
+
+        // Read has 7 T's (1D deletion), aligned at 5' end of the homopolymer (ref index 3)
+        let read = AlignedRead {
+            contig_idx: 0,
+            ref_start_0: 0,
+            minus: false,
+            seq: b"ACGTTTTTTTC".to_vec(), // 11 bp
+            cigar: vec![
+                CigarOp {
+                    kind: CigarKind::Match,
+                    len: 3,
+                }, // ACG
+                CigarOp {
+                    kind: CigarKind::Del,
+                    len: 1,
+                }, // 1D at ref index 3
+                CigarOp {
+                    kind: CigarKind::Match,
+                    len: 8,
+                }, // TTTTTTTC (7 T's + C)
+            ],
+            mapq: 40,
+        };
+
+        apply_read(
+            &read,
+            &mut columns,
+            &mut depth,
+            &mut vec![0u32; ref_seq.len()],
+            &mut splits,
+            &mut clips,
+            Some(ref_seq),
+        );
+
+        // Deletion '-' must slide to the 8th T at index 10
+        // Indices 3..=9 must be matches ('T')
+        for col in &columns[3..=9] {
+            assert!(
+                col.observations.iter().any(|o| o.base == b'T'),
+                "index in 3..=9 should be match T"
+            );
+        }
+        assert!(
+            columns[10].observations.iter().any(|o| o.base == b'-'),
+            "index 10 should have deletion '-' observation"
+        );
     }
 }

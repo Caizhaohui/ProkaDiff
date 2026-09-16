@@ -50,6 +50,7 @@ fn ra_calls_from_in_memory_pileup_without_bam() {
             &mut vec![0u32; n],
             &mut splits,
             &mut Vec::new(),
+            Some(&fasta[0].seq),
         );
     }
     assert_eq!(

@@ -157,7 +157,7 @@ fn base_index(b: u8) -> Option<usize> {
 }
 
 fn index_base(i: usize) -> u8 {
-    [b'A', b'C', b'G', b'T', b'-'][i]
+    b"ACGT-"[i]
 }
 
 #[cfg(test)]

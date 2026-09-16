@@ -208,7 +208,7 @@ pub(crate) fn read_primary_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result
             .get(&noodles::sam::alignment::record::data::field::Tag::ALIGNMENT_SCORE)
             .and_then(|r| r.ok())
             .and_then(|v| v.as_int());
-        let xs_tag = noodles::sam::alignment::record::data::field::Tag::from([b'X', b'S']);
+        let xs_tag = noodles::sam::alignment::record::data::field::Tag::from(*b"XS");
         let xs_score = rec
             .data()
             .get(&xs_tag)
