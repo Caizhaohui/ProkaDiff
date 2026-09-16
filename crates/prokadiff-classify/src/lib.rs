@@ -11,7 +11,7 @@ pub use audit::{
     build_audit_result, classify_is_family, find_gene_annotation, AnalysisProvenance,
     AnnotatedFeature, AnnotatedVariant, AuditResult, EvidenceSummary, GeneAnnotation,
     GuideRelation, IntendedRelation, MobileElementAnnotation, OriginStatus, RepeatAnnotation,
-    ReviewPriority, SampleMetadata, SizeClass,
+    ReviewPriority, SampleMetadata, SizeClass, ValidationStatus,
 };
 pub use classify::{classify, ClassifiedMutation, ClassifyOptions, ClassifyResult, MutationClass};
 pub use homolog::{scan_homologs, HomologSite, DEFAULT_MAX_MISMATCHES, DEFAULT_NEAR_DISTANCE};
@@ -19,6 +19,7 @@ pub use intended::{
     assess_intended_edits, mask_intended, parse_intended, parse_intended_path, BoundaryAssessment,
     IntendedEdit, IntendedEditAssessment, IntendedEditStatus, IntendedError,
 };
+pub use prokadiff_offtarget::{MutationOffTargetLink, OffTargetSite};
 
 use prokadiff_gd::GdKind;
 

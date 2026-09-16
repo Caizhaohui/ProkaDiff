@@ -451,7 +451,7 @@ fn e2e_pipeline_synth_parent_child() {
     assert!(!lines.is_empty(), "unintended.tsv must have header");
     assert_eq!(
         lines[0],
-        "seq_id\tposition\tend\tgd_type\tref\talt\tclass\teditor\tpam_profile\tofftarget_mismatch\tdistance_to_site\tside2_seq_id\tside2_position\thypothesis"
+        "seq_id\tposition\tend\tgd_type\tref\talt\tclass\teditor\tpam_profile\tofftarget_mismatch\tdistance_to_site\tside2_seq_id\tside2_position"
     );
 
     // Historical SNPs (from historical_snps.txt) should NOT be in unintended.tsv

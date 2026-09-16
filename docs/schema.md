@@ -36,7 +36,7 @@ prokadiff \
 | `--spacer` | cas9/cas12a 是 | 引导 RNA 的 DNA 字母（T 而非 U）。`dsb` 不要求。 |
 | `--pam` | 否 | 默认：cas9 → `NGG`；cas12a → `TTTV`。可覆盖。近同源扫描允许最多 **4** 个 spacer 错配；突变距最近位点 ≤ **50 bp** 标 `near_homolog`。 |
 | `--threads` | 否 | 传给 Bowtie2 / 并行 pileup。 |
-| `--no-hypothesis` | 否 | 输出不含假说列。 |
+| `--experimental-hypothesis-annotation` | 否 | 默认关闭。启用时输出机制假说列（如需纯净审计输出请勿开启）。 |
 | `--outdir` | 是 | 结果目录。写出 `starter.gd` / `edited.gd` / `unintended.tsv` / `summary.txt`。 |
 
 缺出发株时 **不得** 静默把相对 NCBI 的全部 SNP 当非预期。
@@ -93,7 +93,7 @@ gdtools SUBTRACT edited.gd starter.gd
 
 ## `unintended.tsv`（产品输出）
 
-列顺序锁定（`--no-hypothesis` 时省略最后一列 `hypothesis`）：
+列顺序锁定（默认未启用 `--experimental-hypothesis-annotation` 时省略最后一列 `hypothesis`）：
 
 ```text
 seq_id	position	end	gd_type	ref	alt	class	editor	pam_profile	offtarget_mismatch	distance_to_site	side2_seq_id	side2_position	hypothesis
@@ -114,7 +114,7 @@ seq_id	position	end	gd_type	ref	alt	class	editor	pam_profile	offtarget_mismatch	
 | `distance_to_site` | class (1) 是 | 距预测近同源位点 bp；默认阈值 50 |
 | `side2_seq_id` | JC 是 | JC 第二端序列名；非 JC 行为空 |
 | `side2_position` | JC 是 | JC 第二端 1-based 坐标；非 JC 行为空 |
-| `hypothesis` | 否 | `sos_widney2014` / `unknown_global` / 空；`--no-hypothesis` 时省略整列 |
+| `hypothesis` | 否 | 仅在启用显式参数 `--experimental-hypothesis-annotation` 时输出；默认省略整列以保持严格的观察性审计 |
 | `coverage` / `frequency` | 建议（后续） | consensus 下频率应接近 1；第一期 TSV **不写这两列** |
 
 另写 `summary.txt`（TSV 风格 `key\tvalue`，一行一项）：

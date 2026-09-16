@@ -42,6 +42,8 @@ rayon = "1.10"
 # tracing & tracing-subscriber: structured diagnostic logging across crates with leveled filtering (info/debug/warn/error) and quiet/verbose CLI flags.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# sha2: cryptographic SHA-256 for reference integrity and analysis provenance (TASK-A02; AGENTS Rule 9 rationale).
+sha2 = "0.10"
 
 [profile.release]
 lto = true

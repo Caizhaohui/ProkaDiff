@@ -318,24 +318,50 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
         threads: job.threads,
     };
 
+    let ref_hashes: Vec<String> = job
+        .refs
+        .iter()
+        .map(|p| compute_file_sha256(p).unwrap_or_else(|_| "ERROR_READING_REF".to_string()))
+        .collect();
+    let reference_sha256 = if ref_hashes.is_empty() {
+        None
+    } else {
+        Some(ref_hashes.join(";"))
+    };
+
+    let bowtie2_version = Some(detect_bowtie2_version());
+
+    let offtarget_search_status = if job.spacer.is_some() && job.editor != Editor::Dsb {
+        prokadiff_classify::ValidationStatus::FixtureValidated
+            .as_str()
+            .to_string()
+    } else {
+        prokadiff_classify::ValidationStatus::NotRequested
+            .as_str()
+            .to_string()
+    };
+    let bulge_search_status = if job.max_dna_bulge > 0 || job.max_rna_bulge > 0 {
+        prokadiff_classify::ValidationStatus::ExperimentalUnvalidated
+            .as_str()
+            .to_string()
+    } else {
+        "EXACT_UNGAPPED".to_string()
+    };
+
     let provenance = prokadiff_classify::AnalysisProvenance {
         prokadiff_version: env!("CARGO_PKG_VERSION").to_string(),
-        git_commit: option_env!("GIT_HASH").unwrap_or("dev").to_string(),
-        reference_sha256: None,
-        bowtie2_version: None,
-        offtarget_search_status: if job.spacer.is_some() && job.editor != Editor::Dsb {
-            "VALIDATED_EXACT_MATCH".to_string()
-        } else {
-            "NOT_REQUESTED".to_string()
-        },
-        cfd_scoring_status: "DISABLED_UNVALIDATED_ORACLE".to_string(),
-        hsu_scoring_status: "DISABLED_UNVALIDATED_ORACLE".to_string(),
-        bulge_search_status: if job.max_dna_bulge > 0 || job.max_rna_bulge > 0 {
-            "BULGE_ACTIVE".to_string()
-        } else {
-            "EXACT_UNGAPPED".to_string()
-        },
-        run_timestamp: "2026-09-16T12:00:00Z".to_string(),
+        git_commit: option_env!("GIT_HASH").unwrap_or("UNKNOWN").to_string(),
+        reference_sha256,
+        bowtie2_version,
+        offtarget_search_status,
+        cfd_scoring_status: prokadiff_classify::ValidationStatus::Disabled
+            .as_str()
+            .to_string(),
+        hsu_scoring_status: prokadiff_classify::ValidationStatus::Disabled
+            .as_str()
+            .to_string(),
+        bulge_search_status,
+        run_timestamp: utc_now_iso8601(),
     };
 
     let mut gbk_features = Vec::new();
@@ -366,6 +392,8 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
             .unwrap_or_default(),
         &classified.unintended,
         &classified.intended_observed,
+        &offtarget_sites,
+        &offtarget_links,
         provenance,
         &features,
     );
@@ -412,6 +440,61 @@ fn materialize_ref(refs: &[PathBuf], work: &Path) -> Result<PathBuf, RunError> {
     let dest = work.join("reference.fa");
     write_combined_fasta(refs, &dest)?;
     Ok(dest)
+}
+
+fn utc_now_iso8601() -> String {
+    let now = std::time::SystemTime::now();
+    let dur = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = dur.as_secs();
+    let days = (secs / 86400) as i64 + 719468;
+    let era = (if days >= 0 { days } else { days - 146096 }) / 146097;
+    let doe = (days - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+    format!("{y:04}-{m:02}-{d:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
+}
+
+fn compute_file_sha256(path: &std::path::Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = std::io::Read::read(&mut file, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn detect_bowtie2_version() -> String {
+    match std::process::Command::new("bowtie2")
+        .arg("--version")
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            stdout
+                .lines()
+                .next()
+                .map(|line| line.trim().to_string())
+                .unwrap_or_else(|| "UNAVAILABLE".to_string())
+        }
+        _ => "UNAVAILABLE".to_string(),
+    }
 }
 
 #[cfg(test)]

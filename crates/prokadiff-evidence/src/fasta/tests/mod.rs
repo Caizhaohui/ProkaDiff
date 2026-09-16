@@ -215,3 +215,81 @@ fn test_parses_genbank_features() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn test_parses_multirecord_genbank_and_complex_features() {
+    let dir = std::env::temp_dir().join(format!("test_gbk_multi_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("multi.gbk");
+    {
+        let mut f = File::create(&path).unwrap();
+        write!(
+            f,
+            r#"LOCUS       NC_chr       1000 bp    DNA     circular BCT 16-SEP-2026
+FEATURES             Location/Qualifiers
+     gene            <100..>400
+                     /gene="lacZ"
+                     /locus_tag="b0344"
+     CDS             join(100..200,300..400)
+                     /gene="lacZ"
+                     /locus_tag="b0344"
+                     /product="beta-galactosidase
+                     subunit alpha"
+     repeat_region   500..600
+                     /mobile_element="insertion sequence:IS1"
+ORIGIN
+        1 aaaaaaaa
+//
+LOCUS       pPlasmid_1    500 bp    DNA     circular BCT 16-SEP-2026
+FEATURES             Location/Qualifiers
+     CDS             complement(50..150)
+                     /gene="repA"
+                     /locus_tag="p0001"
+                     /product="plasmid replication protein"
+     repeat_region   complement(200..300)
+                     /mobile_element="IS186"
+ORIGIN
+        1 tttttttt
+//
+"#
+        )
+        .unwrap();
+    }
+
+    let feats = parse_genbank_features(&path).unwrap();
+    assert_eq!(feats.len(), 3, "should parse 3 features across 2 records");
+
+    // Feature 1: gene on chr
+    assert_eq!(feats[0].seq_id, "NC_chr");
+    assert_eq!(feats[0].start, 100);
+    assert_eq!(feats[0].end, 400);
+    assert_eq!(feats[0].feature_type, "gene");
+    assert_eq!(feats[0].gene_name.as_deref(), Some("lacZ"));
+
+    // Feature 2: joined CDS on chr with multiline product
+    assert_eq!(feats[1].seq_id, "NC_chr");
+    assert_eq!(feats[1].start, 100);
+    assert_eq!(feats[1].end, 400);
+    assert_eq!(feats[1].feature_type, "CDS");
+    assert_eq!(
+        feats[1].product.as_deref(),
+        Some("beta-galactosidase subunit alpha")
+    );
+
+    // Feature 3: CDS on plasmid (proves multi-record past first ORIGIN works!)
+    assert_eq!(feats[2].seq_id, "pPlasmid_1");
+    assert_eq!(feats[2].start, 50);
+    assert_eq!(feats[2].end, 150);
+    assert_eq!(feats[2].strand, -1);
+    assert_eq!(feats[2].gene_name.as_deref(), Some("repA"));
+
+    // Check repeats across both records
+    let reps = parse_genbank_repeats(&path).unwrap();
+    assert_eq!(reps.len(), 2, "should parse 2 repeats across 2 records");
+    assert_eq!(reps[0].seq_id, "NC_chr");
+    assert_eq!(reps[0].name, "IS1");
+    assert_eq!(reps[1].seq_id, "pPlasmid_1");
+    assert_eq!(reps[1].name, "IS186");
+
+    let _ = std::fs::remove_dir_all(dir);
+}

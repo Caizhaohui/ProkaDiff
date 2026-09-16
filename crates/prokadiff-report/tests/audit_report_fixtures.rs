@@ -100,6 +100,8 @@ fn test_fixture_1_clean_edit() {
         sample: mock_sample(),
         intended_edits: intended,
         variants: vec![intended_var],
+        guide_sites: vec![],
+        variant_site_links: vec![],
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -151,6 +153,8 @@ fn test_fixture_2_partial_cassette() {
         sample: mock_sample(),
         intended_edits: intended,
         variants: vec![],
+        guide_sites: vec![],
+        variant_site_links: vec![],
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -199,6 +203,8 @@ fn test_fixture_3_mobile_element_insertion() {
         sample: mock_sample(),
         intended_edits: vec![],
         variants: vec![is_var],
+        guide_sites: vec![],
+        variant_site_links: vec![],
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -246,6 +252,8 @@ fn test_fixture_4_candidate_offtarget() {
         sample: mock_sample(),
         intended_edits: vec![],
         variants: vec![ot_var],
+        guide_sites: vec![],
+        variant_site_links: vec![],
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -269,6 +277,8 @@ fn test_fixture_5_unvalidated_cfd_gate() {
         sample: mock_sample(),
         intended_edits: vec![],
         variants: vec![],
+        guide_sites: vec![],
+        variant_site_links: vec![],
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -365,6 +375,8 @@ fn test_gene_annotation_rendering_in_report_and_tsv() {
         sample: mock_sample(),
         intended_edits: vec![],
         variants: vec![gene_var.clone()],
+        guide_sites: vec![],
+        variant_site_links: vec![],
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 

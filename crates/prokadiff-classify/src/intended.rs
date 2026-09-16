@@ -282,6 +282,110 @@ fn del_matches_intended(e: &GdEntry, t: &IntendedEdit) -> bool {
     size_ok && (t.alt.is_empty() || t.alt == ".")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CassetteJunctionSide {
+    Left,
+    Right,
+    Ambiguous,
+}
+
+fn classify_cassette_junction(
+    e: &GdEntry,
+    edit: &IntendedEdit,
+    window: u64,
+) -> Option<(CassetteJunctionSide, u64, i64)> {
+    let mut hits = Vec::new();
+    if e.kind == GdKind::Jc {
+        if let (Some(s1), Some(Ok(p1)), Some(st1)) = (
+            e.fields.first(),
+            e.fields.get(1).map(|x| x.parse::<u64>()),
+            e.fields.get(2),
+        ) {
+            if s1 == &edit.seq_id {
+                hits.push((p1, st1.as_str()));
+            }
+        }
+        if let (Some(s2), Some(Ok(p2)), Some(st2)) = (
+            e.fields.get(3),
+            e.fields.get(4).map(|x| x.parse::<u64>()),
+            e.fields.get(5),
+        ) {
+            if s2 == &edit.seq_id {
+                hits.push((p2, st2.as_str()));
+            }
+        }
+    } else if let (Some(s), Some(p)) = (e.seq_id(), e.position()) {
+        if s == edit.seq_id {
+            hits.push((p, "+"));
+        }
+    }
+
+    let mut best: Option<(CassetteJunctionSide, u64, i64, u64)> = None;
+    for (pos, strand) in hits {
+        let d_start = (pos as i64 - edit.start as i64).unsigned_abs();
+        let d_end = (pos as i64 - edit.end as i64).unsigned_abs();
+
+        if d_start > window && d_end > window {
+            continue;
+        }
+
+        let (side, diff, dist) = if edit.start == edit.end
+            || (edit.end.saturating_sub(edit.start) <= 5 && d_start <= window && d_end <= window)
+        {
+            // Insertion at single locus: use strand to differentiate flanks
+            if strand == "+" || strand == "0" || strand == "F" || strand == "forward" {
+                (
+                    CassetteJunctionSide::Left,
+                    pos as i64 - edit.start as i64,
+                    d_start,
+                )
+            } else if strand == "-" || strand == "1" || strand == "R" || strand == "reverse" {
+                (
+                    CassetteJunctionSide::Right,
+                    pos as i64 - edit.end as i64,
+                    d_end,
+                )
+            } else {
+                (
+                    CassetteJunctionSide::Ambiguous,
+                    pos as i64 - edit.start as i64,
+                    d_start,
+                )
+            }
+        } else if d_start < d_end && d_start <= window {
+            (
+                CassetteJunctionSide::Left,
+                pos as i64 - edit.start as i64,
+                d_start,
+            )
+        } else if d_end < d_start && d_end <= window {
+            (
+                CassetteJunctionSide::Right,
+                pos as i64 - edit.end as i64,
+                d_end,
+            )
+        } else if d_start <= window {
+            (
+                CassetteJunctionSide::Ambiguous,
+                pos as i64 - edit.start as i64,
+                d_start,
+            )
+        } else {
+            continue;
+        };
+
+        match best {
+            None => best = Some((side, pos, diff, dist)),
+            Some((_, _, _, prev_dist)) if dist < prev_dist => {
+                best = Some((side, pos, diff, dist));
+            }
+            _ => {}
+        }
+    }
+
+    best.map(|(side, pos, diff, _)| (side, pos, diff))
+}
+
 /// Assess a single intended edit against the set of observed mutations.
 fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEditAssessment {
     let kind = edit.kind.to_ascii_lowercase();
@@ -469,56 +573,172 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                 }
             }
 
-            let status = match jc_matches.len() {
-                0 => {
-                    if !other_events.is_empty() {
-                        for e in &other_events {
-                            unexpected_event_ids.push(e.id);
+            let mut left_candidates = Vec::new();
+            let mut right_candidates = Vec::new();
+            let mut ambiguous_candidates = Vec::new();
+
+            for e in &jc_matches {
+                if let Some((side, pos, diff)) = classify_cassette_junction(e, edit, 50) {
+                    match side {
+                        CassetteJunctionSide::Left => left_candidates.push((e, pos, diff)),
+                        CassetteJunctionSide::Right => right_candidates.push((e, pos, diff)),
+                        CassetteJunctionSide::Ambiguous => {
+                            ambiguous_candidates.push((e, pos, diff))
                         }
-                        notes.push("unexpected non-junction variant at cassette locus".into());
-                        IntendedEditStatus::UnexpectedStructure
-                    } else {
-                        IntendedEditStatus::Missing
                     }
                 }
-                1 => {
-                    matched_event_ids.push(jc_matches[0].id);
-                    left_boundary = Some(BoundaryAssessment {
-                        expected_pos: edit.start,
-                        observed_pos: jc_matches[0].position(),
-                        diff_bp: 0,
-                        passed: true,
-                    });
-                    notes.push("single junction detected (partial integration)".into());
-                    IntendedEditStatus::Partial
-                }
-                2 => {
-                    for jc in &jc_matches {
-                        matched_event_ids.push(jc.id);
-                    }
-                    left_boundary = Some(BoundaryAssessment {
-                        expected_pos: edit.start,
-                        observed_pos: Some(edit.start),
-                        diff_bp: 0,
-                        passed: true,
-                    });
-                    right_boundary = Some(BoundaryAssessment {
-                        expected_pos: edit.end,
-                        observed_pos: Some(edit.end),
-                        diff_bp: 0,
-                        passed: true,
-                    });
+            }
+
+            // Differentiate ambiguous candidates when one side is missing
+            if left_candidates.is_empty()
+                && !ambiguous_candidates.is_empty()
+                && right_candidates.len() == 1
+            {
+                let cand = ambiguous_candidates.remove(0);
+                left_candidates.push(cand);
+            } else if right_candidates.is_empty()
+                && !ambiguous_candidates.is_empty()
+                && left_candidates.len() == 1
+            {
+                let cand = ambiguous_candidates.remove(0);
+                right_candidates.push(cand);
+            } else if left_candidates.is_empty()
+                && right_candidates.is_empty()
+                && ambiguous_candidates.len() == 2
+            {
+                let cand1 = ambiguous_candidates.remove(0);
+                let cand2 = ambiguous_candidates.remove(0);
+                left_candidates.push(cand1);
+                right_candidates.push(cand2);
+            }
+
+            let status = if left_candidates.len() == 1
+                && right_candidates.len() == 1
+                && jc_matches.len() == 2
+                && other_events.is_empty()
+            {
+                let (left_e, left_pos, left_diff) = left_candidates[0];
+                let (right_e, right_pos, right_diff) = right_candidates[0];
+
+                matched_event_ids.push(left_e.id);
+                matched_event_ids.push(right_e.id);
+
+                let left_pass = left_diff.abs() <= 5;
+                let right_pass = right_diff.abs() <= 5;
+
+                left_boundary = Some(BoundaryAssessment {
+                    expected_pos: edit.start,
+                    observed_pos: Some(left_pos),
+                    diff_bp: left_diff,
+                    passed: left_pass,
+                });
+                right_boundary = Some(BoundaryAssessment {
+                    expected_pos: edit.end,
+                    observed_pos: Some(right_pos),
+                    diff_bp: right_diff,
+                    passed: right_pass,
+                });
+
+                if left_pass && right_pass {
                     notes.push("both cassette junctions confirmed".into());
                     IntendedEditStatus::Complete
+                } else {
+                    notes.push(format!(
+                        "cassette junction boundary discrepancy: left diff {} bp, right diff {} bp",
+                        left_diff, right_diff
+                    ));
+                    IntendedEditStatus::Partial
                 }
-                _ => {
-                    for jc in &jc_matches {
-                        matched_event_ids.push(jc.id);
+            } else if left_candidates.len() == 1
+                && right_candidates.is_empty()
+                && jc_matches.len() == 1
+                && other_events.is_empty()
+            {
+                let (left_e, left_pos, left_diff) = left_candidates[0];
+                matched_event_ids.push(left_e.id);
+                left_boundary = Some(BoundaryAssessment {
+                    expected_pos: edit.start,
+                    observed_pos: Some(left_pos),
+                    diff_bp: left_diff,
+                    passed: left_diff.abs() <= 5,
+                });
+                notes.push(
+                    "single junction detected (left flank candidate, partial integration)".into(),
+                );
+                IntendedEditStatus::Partial
+            } else if right_candidates.len() == 1
+                && left_candidates.is_empty()
+                && jc_matches.len() == 1
+                && other_events.is_empty()
+            {
+                let (right_e, right_pos, right_diff) = right_candidates[0];
+                matched_event_ids.push(right_e.id);
+                right_boundary = Some(BoundaryAssessment {
+                    expected_pos: edit.end,
+                    observed_pos: Some(right_pos),
+                    diff_bp: right_diff,
+                    passed: right_diff.abs() <= 5,
+                });
+                notes.push(
+                    "single junction detected (right flank candidate, partial integration)".into(),
+                );
+                IntendedEditStatus::Partial
+            } else if left_candidates.len() >= 2 && right_candidates.is_empty() {
+                for (e, _, _) in &left_candidates {
+                    unexpected_event_ids.push(e.id);
+                }
+                notes.push("aberrant multiple left junctions detected at cassette locus".into());
+                IntendedEditStatus::UnexpectedStructure
+            } else if right_candidates.len() >= 2 && left_candidates.is_empty() {
+                for (e, _, _) in &right_candidates {
+                    unexpected_event_ids.push(e.id);
+                }
+                notes.push("aberrant multiple right junctions detected at cassette locus".into());
+                IntendedEditStatus::UnexpectedStructure
+            } else if left_candidates.len() == 1 && right_candidates.len() == 1 {
+                // Correct pair + extra events
+                let (left_e, left_pos, left_diff) = left_candidates[0];
+                let (right_e, right_pos, right_diff) = right_candidates[0];
+                matched_event_ids.push(left_e.id);
+                matched_event_ids.push(right_e.id);
+                left_boundary = Some(BoundaryAssessment {
+                    expected_pos: edit.start,
+                    observed_pos: Some(left_pos),
+                    diff_bp: left_diff,
+                    passed: left_diff.abs() <= 5,
+                });
+                right_boundary = Some(BoundaryAssessment {
+                    expected_pos: edit.end,
+                    observed_pos: Some(right_pos),
+                    diff_bp: right_diff,
+                    passed: right_diff.abs() <= 5,
+                });
+                for e in &jc_matches {
+                    if e.id != left_e.id && e.id != right_e.id {
+                        unexpected_event_ids.push(e.id);
                     }
-                    unexpected_event_ids.extend(jc_matches.iter().skip(2).map(|e| e.id));
-                    notes.push("aberrant multiple junctions detected at cassette locus".into());
-                    IntendedEditStatus::UnexpectedStructure
                 }
+                for e in &other_events {
+                    unexpected_event_ids.push(e.id);
+                }
+                notes.push("correct junction pair detected with additional aberrant events at cassette locus".into());
+                IntendedEditStatus::UnexpectedStructure
+            } else if !jc_matches.is_empty() || !other_events.is_empty() {
+                for e in &jc_matches {
+                    unexpected_event_ids.push(e.id);
+                }
+                for e in &other_events {
+                    unexpected_event_ids.push(e.id);
+                }
+                let msg = if jc_matches.len() > 1 {
+                    "aberrant multiple junctions detected at cassette locus"
+                } else {
+                    "aberrant or unrecognized junction arrangement at cassette locus"
+                };
+                notes.push(msg.into());
+                IntendedEditStatus::UnexpectedStructure
+            } else {
+                IntendedEditStatus::Missing
             };
 
             IntendedEditAssessment {
@@ -718,6 +938,58 @@ mod tests {
             IntendedEditStatus::UnexpectedStructure
         );
         assert!(assessments[0].notes[0].contains("aberrant multiple junctions"));
+    }
+
+    #[test]
+    fn test_cassette_two_left_jc_yields_unexpected_structure() {
+        // Both JCs have positive strand at the same position -> 2 left-like JCs
+        let jc1 = GdEntry::jc(51, "chr", 5000, "+", "plasmid", 100, "-", 0);
+        let jc2 = GdEntry::jc(52, "chr", 5000, "+", "plasmid", 2500, "+", 0);
+        let edit = IntendedEdit {
+            edit_id: "cassette_two_left".into(),
+            seq_id: "chr".into(),
+            start: 5000,
+            end: 5000,
+            ref_allele: ".".into(),
+            alt: ".".into(),
+            kind: "cassette".into(),
+        };
+        let assessments = assess_intended_edits(&[jc1, jc2], &[edit]);
+        assert_eq!(
+            assessments[0].status,
+            IntendedEditStatus::UnexpectedStructure
+        );
+        assert!(assessments[0].notes[0].contains("aberrant multiple left junctions"));
+    }
+
+    #[test]
+    fn test_cassette_replacement_uses_actual_coordinates() {
+        // Replacement spanning 1000..=2000
+        // Left junction at 1002 (diff +2), Right junction at 1999 (diff -1)
+        let jc_left = GdEntry::jc(61, "chr", 1002, "+", "donor", 1, "+", 0);
+        let jc_right = GdEntry::jc(62, "chr", 1999, "-", "donor", 500, "-", 0);
+        let edit = IntendedEdit {
+            edit_id: "cassette_rep".into(),
+            seq_id: "chr".into(),
+            start: 1000,
+            end: 2000,
+            ref_allele: ".".into(),
+            alt: ".".into(),
+            kind: "cassette".into(),
+        };
+        let assessments = assess_intended_edits(&[jc_left, jc_right], &[edit]);
+        assert_eq!(assessments[0].status, IntendedEditStatus::Complete);
+        let left_b = assessments[0].left_boundary.as_ref().unwrap();
+        assert_eq!(left_b.expected_pos, 1000);
+        assert_eq!(left_b.observed_pos, Some(1002));
+        assert_eq!(left_b.diff_bp, 2);
+        assert!(left_b.passed);
+
+        let right_b = assessments[0].right_boundary.as_ref().unwrap();
+        assert_eq!(right_b.expected_pos, 2000);
+        assert_eq!(right_b.observed_pos, Some(1999));
+        assert_eq!(right_b.diff_bp, -1);
+        assert!(right_b.passed);
     }
 
     #[test]

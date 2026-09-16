@@ -111,6 +111,36 @@ pub fn read_fasta(path: impl AsRef<Path>) -> Result<Vec<FastaRecord>> {
     Ok(recs)
 }
 
+/// Helper to parse GenBank coordinate spans including join, complement, <, >
+fn parse_genbank_span(loc_str: &str) -> Option<(u64, u64, i8)> {
+    let is_comp = loc_str.contains("complement");
+    let mut min_start = u64::MAX;
+    let mut max_end = 0u64;
+
+    for part in loc_str.split([',', '(', ')']) {
+        let part = part.trim();
+        if let Some((s_str, e_str)) = part.split_once("..") {
+            let s_clean = s_str.trim().trim_start_matches('<');
+            let e_clean = e_str.trim().trim_start_matches('>');
+            if let (Ok(s), Ok(e)) = (s_clean.parse::<u64>(), e_clean.parse::<u64>()) {
+                if s < min_start {
+                    min_start = s;
+                }
+                if e > max_end {
+                    max_end = e;
+                }
+            }
+        }
+    }
+
+    if min_start != u64::MAX && max_end > 0 {
+        let strand = if is_comp { -1 } else { 1 };
+        Some((min_start, max_end, strand))
+    } else {
+        None
+    }
+}
+
 /// Parse repeat_region and mobile_element annotations from a GenBank file.
 pub fn parse_genbank_repeats(path: impl AsRef<Path>) -> Result<Vec<RepeatRegion>> {
     let path = path.as_ref();
@@ -122,11 +152,30 @@ pub fn parse_genbank_repeats(path: impl AsRef<Path>) -> Result<Vec<RepeatRegion>
     let mut repeats = Vec::new();
     let mut curr_seq = String::from("chr");
     let mut pending_repeat: Option<(u64, u64, i8, String)> = None;
+    let mut in_origin = false;
 
     for line in reader.lines() {
         let line = line?;
+        let trimmed = line.trim();
+
+        if in_origin {
+            if trimmed == "//" {
+                in_origin = false;
+            }
+            continue;
+        }
+
         let t = line.trim_start();
         if t.to_ascii_uppercase().starts_with("LOCUS") {
+            if let Some((start, end, strand, name)) = pending_repeat.take() {
+                repeats.push(RepeatRegion {
+                    seq_id: curr_seq.clone(),
+                    start,
+                    end,
+                    strand,
+                    name,
+                });
+            }
             if let Some(id) = t.split_whitespace().nth(1) {
                 curr_seq = id.to_string();
             }
@@ -140,7 +189,17 @@ pub fn parse_genbank_repeats(path: impl AsRef<Path>) -> Result<Vec<RepeatRegion>
                     name,
                 });
             }
-            break;
+            in_origin = true;
+        } else if trimmed == "//" {
+            if let Some((start, end, strand, name)) = pending_repeat.take() {
+                repeats.push(RepeatRegion {
+                    seq_id: curr_seq.clone(),
+                    start,
+                    end,
+                    strand,
+                    name,
+                });
+            }
         } else if line.starts_with("     ") && !line.starts_with("      ") {
             // Feature line (5 spaces indent in standard GenBank)
             if let Some((start, end, strand, name)) = pending_repeat.take() {
@@ -157,17 +216,8 @@ pub fn parse_genbank_repeats(path: impl AsRef<Path>) -> Result<Vec<RepeatRegion>
                     .trim_start_matches("repeat_region")
                     .trim_start_matches("mobile_element")
                     .trim();
-                let is_comp = loc_part.starts_with("complement(");
-                let s = loc_part
-                    .trim_start_matches("complement(")
-                    .trim_end_matches(')');
-                if let Some((start_s, end_s)) = s.split_once("..") {
-                    if let (Ok(start), Ok(end)) =
-                        (start_s.trim().parse::<u64>(), end_s.trim().parse::<u64>())
-                    {
-                        let strand = if is_comp { -1 } else { 1 };
-                        pending_repeat = Some((start, end, strand, String::from("repeat")));
-                    }
+                if let Some((start, end, strand)) = parse_genbank_span(loc_part) {
+                    pending_repeat = Some((start, end, strand, String::from("repeat")));
                 }
             }
         } else if let Some((_, _, _, ref mut name)) = pending_repeat {
@@ -215,6 +265,13 @@ pub struct GenbankFeature {
     pub product: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActiveQualifier {
+    LocusTag,
+    Gene,
+    Product,
+}
+
 /// Parse CDS, tRNA, and rRNA features from a GenBank file.
 pub fn parse_genbank_features(path: impl AsRef<Path>) -> Result<Vec<GenbankFeature>> {
     let path = path.as_ref();
@@ -226,11 +283,26 @@ pub fn parse_genbank_features(path: impl AsRef<Path>) -> Result<Vec<GenbankFeatu
     let mut features = Vec::new();
     let mut curr_seq = String::from("chr");
     let mut pending_feature: Option<GenbankFeature> = None;
+    let mut in_origin = false;
+    let mut active_qualifier: Option<ActiveQualifier> = None;
 
     for line in reader.lines() {
         let line = line?;
+        let trimmed = line.trim();
+
+        if in_origin {
+            if trimmed == "//" {
+                in_origin = false;
+            }
+            continue;
+        }
+
         let t = line.trim_start();
         if t.to_ascii_uppercase().starts_with("LOCUS") {
+            if let Some(feat) = pending_feature.take() {
+                features.push(feat);
+            }
+            active_qualifier = None;
             if let Some(id) = t.split_whitespace().nth(1) {
                 curr_seq = id.to_string();
             }
@@ -238,7 +310,13 @@ pub fn parse_genbank_features(path: impl AsRef<Path>) -> Result<Vec<GenbankFeatu
             if let Some(feat) = pending_feature.take() {
                 features.push(feat);
             }
-            break;
+            active_qualifier = None;
+            in_origin = true;
+        } else if trimmed == "//" {
+            if let Some(feat) = pending_feature.take() {
+                features.push(feat);
+            }
+            active_qualifier = None;
         } else if (line.starts_with("     ") && !line.starts_with("      "))
             || (!line.trim_start().starts_with('/')
                 && (t.starts_with("CDS")
@@ -250,6 +328,8 @@ pub fn parse_genbank_features(path: impl AsRef<Path>) -> Result<Vec<GenbankFeatu
             if let Some(feat) = pending_feature.take() {
                 features.push(feat);
             }
+            active_qualifier = None;
+
             let (ftype, rest) = if let Some(r) = t.strip_prefix("CDS") {
                 ("CDS", r.trim())
             } else if let Some(r) = t.strip_prefix("tRNA") {
@@ -263,42 +343,65 @@ pub fn parse_genbank_features(path: impl AsRef<Path>) -> Result<Vec<GenbankFeatu
             };
 
             if !ftype.is_empty() {
-                let is_comp = rest.starts_with("complement(");
-                let clean_coords = rest
-                    .trim_start_matches("complement(")
-                    .trim_end_matches(')')
-                    .trim_start_matches("join(")
-                    .trim_end_matches(')');
-                // Take the first coordinate span if join
-                let first_span = clean_coords.split(',').next().unwrap_or(clean_coords);
-                if let Some((start_s, end_s)) = first_span.split_once("..") {
-                    let start_clean = start_s.trim().trim_start_matches('<');
-                    let end_clean = end_s.trim().trim_start_matches('>');
-                    if let (Ok(start), Ok(end)) =
-                        (start_clean.parse::<u64>(), end_clean.parse::<u64>())
-                    {
-                        let strand = if is_comp { -1 } else { 1 };
-                        pending_feature = Some(GenbankFeature {
-                            seq_id: curr_seq.clone(),
-                            start,
-                            end,
-                            strand,
-                            feature_type: ftype.to_string(),
-                            locus_tag: None,
-                            gene_name: None,
-                            product: None,
-                        });
-                    }
+                if let Some((start, end, strand)) = parse_genbank_span(rest) {
+                    pending_feature = Some(GenbankFeature {
+                        seq_id: curr_seq.clone(),
+                        start,
+                        end,
+                        strand,
+                        feature_type: ftype.to_string(),
+                        locus_tag: None,
+                        gene_name: None,
+                        product: None,
+                    });
                 }
             }
         } else if let Some(ref mut feat) = pending_feature {
             let sub_t = line.trim();
-            if let Some(rest) = sub_t.strip_prefix("/locus_tag=") {
-                feat.locus_tag = Some(rest.trim_matches('"').to_string());
-            } else if let Some(rest) = sub_t.strip_prefix("/gene=") {
-                feat.gene_name = Some(rest.trim_matches('"').to_string());
-            } else if let Some(rest) = sub_t.strip_prefix("/product=") {
-                feat.product = Some(rest.trim_matches('"').to_string());
+            if sub_t.starts_with('/') {
+                if let Some(rest) = sub_t.strip_prefix("/locus_tag=") {
+                    let unquoted = rest.trim_matches('"');
+                    feat.locus_tag = Some(unquoted.to_string());
+                    if rest.starts_with('"') && !rest.ends_with('"') || (rest == "\"") {
+                        active_qualifier = Some(ActiveQualifier::LocusTag);
+                    } else {
+                        active_qualifier = None;
+                    }
+                } else if let Some(rest) = sub_t.strip_prefix("/gene=") {
+                    let unquoted = rest.trim_matches('"');
+                    feat.gene_name = Some(unquoted.to_string());
+                    if rest.starts_with('"') && !rest.ends_with('"') || (rest == "\"") {
+                        active_qualifier = Some(ActiveQualifier::Gene);
+                    } else {
+                        active_qualifier = None;
+                    }
+                } else if let Some(rest) = sub_t.strip_prefix("/product=") {
+                    let unquoted = rest.trim_matches('"');
+                    feat.product = Some(unquoted.to_string());
+                    if rest.starts_with('"') && !rest.ends_with('"') || (rest == "\"") {
+                        active_qualifier = Some(ActiveQualifier::Product);
+                    } else {
+                        active_qualifier = None;
+                    }
+                } else {
+                    active_qualifier = None;
+                }
+            } else if let Some(active) = active_qualifier {
+                // Continuation line for multiline qualifier
+                let ends_quote = sub_t.ends_with('"');
+                let content = sub_t.trim_end_matches('"');
+                let target = match active {
+                    ActiveQualifier::LocusTag => &mut feat.locus_tag,
+                    ActiveQualifier::Gene => &mut feat.gene_name,
+                    ActiveQualifier::Product => &mut feat.product,
+                };
+                if let Some(val) = target {
+                    val.push(' ');
+                    val.push_str(content);
+                }
+                if ends_quote {
+                    active_qualifier = None;
+                }
             }
         }
     }

@@ -44,8 +44,16 @@ pub struct Cli {
     /// Number of parallel threads for alignment and pileup.
     #[arg(long, default_value_t = 8)]
     pub threads: usize,
-    /// Omit the hypothesis column from unintended.tsv.
-    #[arg(long, default_value_t = false)]
+    /// Explicitly opt-in to experimental mechanistic hypothesis annotations (e.g. SOS-induced distal mutations).
+    /// Default: false (production path remains strictly observational).
+    #[arg(
+        long = "experimental-hypothesis-annotation",
+        visible_alias = "hypothesis",
+        default_value_t = false
+    )]
+    pub experimental_hypothesis_annotation: bool,
+    /// Deprecated legacy flag: omit hypothesis (hypothesis is now disabled by default).
+    #[arg(long = "no-hypothesis", hide = true, default_value_t = false)]
     pub no_hypothesis: bool,
     /// Directory where diff outputs (unintended.tsv, summary.txt, .gd) will be written.
     #[arg(long)]
@@ -312,7 +320,7 @@ pub fn validate_product(cli: &Cli) -> Result<ProductJob, CliError> {
         outdir,
         keep_bam: cli.keep_bam,
         intended: cli.intended.clone(),
-        hypothesis: !cli.no_hypothesis,
+        hypothesis: cli.experimental_hypothesis_annotation && !cli.no_hypothesis,
         offtarget_association_window: cli.offtarget_association_window,
         max_dna_bulge: cli.max_dna_bulge,
         max_rna_bulge: cli.max_rna_bulge,
@@ -571,6 +579,34 @@ mod tests {
         let job = validate_product(&cli).unwrap();
         assert_eq!(job.spacer.as_deref(), Some("ACGTACGTACGTACGTACGT"));
         assert_eq!(job.intended.as_ref(), Some(&i));
+        assert!(!job.hypothesis);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn hypothesis_opt_in_flag_enables_hypothesis() {
+        let d = test_dir("hyp_opt_in");
+        let s = touch(&d, "s.fq");
+        let e = touch(&d, "e.fq");
+        let r = touch(&d, "r.fa");
+        let cli = Cli::try_parse_from([
+            "prokdiff",
+            "--starter",
+            s.to_str().unwrap(),
+            "--edited",
+            e.to_str().unwrap(),
+            "--ref",
+            r.to_str().unwrap(),
+            "--editor",
+            "cas9",
+            "--spacer",
+            "acgtacgtacgtacgtacgt",
+            "--outdir",
+            "out",
+            "--experimental-hypothesis-annotation",
+        ])
+        .unwrap();
+        let job = validate_product(&cli).unwrap();
         assert!(job.hypothesis);
         let _ = std::fs::remove_dir_all(d);
     }

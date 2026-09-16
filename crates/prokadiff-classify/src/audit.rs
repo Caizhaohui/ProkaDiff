@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use prokadiff_gd::{GdEntry, GdKind};
+use prokadiff_offtarget::{MutationOffTargetLink, OffTargetSite};
 
 use crate::classify::{ClassifiedMutation, MutationClass};
 use crate::intended::IntendedEditAssessment;
@@ -204,6 +205,30 @@ pub struct SampleMetadata {
     pub threads: usize,
 }
 
+/// Gating and verification status for analysis components.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValidationStatus {
+    NotRequested,
+    InternalImplementation,
+    FixtureValidated,
+    ExternalOracleValidated,
+    ExperimentalUnvalidated,
+    Disabled,
+}
+
+impl ValidationStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotRequested => "NOT_REQUESTED",
+            Self::InternalImplementation => "INTERNAL_IMPLEMENTATION",
+            Self::FixtureValidated => "FIXTURE_VALIDATED",
+            Self::ExternalOracleValidated => "EXTERNAL_ORACLE_VALIDATED",
+            Self::ExperimentalUnvalidated => "EXPERIMENTAL_UNVALIDATED",
+            Self::Disabled => "DISABLED",
+        }
+    }
+}
+
 /// Verifiable technical provenance and oracle gating status.
 #[derive(Clone, Debug)]
 pub struct AnalysisProvenance {
@@ -224,15 +249,20 @@ pub struct AuditResult {
     pub sample: SampleMetadata,
     pub intended_edits: Vec<IntendedEditAssessment>,
     pub variants: Vec<AnnotatedVariant>,
+    pub guide_sites: Vec<OffTargetSite>,
+    pub variant_site_links: Vec<MutationOffTargetLink>,
     pub provenance: AnalysisProvenance,
 }
 
 /// Build a unified `AuditResult` from the classified mutations and intended assessments.
+#[allow(clippy::too_many_arguments)]
 pub fn build_audit_result(
     sample: SampleMetadata,
     intended_assessments: Vec<IntendedEditAssessment>,
     unintended_mutations: &[ClassifiedMutation],
     intended_observed: &[GdEntry],
+    guide_sites: &[OffTargetSite],
+    variant_site_links: &[MutationOffTargetLink],
     provenance: AnalysisProvenance,
     features: &[AnnotatedFeature],
 ) -> AuditResult {
@@ -309,14 +339,40 @@ pub fn build_audit_result(
         let seq_id = entry.seq_id().unwrap_or("");
         let gene_annotation = find_gene_annotation(seq_id, pos, features);
 
-        let guide_relation = match cm.class {
-            MutationClass::NearHomolog => GuideRelation::CandidateOffTarget {
-                site_id: format!("SITE_{id_counter:04}"),
+        let mut_id = format!("mut_{}", entry.id);
+        let matched_link = variant_site_links
+            .iter()
+            .filter(|l| l.mutation_id == mut_id)
+            .min_by_key(|l| (l.distance_to_site, l.mismatches));
+
+        let guide_relation = if let Some(link) = matched_link {
+            GuideRelation::CandidateOffTarget {
+                site_id: link.site_id.clone(),
+                spacer_mismatches: link.mismatches,
+                pam: link.pam.clone(),
+                distance_to_site: link.distance_to_site,
+            }
+        } else if cm.class == MutationClass::NearHomolog {
+            let closest_site = guide_sites
+                .iter()
+                .filter(|s| entry.seq_id().map(|seq| seq == s.seq_id).unwrap_or(false))
+                .min_by_key(|s| {
+                    if pos < s.start {
+                        s.start.saturating_sub(pos)
+                    } else {
+                        pos.saturating_sub(s.end)
+                    }
+                });
+            GuideRelation::CandidateOffTarget {
+                site_id: closest_site
+                    .map(|s| s.site_id.clone())
+                    .unwrap_or_else(|| "SITE_UNKNOWN".to_string()),
                 spacer_mismatches: cm.offtarget_mismatch.unwrap_or(0),
                 pam: cm.pam_profile.clone().unwrap_or_default(),
                 distance_to_site: cm.distance_to_site.unwrap_or(0),
-            },
-            _ => GuideRelation::None,
+            }
+        } else {
+            GuideRelation::None
         };
 
         let review_priority = if is_unexpected_on_target {
@@ -354,6 +410,8 @@ pub fn build_audit_result(
         sample,
         intended_edits: intended_assessments,
         variants,
+        guide_sites: guide_sites.to_vec(),
+        variant_site_links: variant_site_links.to_vec(),
         provenance,
     }
 }
@@ -683,6 +741,8 @@ mod tests {
             vec![intended_edit],
             &[unintended_cm],
             &[intended_entry],
+            &[],
+            &[],
             prov,
             &[],
         );
@@ -696,6 +756,80 @@ mod tests {
             OriginStatus::PostEditDifferential
         );
         assert_eq!(audit.variants[1].review_priority, ReviewPriority::Review);
+    }
+
+    #[test]
+    fn test_guide_relation_uses_real_link_site_id() {
+        let sample = SampleMetadata {
+            starter_names: vec!["parent.fastq".into()],
+            edited_names: vec!["edited.fastq".into()],
+            reference_names: vec!["ref.fa".into()],
+            editor: "cas9".into(),
+            spacer: Some("GAGTCCGAGCAGAAGAAGAA".into()),
+            pam: Some("NGG".into()),
+            threads: 4,
+        };
+
+        let prov = AnalysisProvenance {
+            prokadiff_version: "0.1.0".into(),
+            git_commit: "test".into(),
+            reference_sha256: None,
+            bowtie2_version: None,
+            offtarget_search_status: ValidationStatus::FixtureValidated.as_str().into(),
+            cfd_scoring_status: ValidationStatus::Disabled.as_str().into(),
+            hsu_scoring_status: ValidationStatus::Disabled.as_str().into(),
+            bulge_search_status: ValidationStatus::ExperimentalUnvalidated.as_str().into(),
+            run_timestamp: "2026-09-16T12:00:00Z".into(),
+        };
+
+        let unintended_cm = ClassifiedMutation {
+            entry: GdEntry::snp(10, "chr", 125, "C"),
+            class: MutationClass::NearHomolog,
+            pam_profile: Some("CGG".into()),
+            offtarget_mismatch: Some(1),
+            distance_to_site: Some(5),
+            hypothesis: None,
+        };
+
+        let real_link = MutationOffTargetLink {
+            mutation_id: "mut_10".into(),
+            site_id: "SITE_000042".into(),
+            mutation_type: "SNP".into(),
+            mutation_position: 125,
+            site_start: 100,
+            site_end: 123,
+            distance_to_site: 2,
+            mismatches: 1,
+            pam: "CGG".into(),
+            cfd_score: None,
+            association_window: 50,
+        };
+
+        let audit = build_audit_result(
+            sample,
+            vec![],
+            &[unintended_cm],
+            &[],
+            &[],
+            &[real_link],
+            prov,
+            &[],
+        );
+
+        assert_eq!(audit.variants.len(), 1);
+        match &audit.variants[0].guide_relation {
+            GuideRelation::CandidateOffTarget {
+                site_id,
+                spacer_mismatches,
+                distance_to_site,
+                ..
+            } => {
+                assert_eq!(site_id, "SITE_000042", "must link to real site_id");
+                assert_eq!(*spacer_mismatches, 1);
+                assert_eq!(*distance_to_site, 2);
+            }
+            other => panic!("expected CandidateOffTarget, got {:?}", other),
+        }
     }
 
     #[test]

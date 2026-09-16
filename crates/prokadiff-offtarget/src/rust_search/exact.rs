@@ -14,8 +14,18 @@ pub fn scan_genome(
 ) -> Vec<OffTargetSite> {
     let mut all_sites = Vec::new();
     for (name, seq) in refs {
-        let sites = scan_contig(name, seq, guide, profile, max_mismatches, all_sites.len());
+        let sites = scan_contig(name, seq, guide, profile, max_mismatches, 0);
         all_sites.extend(sites);
+    }
+    all_sites.sort_by(|a, b| {
+        a.seq_id
+            .cmp(&b.seq_id)
+            .then_with(|| a.start.cmp(&b.start))
+            .then_with(|| (a.strand as u8).cmp(&(b.strand as u8)))
+            .then_with(|| a.target_seq.cmp(&b.target_seq))
+    });
+    for (idx, site) in all_sites.iter_mut().enumerate() {
+        site.site_id = format!("SITE_{:06}", idx + 1);
     }
     all_sites
 }
