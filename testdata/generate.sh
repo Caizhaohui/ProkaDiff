@@ -32,7 +32,7 @@ OUT="${OUT:-${ROOT}/testdata/generated/${FIXTURE}}"
 mkdir -p "${OUT}"
 
 if ! command -v wgsim >/dev/null 2>&1; then
-  echo "error: wgsim not found on PATH. Load the BactGenome conda env on a compute node." >&2
+  echo "error: wgsim not found on PATH. Load the prokadiff conda env on a compute node." >&2
   exit 1
 fi
 if ! command -v python3 >/dev/null 2>&1; then

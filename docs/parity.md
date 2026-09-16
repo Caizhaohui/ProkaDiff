@@ -23,6 +23,8 @@ gdtools SUBTRACT breseq.gd rust.gd   # 应为空（无漏报）
 
 在下方允许差异规范化之后，两个方向都应为空（或仅剩 parity 白名单内条目）。
 
+比较器对 `SNP` / `INS` / `DEL` / `MOB` / `AMP` / `CON` 使用核心 GD 字段判等；breseq 的 `key=value` 注释（例如 `repeat_*`）属于证据注释，不改变变异身份。原始 `gdtools SUBTRACT` 仍作为独立结果证据保存。
+
 ## 时间与资源记录
 
 建议每行一条 workload（CSV 或表）：

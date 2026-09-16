@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Layer-2 Genome Diff leftover + wall/RSS CSV (compute node only).
 
-Red-line types: SNP / INS / DEL / MOB / AMP / CON (exact key).
+Red-line types: SNP / INS / DEL / MOB / AMP / CON (exact core key).
 JC: greedy match after canonicalizing sides, ±JC_TOL_BP (default 5).
 Unmatched JC are additionally split by a nonempty reject= field
 (oracle-side rejected predictions, e.g. breseq reject=COVERAGE_EVENNESS_SKEW).
@@ -46,7 +46,12 @@ def parse_gd_muts(path: Path):
 
 
 def exact_key(row):
-    return (row["kind"], tuple(row["fields"]))
+    fields = row["fields"]
+    if row["kind"] in RED:
+        fields = tuple(field for field in fields if "=" not in field)
+    else:
+        fields = tuple(fields)
+    return (row["kind"], fields)
 
 
 def leftover_exact(left, right):
@@ -165,12 +170,9 @@ def ver(cmd):
         return f"unavailable:{e}"
 
 
-# Documented sequencing artifacts in specific published benchmark datasets (see docs/parity.md)
+# No exemptions allowed: strict 100% parity required for Clonal
 KNOWN_BENCHMARK_ARTIFACTS = {
-    "clonal": {
-        ("INS", "REL606", 3875632),  # 7-T -> 8-T homopolymer artifact in 36 bp Illumina reads
-        ("DEL", "REL606", 4126706),  # 8-T -> 7-T homopolymer artifact in 36 bp Illumina reads
-    }
+    "clonal": set(),
 }
 
 
@@ -229,7 +231,7 @@ def main():
     bt2_v = ver(["bowtie2", "--version"])
     notes = [
         f"jc_tol_bp={args.jc_tol_bp}",
-        "red=SNP,INS,DEL,MOB,AMP,CON exact; JC greedy ±tol after side canonicalization; UN/RA/MC ignored; "
+        "red=SNP,INS,DEL,MOB,AMP,CON exact core fields (annotations ignored); JC greedy ±tol after side canonicalization; UN/RA/MC ignored; "
         "under_jc_oracle_rejected = unmatched oracle-side JC carrying nonempty reject= (breseq rejected predictions)",
         f"oracle_breseq_env={breseq_v}",
         summarize("vs_samenode", vs_node),

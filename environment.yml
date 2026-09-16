@@ -1,0 +1,13 @@
+name: prokadiff
+channels:
+  - conda-forge
+  - bioconda
+channel_priority: strict
+dependencies:
+  - python=3.12
+  - rust=1.98.1
+  - rust-analyzer=2026.08.24
+  - rust-src=1.98.1
+  - bowtie2=2.5.4
+  - breseq=0.40.2
+  - wgsim=1.0

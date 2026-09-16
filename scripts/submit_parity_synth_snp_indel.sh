@@ -22,8 +22,10 @@ fi
 THREADS="${SLURM_CPUS_PER_TASK:-8}"
 ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "${ROOT}"
+CARGO_TARGET_DIR="${ROOT}/target/slurm-${SLURM_JOB_ID}"
+export CARGO_TARGET_DIR
 
-CONDA_ENV="${PROKDIFF_CONDA_ENV:-/hpcfs/fhome/caizhh/.conda/envs/BactGenome}"
+CONDA_ENV="${PROKDIFF_CONDA_ENV:-/hpcfs/fhome/caizhh/.conda/envs/prokadiff}"
 if [[ -f "${CONDA_ENV}/bin/activate" ]]; then
   # shellcheck disable=SC1091
   source "${CONDA_ENV}/bin/activate" "${CONDA_ENV}" 2>/dev/null || true
@@ -45,7 +47,7 @@ fi
 
 echo "building release prokadiff (incremental; no-op if fresh)..."
 cargo build --release -p prokadiff
-PROKDIFF="${ROOT}/target/release/prokadiff"
+PROKDIFF="${CARGO_TARGET_DIR}/release/prokadiff"
 
 bash "${ROOT}/testdata/generate.sh" "${ROOT}/testdata/generated/synth_snp_indel"
 GEN="${ROOT}/testdata/generated/synth_snp_indel"

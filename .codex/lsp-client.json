@@ -1,0 +1,10 @@
+{
+  "lsp": {
+    "rust": {
+      "priority": 100,
+      "env": {
+        "PATH": "/hpcfs/fhome/caizhh/.conda/envs/prokadiff/bin:/usr/bin:/bin"
+      }
+    }
+  }
+}
