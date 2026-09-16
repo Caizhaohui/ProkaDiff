@@ -1,0 +1,7 @@
+dataset	sample_id	truth_level	variant_validated	intended_validated	mob_validated	jc_validated	report_reviewed	status	notes
+bl21_user	B21_3_1	MANUALLY_CURATED	true	true	true	true	true	ACTIVE	19.6kb IS1A-mediated deletion; target lacZ deleted
+bl21_user	B21_4_1	MANUALLY_CURATED	true	true	true	true	true	ACTIVE	43.5kb IS1A-mediated deletion; target lacZ deleted
+bl21_user	B21_2_1	MANUALLY_CURATED	true	true	true	true	true	ACTIVE	45.2kb IS1-mediated rearrangement; target lacZ deleted
+rel606	SRR030257	BRESEQ_ORACLE	true	false	true	true	true	ACTIVE	REL606 20k-gen isolate vs breseq 0.40.2 oracle
+prjna1088182	SRR28385261	PUBLICATION_REPORTED	false	false	false	false	false	PLANNED	Widney2024 Cas9 cohort
+prjna884016	SAMN30999011	ASSEMBLY_CONFIRMED	false	false	false	false	false	PLANNED	Orthogonal finished assembly structural truth

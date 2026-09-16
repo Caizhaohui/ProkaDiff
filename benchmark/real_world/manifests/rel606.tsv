@@ -1,0 +1,2 @@
+dataset_id	sample_id	starter_id	r1	r2	reference	intended_tsv	editor	spacer	pam	truth_source	sample_type	notes
+rel606	SRR030257	REL606_WT	testdata/layer2/clonal/Clonal_Sample/SRR030257_1.fastq	testdata/layer2/clonal/Clonal_Sample/SRR030257_2.fastq	testdata/layer2/clonal/Clonal_Sample/REL606.gbk	.	dsb	.	.	BRESEQ_ORACLE	single_clone	REL606 20k generation clonal evolution isolate

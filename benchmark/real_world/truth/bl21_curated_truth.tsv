@@ -1,0 +1,4 @@
+truth_id	variant_type	seq_id	start	end	ref	alt	is_intended	is_structural	mobile_element	guide_relation	evidence	confidence	notes
+TRUTH_BL21_3_1_DEL	DEL	NZ_CP053602.1	331956	351540	.	.	false	true	IS1A	on_target_aberrant	JC:331955/-1:351541/+1:385reads;MC:331956-352268:0x	HIGH	19.6 kb deletion removing lacZ and terminating at downstream IS1A (HO396_RS01630)
+TRUTH_BL21_4_1_DEL	DEL	NZ_CP053602.1	307992	351540	.	.	false	true	IS1A	on_target_aberrant	JC:307991/-1:351541/+1:389reads;MC:307992-352239:0x	HIGH	43.5 kb deletion removing lacZ and terminating at downstream IS1A (HO396_RS01630)
+TRUTH_BL21_2_1_DEL	DEL	NZ_CP053602.1	307062	352239	.	.	false	true	IS1	on_target_aberrant	JC:264860/-1:307061/-1:484reads;MC:307062-352239:0x	HIGH	45.2 kb complex rearrangement removing lacZ between upstream IS1 and downstream IS1

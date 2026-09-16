@@ -1,0 +1,7 @@
+dataset_id	sample_id	starter_id	r1	r2	reference	intended_tsv	editor	spacer	pam	truth_source	sample_type	notes
+prjna1088182	SRR28385261	SRR28385285	data/prjna1088182/SRR28385261_1.fastq.gz	data/prjna1088182/SRR28385261_2.fastq.gz	data/references/MG1655.gbk	.	cas9	.	NGG	PUBLICATION_REPORTED	single_clone	Widney2024 Cas9 edited clone 1
+prjna1088182	SRR28385262	SRR28385285	data/prjna1088182/SRR28385262_1.fastq.gz	data/prjna1088182/SRR28385262_2.fastq.gz	data/references/MG1655.gbk	.	cas9	.	NGG	PUBLICATION_REPORTED	single_clone	Widney2024 Cas9 edited clone 2
+prjna1088182	SRR28385263	SRR28385285	data/prjna1088182/SRR28385263_1.fastq.gz	data/prjna1088182/SRR28385263_2.fastq.gz	data/references/MG1655.gbk	.	cas9	.	NGG	PUBLICATION_REPORTED	single_clone	Widney2024 Cas9 edited clone 3
+prjna1088182	SRR28385264	SRR28385285	data/prjna1088182/SRR28385264_1.fastq.gz	data/prjna1088182/SRR28385264_2.fastq.gz	data/references/MG1655.gbk	.	cas9	.	NGG	PUBLICATION_REPORTED	single_clone	Widney2024 Cas9 edited clone 4
+prjna1088182	SRR28385265	SRR28385285	data/prjna1088182/SRR28385265_1.fastq.gz	data/prjna1088182/SRR28385265_2.fastq.gz	data/references/MG1655.gbk	.	cas9	.	NGG	PUBLICATION_REPORTED	single_clone	Widney2024 Cas9 edited clone 5
+prjna1088182	SRR28385285	SRR28385285	data/prjna1088182/SRR28385285_1.fastq.gz	data/prjna1088182/SRR28385285_2.fastq.gz	data/references/MG1655.gbk	.	dsb	.	.	PUBLICATION_REPORTED	control	Widney2024 unedited parent control

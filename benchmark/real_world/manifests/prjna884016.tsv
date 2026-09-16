@@ -1,0 +1,3 @@
+dataset_id	sample_id	starter_id	r1	r2	reference	intended_tsv	editor	spacer	pam	truth_source	sample_type	notes
+prjna884016	SAMN30999011	SAMN30999010	data/prjna884016/SRR21677301_1.fastq.gz	data/prjna884016/SRR21677301_2.fastq.gz	data/references/ecoli_rel606.gbk	.	dsb	.	.	ASSEMBLY_CONFIRMED	single_clone	IS-element transposition structural truth clone 1
+prjna884016	SAMN30999012	SAMN30999010	data/prjna884016/SRR21677302_1.fastq.gz	data/prjna884016/SRR21677302_2.fastq.gz	data/references/ecoli_rel606.gbk	.	dsb	.	.	ASSEMBLY_CONFIRMED	single_clone	IS-element transposition structural truth clone 2
