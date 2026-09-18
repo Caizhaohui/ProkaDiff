@@ -36,6 +36,27 @@ fn reads_genbank_origin() {
 }
 
 #[test]
+fn reads_genbank_origin_prefers_version_over_locus_accession() {
+    // RW-005: LOCUS carries the bare accession (no version suffix), while
+    // VERSION carries the versioned accession that FASTA-derived seq_ids and
+    // `--intended` TSVs actually use. The contig name must come from VERSION.
+    let dir = std::env::temp_dir().join("prokdiff-fasta-test");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("versioned.gbk");
+    {
+        let mut f = File::create(&path).unwrap();
+        writeln!(
+            f,
+            "LOCUS       foo  8 bp\nVERSION     foo.2\nORIGIN\n        1 acgtacgt\n//"
+        )
+        .unwrap();
+    }
+    let recs = read_reference(&path).unwrap();
+    assert_eq!(recs[0].name, "foo.2");
+    assert_eq!(recs[0].seq, b"ACGTACGT");
+}
+
+#[test]
 fn read_reference_rejects_duplicate_ids_in_one_multirecord_fasta() {
     // Given: one multi-record FASTA whose records share an identifier.
     let dir = std::env::temp_dir().join(format!(
@@ -182,6 +203,25 @@ fn parses_rel606_gbk_repeats() {
 }
 
 #[test]
+fn parses_genbank_repeats_prefers_version_over_locus_accession() {
+    // RW-005: repeat_region/mobile_element seq_id must also use VERSION.
+    let dir = std::env::temp_dir().join("prokdiff-fasta-test");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("rep_versioned.gbk");
+    {
+        let mut f = File::create(&path).unwrap();
+        writeln!(
+            f,
+            "LOCUS       chr1  1000 bp\nVERSION     chr1.3\nFEATURES             Location/Qualifiers\n     repeat_region   100..200\n                     /mobile_element=\"insertion sequence:IS150\"\nORIGIN\n        1 aaaa\n//"
+        )
+        .unwrap();
+    }
+    let reps = parse_genbank_repeats(&path).unwrap();
+    assert_eq!(reps.len(), 1);
+    assert_eq!(reps[0].seq_id, "chr1.3");
+}
+
+#[test]
 fn test_parses_genbank_features() {
     use crate::fasta::parse_genbank_features;
     let dir = std::env::temp_dir().join(format!("test_gbk_feat_{}", std::process::id()));
@@ -212,6 +252,28 @@ fn test_parses_genbank_features() {
     assert_eq!(feats[1].strand, -1);
     assert_eq!(feats[1].feature_type, "tRNA");
     assert_eq!(feats[1].gene_name.as_deref(), Some("tRNA-Ala"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn parses_genbank_features_prefers_version_over_locus_accession() {
+    // RW-005: CDS/tRNA/rRNA/gene seq_id must also use VERSION.
+    use crate::fasta::parse_genbank_features;
+    let dir = std::env::temp_dir().join(format!("test_gbk_feat_ver_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("feat_versioned.gbk");
+    {
+        let mut f = File::create(&path).unwrap();
+        write!(
+            f,
+            "LOCUS       chr1  1000 bp\nVERSION     chr1.5\nFEATURES             Location/Qualifiers\n     CDS             100..300\n                     /gene=\"dnaA\"\nORIGIN\n        1 aaaa\n//\n"
+        )
+        .unwrap();
+    }
+    let feats = parse_genbank_features(&path).unwrap();
+    assert_eq!(feats.len(), 1);
+    assert_eq!(feats[0].seq_id, "chr1.5");
 
     let _ = std::fs::remove_dir_all(dir);
 }

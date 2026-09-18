@@ -33,6 +33,7 @@ B21_2_R2="$BL21_DATA/TCN202608300034/00.CleanData/B21_2_1/B21_2_1_2.clean.fq.gz"
 
 ORACLE_B21_3="$BL21_DATA/analysis_bl21_cas9_wgs/results/sv/B21_3_1/augmented_full/breseq/output/output.gd"
 ORACLE_B21_4="$BL21_DATA/analysis_bl21_cas9_wgs/results/sv/B21_4_1/augmented_full/breseq/output/output.gd"
+ORACLE_B21_2="$BL21_DATA/analysis_bl21_cas9_wgs/results/sv/B21_2_1/augmented_full/breseq/output/output.gd"
 
 OUT_BASE="$REPO_DIR/benchmark/real_world/results/bl21_user"
 mkdir -p "$OUT_BASE"
@@ -77,6 +78,23 @@ mkdir -p "$DIR_B21_4"
 echo "B21_4_1 evidence complete."
 
 # -------------------------------------------------------------
+# 2b. Single-sample Evidence Engine on B21_2_1 (P1-4: previously PLANNED,
+#     never executed -- see VALIDATION_REGISTRY.tsv)
+# -------------------------------------------------------------
+echo "--> [2b/4] Running ProkaDiff Evidence Engine on B21_2_1..."
+DIR_B21_2="$OUT_BASE/B21_2_1_evidence"
+mkdir -p "$DIR_B21_2"
+
+/usr/bin/time -v -o "$DIR_B21_2/telemetry.txt" \
+    "$PROKADIFF" evidence \
+        --ref "$REF" \
+        --fastq "$B21_2_R1" "$B21_2_R2" \
+        --threads 16 \
+        --outdir "$DIR_B21_2"
+
+echo "B21_2_1 evidence complete."
+
+# -------------------------------------------------------------
 # 3. Dual-strain Differential Audit: B21_3_1 (edited) vs B21_4_1 (starter)
 # -------------------------------------------------------------
 echo "--> [3/4] Running ProkaDiff Differential Audit (B21_3_1 edited vs B21_4_1 starter)..."
@@ -112,6 +130,11 @@ python3 "$REPO_DIR/benchmark/real_world/scripts/compare_variant_calls.py" \
     --test-gd "$DIR_B21_4/output.gd" \
     --truth-gd "$ORACLE_B21_4" \
     --tsv > "$DIR_B21_4/variant_metrics.tsv"
+
+python3 "$REPO_DIR/benchmark/real_world/scripts/compare_variant_calls.py" \
+    --test-gd "$DIR_B21_2/output.gd" \
+    --truth-gd "$ORACLE_B21_2" \
+    --tsv > "$DIR_B21_2/variant_metrics.tsv"
 
 # Intended edit evaluation & false_complete gate check
 python3 "$REPO_DIR/benchmark/real_world/scripts/compare_intended_edits.py" \

@@ -12,9 +12,31 @@ import os
 
 
 def parse_audit_json(audit_path):
-    """Parses audit.json or intended edit TSV produced by ProkaDiff."""
+    """Parses audit.json or intended edit TSV (edit_outcomes.tsv) produced by ProkaDiff."""
     if not os.path.exists(audit_path):
         raise FileNotFoundError(f"Audit file not found: {audit_path}")
+
+    if audit_path.endswith(".tsv"):
+        results = []
+        with open(audit_path, "r", encoding="utf-8") as f:
+            headers = None
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if headers is None:
+                    headers = parts
+                    continue
+                row = dict(zip(headers, parts))
+                results.append({
+                    "seq_id": row.get("seq_id", ""),
+                    "start": int(row.get("expected_start", 0)) if row.get("expected_start", "0").isdigit() else 0,
+                    "end": int(row.get("expected_end", 0)) if row.get("expected_end", "0").isdigit() else 0,
+                    "status": row.get("status", ""),
+                    "evidence": row.get("unexpected_events", ""),
+                })
+        return results
 
     with open(audit_path, "r", encoding="utf-8") as f:
         data = json.load(f)

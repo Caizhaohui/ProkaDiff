@@ -112,7 +112,26 @@ pub fn classify(
     }
 
     // FIX-015: build per-edit assessments using all mutations (including those in unintended)
-    let all_diff_entries: Vec<GdEntry> = diff.entries.clone();
+    //
+    // RW-004 fix: the intended-edit assessment must also see `MC` (missing-coverage)
+    // evidence at declared loci, not just product mutations. `MC` is intentionally
+    // excluded from `is_product_mutation` (it stays evidence, not a classified
+    // mutation, so `unintended.tsv`/`summary.txt` are unaffected — see docs/schema.md),
+    // but that meant a large aberrant on-target deletion with no matching on-target
+    // JC/DEL call (e.g. an IS-mediated deletion where the on-target junction itself
+    // does not survive JC accept thresholds) was invisible to `assess_intended_edits`,
+    // and got reported as `Missing` instead of `UnexpectedStructure`. Only edited-strain
+    // MC spans that overlap a declared intended-edit locus are added here — this does
+    // not touch the general JC/MC genome-wide noise (tracked separately as RW-002/RW-003)
+    // and does not change `diff`/`unintended` output for any input.
+    let mut all_diff_entries: Vec<GdEntry> = diff.entries.clone();
+    all_diff_entries.extend(
+        edited
+            .entries
+            .iter()
+            .filter(|e| e.kind == GdKind::Mc && mc_overlaps_any_intended(e, intended))
+            .cloned(),
+    );
     let intended_edit_assessments = if intended.is_empty() {
         None
     } else {
@@ -181,6 +200,16 @@ fn label_one(
     }
 }
 
+/// RW-004: whether an `MC` entry's interval overlaps any declared intended-edit locus.
+/// Used only to widen the input to `assess_intended_edits`; does not affect `unintended`.
+fn mc_overlaps_any_intended(e: &GdEntry, intended: &[IntendedEdit]) -> bool {
+    entry_intervals(e).iter().any(|(sid, a, b)| {
+        intended
+            .iter()
+            .any(|t| sid == &t.seq_id && *a <= t.end && t.start <= *b)
+    })
+}
+
 fn nearest_site(e: &GdEntry, sites: &[HomologSite], max_d: u64) -> Option<(u64, u32)> {
     let mut best: Option<(u64, u32)> = None;
     for (sid, a, b) in entry_intervals(e) {
@@ -211,5 +240,82 @@ fn interval_distance(a0: u64, a1: u64, b0: u64, b1: u64) -> u64 {
         a0 - b1
     } else {
         b0 - a1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::intended::{parse_intended, IntendedEditStatus};
+    use prokadiff_gd::GenomeDiff;
+
+    fn gd(entries: Vec<GdEntry>) -> GenomeDiff {
+        GenomeDiff {
+            metadata: vec![("GENOME_DIFF".into(), "1.0".into())],
+            entries,
+        }
+    }
+
+    fn dsb_opts() -> ClassifyOptions {
+        ClassifyOptions {
+            editor: EditorKind::Dsb,
+            spacer: None,
+            pam: None,
+            near_distance: 5000,
+            max_mismatches: 3,
+            hypothesis: false,
+        }
+    }
+
+    /// RW-004 regression test: an on-target aberrant large deletion that shows up ONLY
+    /// as an `MC` (missing-coverage) span in the edited sample -- no matching on-target
+    /// JC/DEL call survives to the diff -- must still classify the declared `del` edit
+    /// as `UnexpectedStructure`, not `Missing`, when run through the full `classify()`
+    /// entrypoint (not just `assess_single_edit`/`assess_intended_edits` directly).
+    ///
+    /// This mirrors the real BL21 `B21_3_1` case: declared edit is the clean 860 bp
+    /// `lacZ` deletion (334876-335735), but the observed event is a much larger
+    /// ~20 kb missing-coverage span (331956-352202) with no on-target JC/DEL emitted.
+    #[test]
+    fn mc_only_aberrant_deletion_at_intended_locus_yields_unexpected_structure() {
+        let edited = gd(vec![GdEntry::mc(903, "chr", 331956, 352202, 0, 0)]);
+        let starter = gd(vec![]);
+        let intended =
+            parse_intended("seq_id\tstart\tend\tref\talt\tkind\nchr\t334876\t335735\t.\t.\tdel\n")
+                .unwrap();
+
+        let out = classify(&edited, &starter, &intended, &[], &dsb_opts());
+
+        let assessments = out
+            .intended_edit_assessments
+            .expect("intended edits were declared");
+        assert_eq!(assessments.len(), 1);
+        assert_eq!(
+            assessments[0].status,
+            IntendedEditStatus::UnexpectedStructure
+        );
+
+        // The MC-widening must not leak into the general unintended/diff output: MC
+        // stays evidence, not a classified mutation (unintended.tsv backward compat).
+        assert!(out.unintended.is_empty());
+    }
+
+    /// An MC span far from any declared intended-edit locus must NOT be pulled into
+    /// the intended-edit assessment (the widening in `classify()` is locus-scoped).
+    #[test]
+    fn mc_far_from_intended_locus_does_not_affect_assessment() {
+        let edited = gd(vec![GdEntry::mc(1, "chr", 900_000, 950_000, 0, 0)]);
+        let starter = gd(vec![]);
+        let intended =
+            parse_intended("seq_id\tstart\tend\tref\talt\tkind\nchr\t334876\t335735\t.\t.\tdel\n")
+                .unwrap();
+
+        let out = classify(&edited, &starter, &intended, &[], &dsb_opts());
+
+        let assessments = out
+            .intended_edit_assessments
+            .expect("intended edits were declared");
+        assert_eq!(assessments.len(), 1);
+        assert_eq!(assessments[0].status, IntendedEditStatus::Missing);
     }
 }

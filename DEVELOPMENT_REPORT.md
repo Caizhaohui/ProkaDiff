@@ -189,7 +189,7 @@ outdir/
 Executed on compute node partition `qcpu_18i`:
 - `cargo fmt --all --check`: **PASSED**
 - `cargo clippy --workspace --all-targets -- -D warnings`: **PASSED (0 warnings)**
-- `cargo test --workspace`: **ALL PASSED (154+ tests across all crates, 0 failures)**
+- `cargo test --workspace`: **ALL PASSED (238 tests across all crates, 0 failures, 1 ignored cluster-only test)**
 
 ---
 

@@ -846,6 +846,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_versioned_seq_id_from_genbank_matches_intended_edit() {
+        // RW-005: once GenBank reference parsing emits the versioned accession
+        // (e.g. `NZ_CP053602.1`, from the VERSION line) as the GdEntry seq_id,
+        // it must match an `--intended` TSV row that also uses the versioned
+        // accession. `overlaps_intended`/`matches_intended` compare seq_id via
+        // exact string equality, so this only holds if both sides agree on
+        // carrying (or dropping) the version suffix consistently.
+        let entry = GdEntry::del(7, "NZ_CP053602.1", 334876, 860); // 334876..=335735
+        let edit = IntendedEdit {
+            edit_id: "edit_del".into(),
+            seq_id: "NZ_CP053602.1".into(),
+            start: 334876,
+            end: 335735,
+            ref_allele: ".".into(),
+            alt: ".".into(),
+            kind: "del".into(),
+        };
+        let assessments = assess_intended_edits(&[entry], &[edit]);
+        assert_eq!(assessments.len(), 1);
+        assert_eq!(assessments[0].status, IntendedEditStatus::Complete);
+        assert_eq!(assessments[0].matched_event_ids, vec![7]);
+    }
+
+    #[test]
     fn test_matched_event_ids_uses_real_gd_id() {
         let entry = GdEntry::snp(42, "NC_000913.3", 100, "T");
         let edit = IntendedEdit {

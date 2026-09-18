@@ -38,6 +38,10 @@ pub struct EngineOptions {
     pub mc_del_min_len: usize,
     /// Known repeat regions (e.g. mobile elements) from reference annotations.
     pub repeats: Vec<RepeatRegion>,
+    /// Minimum total supporting reads (split + spanning) required to emit a JC record (default: 3).
+    pub jc_min_support_reads: usize,
+    /// Minimum allele frequency relative to local coverage (default: 0.05, i.e. 5%).
+    pub jc_min_frequency: f64,
 }
 
 impl Default for EngineOptions {
@@ -49,6 +53,8 @@ impl Default for EngineOptions {
             mc_min_len: 3,
             mc_del_min_len: MC_DEL_MIN_LEN,
             repeats: Vec::new(),
+            jc_min_support_reads: 3,
+            jc_min_frequency: 0.05,
         }
     }
 }

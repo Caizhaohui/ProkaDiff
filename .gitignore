@@ -35,6 +35,8 @@ benchmark/results/*
 !benchmark/results/parity_summary.tsv
 !benchmark/results/verified/
 !benchmark/results/verified/*.md
+benchmark/real_world/results/*
+!benchmark/real_world/results/.gitkeep
 benchmark/logs/
 
 # Slurm

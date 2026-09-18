@@ -22,6 +22,14 @@ pub(super) fn read_genbank_origin(path: &Path) -> Result<Vec<FastaRecord>> {
                 if let Some(id) = trimmed.split_whitespace().nth(1) {
                     name = id.to_string();
                 }
+            } else if trimmed.to_ascii_uppercase().starts_with("VERSION") {
+                // RW-005: the LOCUS line's accession has no version suffix (e.g.
+                // `NZ_CP053602`), but callers (intended-edit TSVs, FASTA-derived
+                // seq_ids) use the versioned accession from VERSION (e.g.
+                // `NZ_CP053602.1`). Prefer VERSION as the canonical contig id.
+                if let Some(id) = trimmed.split_whitespace().nth(1) {
+                    name = id.to_string();
+                }
             } else if trimmed.to_ascii_uppercase().starts_with("ORIGIN") {
                 in_origin = true;
             }

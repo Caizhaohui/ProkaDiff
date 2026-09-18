@@ -1213,3 +1213,151 @@ fn is150_microhomology_sliding_recovers_mob_from_dup2() {
     assert_eq!(mobs[0].fields[2], "IS150");
     assert_eq!(mobs[0].fields[4], "3");
 }
+
+#[test]
+fn test_depth_aware_jc_frequency_filter_rejects_noise_and_keeps_true_junction() {
+    // Models RW-002: At 400x coverage, 4 reads (1% frequency) is chimeric noise and
+    // must be filtered by jc_min_frequency = 0.05. A 40-read junction (10% frequency)
+    // at the same depth passes. At 30x depth, a 4-read junction (13.3% frequency) also passes.
+    let seq = vec![b'A'; 2000];
+    let fasta = fasta_chr(&seq);
+    let opts = EngineOptions {
+        threads: 1,
+        jc_min_support_reads: 3,
+        jc_min_frequency: 0.05,
+        ..EngineOptions::default()
+    };
+
+    // Case 1: High depth (400x) with 4 supporting reads (2 plus, 2 minus).
+    // Clears candidate accept_junction (both strands, >=14bp overlap), but frequency = 4/400 = 1% < 5%.
+    let mut noise_splits = Vec::new();
+    for (i, &minus) in [false, false, true, true].iter().enumerate() {
+        noise_splits.push(SplitCandidate {
+            contig_idx: 0,
+            side2_contig_idx: 0,
+            minus,
+            side1_minus: true,
+            side2_minus: false,
+            left: SubAlignment {
+                read_start: 0,
+                read_end: 20,
+            },
+            right: SubAlignment {
+                read_start: 20,
+                read_end: 40,
+            },
+            side1_pos_1: 500,
+            side2_pos_1: 1500,
+            overlap: 0,
+            origin: SplitOrigin::Softclip(100 + i),
+        });
+    }
+
+    let contig_results_noise = vec![ContigPileup {
+        columns: vec![
+            PileupColumn {
+                ref_base: b'A',
+                observations: vec![],
+                insertions: vec![],
+            };
+            2000
+        ],
+        unique_depth: vec![400; 2000],
+        total_depth: vec![400; 2000],
+        splits: noise_splits,
+    }];
+    let gd_noise = emit_from_pileup(&fasta, contig_results_noise, &opts, &[]);
+    assert_eq!(
+        gd_jcs(&gd_noise).len(),
+        0,
+        "4 reads at 400x depth (1% freq) must be filtered by 5% threshold"
+    );
+
+    // Case 2: High depth (400x) with 40 supporting reads (20 plus, 20 minus) = 10% freq.
+    let mut true_splits = Vec::new();
+    for i in 0..40 {
+        true_splits.push(SplitCandidate {
+            contig_idx: 0,
+            side2_contig_idx: 0,
+            minus: i % 2 == 0,
+            side1_minus: true,
+            side2_minus: false,
+            left: SubAlignment {
+                read_start: 0,
+                read_end: 20,
+            },
+            right: SubAlignment {
+                read_start: 20,
+                read_end: 40,
+            },
+            side1_pos_1: 500,
+            side2_pos_1: 1500,
+            overlap: 0,
+            origin: SplitOrigin::Softclip(1000 + i),
+        });
+    }
+
+    let contig_results_true = vec![ContigPileup {
+        columns: vec![
+            PileupColumn {
+                ref_base: b'A',
+                observations: vec![],
+                insertions: vec![],
+            };
+            2000
+        ],
+        unique_depth: vec![400; 2000],
+        total_depth: vec![400; 2000],
+        splits: true_splits,
+    }];
+    let gd_true = emit_from_pileup(&fasta, contig_results_true, &opts, &[]);
+    assert_eq!(
+        gd_jcs(&gd_true).len(),
+        1,
+        "40 reads at 400x depth (10% freq) must pass"
+    );
+
+    // Case 3: Moderate depth (30x) with 4 supporting reads (2 plus, 2 minus) = 13.3% freq.
+    let mut low_depth_splits = Vec::new();
+    for (i, &minus) in [false, false, true, true].iter().enumerate() {
+        low_depth_splits.push(SplitCandidate {
+            contig_idx: 0,
+            side2_contig_idx: 0,
+            minus,
+            side1_minus: true,
+            side2_minus: false,
+            left: SubAlignment {
+                read_start: 0,
+                read_end: 20,
+            },
+            right: SubAlignment {
+                read_start: 20,
+                read_end: 40,
+            },
+            side1_pos_1: 500,
+            side2_pos_1: 1500,
+            overlap: 0,
+            origin: SplitOrigin::Softclip(2000 + i),
+        });
+    }
+
+    let contig_results_low = vec![ContigPileup {
+        columns: vec![
+            PileupColumn {
+                ref_base: b'A',
+                observations: vec![],
+                insertions: vec![],
+            };
+            2000
+        ],
+        unique_depth: vec![30; 2000],
+        total_depth: vec![30; 2000],
+        splits: low_depth_splits,
+    }];
+    let gd_low = emit_from_pileup(&fasta, contig_results_low, &opts, &[]);
+    assert_eq!(
+        gd_jcs(&gd_low).len(),
+        1,
+        "4 reads at 30x depth (13.3% freq >= 5%) must pass"
+    );
+}

@@ -179,6 +179,12 @@ pub fn parse_genbank_repeats(path: impl AsRef<Path>) -> Result<Vec<RepeatRegion>
             if let Some(id) = t.split_whitespace().nth(1) {
                 curr_seq = id.to_string();
             }
+        } else if t.to_ascii_uppercase().starts_with("VERSION") {
+            // RW-005: prefer the versioned accession (e.g. `NZ_CP053602.1`) over
+            // the bare LOCUS accession, to match FASTA-derived seq_ids.
+            if let Some(id) = t.split_whitespace().nth(1) {
+                curr_seq = id.to_string();
+            }
         } else if t.to_ascii_uppercase().starts_with("ORIGIN") {
             if let Some((start, end, strand, name)) = pending_repeat.take() {
                 repeats.push(RepeatRegion {
@@ -303,6 +309,12 @@ pub fn parse_genbank_features(path: impl AsRef<Path>) -> Result<Vec<GenbankFeatu
                 features.push(feat);
             }
             active_qualifier = None;
+            if let Some(id) = t.split_whitespace().nth(1) {
+                curr_seq = id.to_string();
+            }
+        } else if t.to_ascii_uppercase().starts_with("VERSION") {
+            // RW-005: prefer the versioned accession (e.g. `NZ_CP053602.1`) over
+            // the bare LOCUS accession, to match FASTA-derived seq_ids.
             if let Some(id) = t.split_whitespace().nth(1) {
                 curr_seq = id.to_string();
             }

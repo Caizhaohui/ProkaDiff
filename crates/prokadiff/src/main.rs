@@ -142,6 +142,8 @@ fn run_evidence(args: EvidenceArgs) -> Result<(), RunError> {
         threads: args.threads.max(1),
         keep_bam: args.keep_bam,
         repeats,
+        jc_min_support_reads: args.jc_min_support_reads,
+        jc_min_frequency: args.jc_min_frequency,
         ..EngineOptions::default()
     };
     let gd = run_sample(&ref_fa, &reads, &args.outdir, &opts)?;
@@ -159,6 +161,8 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
         threads: job.threads,
         keep_bam: job.keep_bam,
         repeats,
+        jc_min_support_reads: job.jc_min_support_reads,
+        jc_min_frequency: job.jc_min_frequency,
         ..EngineOptions::default()
     };
 

@@ -1,7 +1,7 @@
 dataset	sample_id	truth_level	variant_validated	intended_validated	mob_validated	jc_validated	report_reviewed	status	notes
-bl21_user	B21_3_1	MANUALLY_CURATED	true	true	true	true	true	ACTIVE	19.6kb IS1A-mediated deletion; target lacZ deleted
-bl21_user	B21_4_1	MANUALLY_CURATED	true	true	true	true	true	ACTIVE	43.5kb IS1A-mediated deletion; target lacZ deleted
-bl21_user	B21_2_1	MANUALLY_CURATED	true	true	true	true	true	ACTIVE	45.2kb IS1-mediated rearrangement; target lacZ deleted
+bl21_user	B21_3_1	MANUALLY_CURATED	true	true	false	false	true	ACTIVE	19.6kb IS1A-mediated deletion; target lacZ deleted. intended-edit assessment correctly reports UnexpectedStructure end-to-end (RW-004+RW-005 both RESOLVED; re-verified 2026-09-17/18 via B21_3_1_diff_p1_3, Slurm job 2710379: report.md Intended Edit Outcome: ALERT, edit_1 status UNEXPECTED_STRUCTURE, gate_passed: true). P1-3 depth-aware JC filter (Job 2710376) reduced JC FP from 140 to 29 (-79.3%), JC precision 0.1714, recall 0.6000 (6/10), 0 TP loss.
+bl21_user	B21_4_1	MANUALLY_CURATED	true	false	false	false	true	ACTIVE	43.5kb IS1A-mediated deletion; target lacZ deleted. Evidence-only P1-3 validation (Job 2710377): JC FP reduced from 164 to 38 (-76.8%), JC precision 0.0952, recall 0.4000 (4/10), 0 TP loss. 76/76 MC FPs explained by breseq UN (RW-003). diff not run with B21_4_1 as edited sample.
+bl21_user	B21_2_1	MANUALLY_CURATED	true	false	false	false	false	ACTIVE	Evidence-only P1-3 validation (Job 2710378): JC FP reduced from 128 to 38 (-70.3%), JC precision 0.1163, recall 0.4167 (5/12), 0 TP loss. 71/71 MC FPs explained by breseq UN (RW-003). intended/diff step not run for this sample.
 rel606	SRR030257	BRESEQ_ORACLE	true	false	true	true	true	ACTIVE	REL606 20k-gen isolate vs breseq 0.40.2 oracle
 prjna1088182	SRR28385261	PUBLICATION_REPORTED	false	false	false	false	false	PLANNED	Widney2024 Cas9 cohort
 prjna884016	SAMN30999011	ASSEMBLY_CONFIRMED	false	false	false	false	false	PLANNED	Orthogonal finished assembly structural truth

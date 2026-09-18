@@ -495,12 +495,67 @@ pub(crate) fn emit_from_pileup(
             }
         }
 
+        let support_reads = j.support.plus_reads + j.support.minus_reads;
+        let p1_idx = (j.p1 as usize).saturating_sub(1);
+        let p2_idx = (j.p2 as usize).saturating_sub(1);
+        let d1 = contig_results
+            .get(j.c1)
+            .and_then(|c| c.total_depth.get(p1_idx))
+            .copied()
+            .unwrap_or(0);
+        let d2 = contig_results
+            .get(j.c2)
+            .and_then(|c| c.total_depth.get(p2_idx))
+            .copied()
+            .unwrap_or(0);
+        let local_depth = d1.max(d2);
+
+        // Secondary filtering (RW-002 / P1-3): filter low-support and low-frequency noise junctions.
+        // Constituent junctions of accepted MOB mutations are preserved as evidence.
+        if !mob_constituent_jcs.contains(&idx) {
+            if support_reads < opts.jc_min_support_reads {
+                continue;
+            }
+            if opts.jc_min_frequency > 0.0 {
+                let req_reads = ((local_depth as f64) * opts.jc_min_frequency).round() as usize;
+                if support_reads < req_reads.max(opts.jc_min_support_reads) {
+                    continue;
+                }
+            }
+        }
+
         let s1 = if j.m1 { "-1" } else { "1" };
         let s2 = if j.m2 { "-1" } else { "1" };
         let mut jc_entry = GdEntry::jc(next_id, n1, j.p1, s1, n2, j.p2, s2, j.overlap);
         if mob_constituent_jcs.contains(&idx) {
             jc_entry.attrs.insert("mob_evidence".into(), "1".into());
         }
+        // Retain the accept-rule support metrics on the final record (RW-002
+        // gap: without these, a genome-wide FP audit cannot tell how close a
+        // false positive sat to accept_junction()'s thresholds without
+        // re-instrumenting the engine).
+        jc_entry.attrs.insert(
+            "pd_support_reads".into(),
+            (j.support.plus_reads + j.support.minus_reads).to_string(),
+        );
+        jc_entry
+            .attrs
+            .insert("pd_plus_reads".into(), j.support.plus_reads.to_string());
+        jc_entry
+            .attrs
+            .insert("pd_minus_reads".into(), j.support.minus_reads.to_string());
+        jc_entry.attrs.insert(
+            "pd_best_min_overlap".into(),
+            j.support.best_min_overlap.to_string(),
+        );
+        jc_entry.attrs.insert(
+            "pd_min_overlap_side1".into(),
+            j.support.min_overlap_side1.to_string(),
+        );
+        jc_entry.attrs.insert(
+            "pd_min_overlap_side2".into(),
+            j.support.min_overlap_side2.to_string(),
+        );
         gd.entries.push(jc_entry);
         next_id += 1;
     }

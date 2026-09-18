@@ -11,7 +11,7 @@ import re
 from collections import defaultdict
 
 
-def parse_gd(filepath):
+def parse_gd(filepath, include_rejected=False):
     """Parses a GenomeDiff (.gd) file into a list of mutation dicts."""
     records = []
     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
@@ -20,6 +20,8 @@ def parse_gd(filepath):
             if not line or line.startswith("#"):
                 continue
             parts = line.split("\t")
+            if not include_rejected and any(p.startswith("reject=") for p in parts):
+                continue
             record_type = parts[0]
             if record_type in ("SNP", "SUB", "INS", "DEL", "MOB", "AMP", "CON", "INV"):
                 # Standard mutation: TYPE id parent seq_id pos ...
@@ -69,7 +71,44 @@ def parse_gd(filepath):
                     "raw": parts,
                 }
                 records.append(rec)
+            elif record_type == "UN":
+                # Unknown/ambiguous region: UN id parent seq_id start end
+                rec = {
+                    "type": "UN",
+                    "id": parts[1] if len(parts) > 1 else "",
+                    "seq_id": parts[3].split(".")[0] if len(parts) > 3 else "",
+                    "start": int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0,
+                    "end": int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else 0,
+                    "raw": parts,
+                }
+                records.append(rec)
     return records
+
+
+def count_mc_fp_explained_by_un(test_mc, truth_mc, truth_un, tol_bp=50):
+    """
+    Of the test MC records that do not match any truth MC record (within
+    tol_bp on both start/end), count how many overlap a truth UN (unknown/
+    ambiguous, not-confidently-called) region. See RW-003: breseq declines
+    to call MC in some ambiguous-coverage regions and reports UN instead,
+    so an "MC false positive" there is not necessarily a ProkaDiff defect.
+    This is purely descriptive metadata; it does not change tp/fp/fn.
+    """
+    matched_test_ids = set()
+    for tr in truth_mc:
+        for t in test_mc:
+            if t["id"] in matched_test_ids:
+                continue
+            if t["seq_id"] == tr["seq_id"] and abs(t["start"] - tr["start"]) <= tol_bp and abs(t["end"] - tr["end"]) <= tol_bp:
+                matched_test_ids.add(t["id"])
+                break
+
+    fp_records = [t for t in test_mc if t["id"] not in matched_test_ids]
+    explained = 0
+    for t in fp_records:
+        if any(u["seq_id"] == t["seq_id"] and t["start"] <= u["end"] and t["end"] >= u["start"] for u in truth_un):
+            explained += 1
+    return explained, len(fp_records)
 
 
 def canonicalize_jc(jc):
@@ -104,6 +143,13 @@ def match_mutations(test_records, truth_records, jc_tol_bp=5):
     all_types = sorted(list(set(by_type_test.keys()) | set(by_type_truth.keys())))
 
     for mtype in all_types:
+        # UN (breseq "unknown/ambiguous, not confidently called") is not a
+        # mutation call and is never compared for match/mismatch purposes
+        # (see docs/schema.md: "UN 不对拍失败"). It is parsed only so
+        # count_mc_fp_explained_by_un() can use it as context for MC FPs.
+        if mtype == "UN":
+            continue
+
         tests = by_type_test[mtype]
         truths = by_type_truth[mtype]
 
@@ -264,12 +310,18 @@ def main():
     parser.add_argument("--truth-gd", required=True, help="Truth GenomeDiff file (oracle breseq or curated)")
     parser.add_argument("--tolerance", type=int, default=5, help="Breakpoint tolerance in bp (default: 5)")
     parser.add_argument("--tsv", action="store_true", help="Output tab-separated metrics format")
+    parser.add_argument("--include-rejected", action="store_true", help="Include records with reject= attributes (default: False)")
     args = parser.parse_args()
 
-    test_records = parse_gd(args.test_gd)
-    truth_records = parse_gd(args.truth_gd)
+    test_records = parse_gd(args.test_gd, include_rejected=args.include_rejected)
+    truth_records = parse_gd(args.truth_gd, include_rejected=args.include_rejected)
 
     metrics = match_mutations(test_records, truth_records, jc_tol_bp=args.tolerance)
+
+    test_mc = [r for r in test_records if r["type"] == "MC"]
+    truth_mc = [r for r in truth_records if r["type"] == "MC"]
+    truth_un = [r for r in truth_records if r["type"] == "UN"]
+    mc_fp_explained_by_un, mc_fp_total = count_mc_fp_explained_by_un(test_mc, truth_mc, truth_un)
 
     if args.tsv:
         print("metric\tvalue")
@@ -289,6 +341,8 @@ def main():
         print(f"breakpoint_exact_fraction\t{metrics['breakpoint_exact_fraction']:.4f}")
         print(f"breakpoint_within_1bp\t{metrics['breakpoint_within_1bp']:.4f}")
         print(f"breakpoint_within_5bp\t{metrics['breakpoint_within_5bp']:.4f}")
+        print(f"MC_fp_explained_by_un\t{mc_fp_explained_by_un}")
+        print(f"MC_fp_total\t{mc_fp_total}")
     else:
         print("=== Variant Comparison Summary ===")
         print(f"Precision: {metrics['variant_precision']:.2%} ({metrics['overall_tp']}/{(metrics['overall_tp'] + metrics['overall_fp'])})")
@@ -301,6 +355,8 @@ def main():
             prec = tp / (tp + fp) if (tp + fp) > 0 else 1.0
             rec = tp / (tp + fn) if (tp + fn) > 0 else 1.0
             print(f"  {mtype:5s} | TP: {tp:3d} | FP: {fp:3d} | FN: {fn:3d} | Prec: {prec:.1%} | Rec: {rec:.1%}")
+        if mc_fp_total > 0:
+            print(f"\nMC false positives explained by breseq UN (ambiguous) regions: {mc_fp_explained_by_un}/{mc_fp_total}")
 
 
 if __name__ == "__main__":

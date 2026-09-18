@@ -166,7 +166,7 @@ report generation; its performance numbers are intentionally not claimed here.
 
 The project successfully satisfies all requirements of the **Validation & Scientific-Correctness Sprint**:
 - **Zero fabricated validation claims**: Features lacking verified external tool comparisons are explicitly guarded (`disabled` or `experimental`).
-- **Zero test regressions**: Workspace passes **203 tests with 0 failures** and 1 ignored cluster-only test.
+- **Zero test regressions**: Workspace passes **238 tests with 0 failures** and 1 ignored cluster-only test.
 - **Current parity rerun**: Synthetic DEL, SNP/INS/DEL, and MOB completed on `qcpu_18i`; the Clonal calculation output was rechecked against same-node breseq with red-line over/under `0/0`.
 - **Clean scientific communication**: Casual causal language eliminated across documentation.
 - **Robust oracle infrastructure**: All harnesses in place for future activation upon availability of external binaries.

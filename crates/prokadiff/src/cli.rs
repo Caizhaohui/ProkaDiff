@@ -73,6 +73,12 @@ pub struct Cli {
     /// Maximum RNA bulge size (deletion in genomic DNA relative to guide) for off-target search (default: 0).
     #[arg(long = "max-rna-bulge", default_value_t = 0)]
     pub max_rna_bulge: u32,
+    /// Minimum total supporting reads required to emit a JC record (default: 3).
+    #[arg(long = "jc-min-support-reads", default_value_t = 3)]
+    pub jc_min_support_reads: usize,
+    /// Minimum allele frequency relative to local coverage for JC records (default: 0.05).
+    #[arg(long = "jc-min-frequency", default_value_t = 0.05)]
+    pub jc_min_frequency: f64,
     /// Increase diagnostic logging verbosity (-v for DEBUG, -vv for TRACE).
     #[arg(short, long, action = ArgAction::Count, global = true)]
     pub verbose: u8,
@@ -99,6 +105,12 @@ pub struct EvidenceArgs {
     pub outdir: PathBuf,
     #[arg(long, default_value_t = false)]
     pub keep_bam: bool,
+    /// Minimum total supporting reads required to emit a JC record (default: 3).
+    #[arg(long = "jc-min-support-reads", default_value_t = 3)]
+    pub jc_min_support_reads: usize,
+    /// Minimum allele frequency relative to local coverage for JC records (default: 0.05).
+    #[arg(long = "jc-min-frequency", default_value_t = 0.05)]
+    pub jc_min_frequency: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -241,6 +253,8 @@ pub struct ProductJob {
     pub offtarget_association_window: u64,
     pub max_dna_bulge: u32,
     pub max_rna_bulge: u32,
+    pub jc_min_support_reads: usize,
+    pub jc_min_frequency: f64,
 }
 
 pub fn validate_product(cli: &Cli) -> Result<ProductJob, CliError> {
@@ -324,6 +338,8 @@ pub fn validate_product(cli: &Cli) -> Result<ProductJob, CliError> {
         offtarget_association_window: cli.offtarget_association_window,
         max_dna_bulge: cli.max_dna_bulge,
         max_rna_bulge: cli.max_rna_bulge,
+        jc_min_support_reads: cli.jc_min_support_reads,
+        jc_min_frequency: cli.jc_min_frequency,
     })
 }
 
