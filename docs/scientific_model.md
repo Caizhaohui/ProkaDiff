@@ -71,11 +71,27 @@ ProkaDiff 并不是一个先入为主的“CRISPR 脱靶预测器”（CRISPR of
 
 ### 4.2 向导依赖候选误切（Candidate Guide-dependent Off-target）
 - **术语规范：** 一律使用 `candidate guide-dependent off-target`，严禁使用 `confirmed off-target`。
-- **判定标准：** 仅当编辑株新增小变异（SNP/indel）满足：
-  1. 空间距离在向导候选靶点窗口内（默认 $\le 50\text{ bp}$）；
-  2. 靶点与 spacer 错配数符合阈值（默认 $\le 4$）；
-  3. 具有匹配的有效 PAM；
-  此时赋予候选关联，并在报告中显式注明：“*Spatial association is consistent with a possible guide-dependent event but does not establish cleavage causality.*”
+- **空间关联与因果性分离（Spatial Association vs. Cleavage Causality）：**
+  空间邻近性仅说明突变物理位置与候选靶位邻近，**绝不构成切割因果性证明**。报告与输出中必须显式注明：“*Spatial association is consistent with a possible guide-dependent event but does not establish cleavage causality.*”
+- **全基因组候选靶点单次扫描（Single-Scan Architecture）：**
+  系统统一由 `scan_genome_bulge` 实施单次全基因组靶位搜索，显式区分三类扫描状态：
+  1. `NotPerformed`：未执行扫描（如 `--editor dsb` 或未提供 spacer）；
+  2. `PerformedNoCandidates`：已全基因组扫描，但未发现符合错配/凸起阈值的位点；
+  3. `PerformedWithCandidates`：已全基因组扫描，检出一个或多个候选靶位。
+- **证据分层（Evidence Tiers）：**
+  候选靶点保留其底层比对机制元数据（`search_backend`、`bulge_type`、`bulge_size`），明确区分：
+  - **Exact Match**：无序列凸起（BulgeType = None），仅含错配；
+  - **DNA Bulge**：基因组相对于 gRNA 凸起（额外插入碱基）；
+  - **RNA Bulge**：gRNA 相对于基因组凸起（缺失碱基）。
+- **观测 PAM 真实性准则（Observed PAM Contract）：**
+  关联报告中的 PAM 必须是基因组该靶位处实际测得的物理碱基序列（`site.pam`），绝对禁止用查询模式串（如 `NGG` / `TTTV`）填充。例如查询为 `NGG` 时，基因组位点测得 `CGG` 必须输出 `CGG`。
+- **多重候选保留与断点基数（Preservation of Qualifying Associations）：**
+  - 不人为强制“每突变仅留一个位点”或“每条 JC 强制 2 行”。突变（包括 JC 每一侧断点）窗口内的所有合格候选位点全数保留。
+  - `primary_association` 仅作为读时确定性全序（最小距离、最少错配、位点 ID）投影，绝不丢弃备选候选位点。
+- **彻底废除 `SITE_UNKNOWN` 与伪造数据：**
+  未关联到候选靶位的突变，其关联记录数严格为 0，严禁生成伪造的 `SITE_UNKNOWN` 或 `distance=0 / mismatch=0` 虚假记录。
+- **MC 证据唯一定位：**
+  覆盖度缺失（MC）属于非差分事件的只读证据，绝不参与向导依赖位点关联，绝不生成机制关联记录。
 
 ### 4.3 附带基因组变异（Collateral Genome Changes）
 对于远离向导靶点的全基因组非预期差异，统一称为 **Collateral Genome Changes**，可能来源包括：

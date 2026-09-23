@@ -2,8 +2,8 @@ use crate::{EditorKind, RefContig};
 use prokadiff_offtarget::model::{NucleaseProfile, PamSide};
 use prokadiff_offtarget::rust_search::scan_contig;
 
-pub const DEFAULT_NEAR_DISTANCE: u64 = 50;
-pub const DEFAULT_MAX_MISMATCHES: u32 = 4;
+#[allow(unused_imports)]
+pub use crate::association::{DEFAULT_MAX_MISMATCHES, DEFAULT_NEAR_DISTANCE};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HomologSite {

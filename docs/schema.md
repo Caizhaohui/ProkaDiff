@@ -244,3 +244,71 @@ pub struct EvidenceReferences {
 - 验证先于掩码。只有 `ExpectedConstituent` 且不在任何声明中标为部分或异常的事件被移出 `unintended.tsv`。异常事件仍可通过 `EventId` 回指原 `DifferentialEvent.evidence`。等价候选按坐标/大小偏差及稳定事件身份裁决，GD 行顺序不参与身份或决胜。
 - MC 是独立证据诊断，不产生 `EventId`，也不能仅凭靶位附近的 MC 判定编辑株新发结构突变。已观测且非同记录亲本 MC 的诊断记为 `Observed`；未有可证明的诊断时为 `Unknown`，不推断证据缺失或生物学缺失。RA/MC/JC 证据仍只来自 `DifferentialEvent.evidence`，缺失输出 `NA`。
 - M2 保持所有既有公开 TSV 列名、列序及 `summary.txt` 键不变。`edit_outcomes.tsv` 的 `matched_event_ids` / `unexpected_events` 在写出边界把内部 `EventId` 映射为代表 GD 数字 ID，维持现有单元格格式；M2 不新增公开 DV1 列。公开 ID 全面协调留待 M4。
+
+## M3 机制关联与候选靶位契约
+
+### 1. 单一扫描源体系（Single-Scan Architecture）
+- 彻底废除 `prokadiff-classify::homolog` 与 `main.rs` 中的重复独立脱靶扫描。全基因组候选靶点扫描唯一由 `prokadiff_offtarget::rust_search::bulge::scan_genome_bulge` 执行一次（支持 exact、DNA bulge、RNA bulge），结果存入 `ClassifyResult.candidate_search`。
+- 严禁模块反向依赖：`prokadiff-offtarget` 保持独立，不依赖 `prokadiff-classify`。
+
+### 2. 扫描状态三态语义（`CandidateSearchStatus`）
+- `NotPerformed`：未执行扫描（例如 `--editor dsb` 或未提供 `--spacer`）。
+- `PerformedNoCandidates`：执行了全基因组扫描但未发现任何符合错配/凸起阈值的候选靶点。
+- `PerformedWithCandidates`：执行了全基因组扫描且检出了一个或多个候选靶点。
+- 区分“未执行”与“已执行但零候选”，内部状态和 `summary.txt` 不再混淆。
+
+### 3. 突变几何表示（`MutationGeometry`）与坐标契约
+- 突变空间几何分为 `Point { seq_id, position }`、`Span { seq_id, start, end }` 和 `Junction { side1, side2 }`。
+- 坐标语义精确保持并代理原有 `entry_intervals()` 语义，并通过 `event_geometry` / `event_geometry_checked` 提供严格 checked 溢出与边界校验。
+- 分类引擎与机制关联逻辑使用完全相同的几何计算，杜绝双轨坐标解释。
+
+### 4. 机制关联数据模型（`MutationSiteAssociation`）与观测 PAM 契约
+- 核心字段：
+  ```rust
+  pub struct MutationSiteAssociation {
+      pub event_id: EventId,
+      pub mutation_type: String,
+      pub mutation_position: u64,
+      pub junction_side: Option<JunctionSideTag>, // Side1 | Side2
+      pub site_id: String,
+      pub site_seq_id: String,
+      pub site_start: u64,
+      pub site_end: u64,
+      pub site_strand: Strand,
+      pub distance_to_site: u64,
+      pub mismatches: usize,
+      pub pam: String,
+      pub cfd_score: Option<f64>,
+      pub hsu_score: Option<f64>,
+      pub search_backend: String,
+      pub bulge_type: Option<BulgeType>,
+      pub bulge_size: Option<usize>,
+      pub target_seq: String,
+      pub association_window: u64,
+  }
+  ```
+- **真实观测 PAM 契约**：`pam` 字段必须记录基因组该靶位处实际观测到的碱基序列（来自 `site.pam`），绝对禁止输出查询模式串（例如查询为 `NGG` 时，基因组位点为 `CGG` 必须输出 `CGG`）。
+- **证据层级传递**：`search_backend`、`bulge_type`、`bulge_size` 等底层搜索证据在内存结构中完整存留，供审计和下游分析区分 exact 与 bulge 靶位。
+
+### 5. 彻底废除 `SITE_UNKNOWN` 与伪造零值
+- 彻底移除 `SITE_UNKNOWN` 代码路径及输出。
+- 未匹配任何位点的突变产生 0 条 `MutationSiteAssociation`，绝对禁止伪造 `distance=0`、`mismatch=0`、`site_id="SITE_UNKNOWN"` 或空 PAM 占位行。
+
+### 6. JC 断点关联基数与多重靶位保留
+- **保留所有合格候选关联**：JC 突变两侧断点独立评估窗口内候选靶点。JC 可产生 0 行、1 行、2 行或 >2 行关联（当一个断点邻近多个靶位时全部保留），绝不硬编码截断或强制“每条 JC 恰好 2 行”。
+- 当同一突变（或同一断点）在窗口内存在多个候选靶点时，所有关联完整保留；`primary_association` 仅作为非破坏性的只读投影辅助。
+
+### 7. MC 证据唯一不变式（Evidence-Only Invariant）
+- MC 仅作为局部物理覆盖证据，永不分配 `EventId`，绝不作为差分突变参与机制关联。
+- 即使 MC 区间与 guide 靶位物理重叠，也绝不产生 `MutationSiteAssociation` 记录。
+
+### 8. 确定性全序与二分索引窗口搜索
+- 候选靶位按 `(seq_id, start, end, strand, mismatches, site_id)` 排序。
+- 关联列表按 `(event_id, distance_to_site, mismatches, site_id, junction_side)` 全序排序。
+- 采用 `ContigIndex` 按染色体切片进行 `partition_point` 二分窗口过滤，数学证明与全量线性扫描结果严格全等；输入 GD 行顺序排列对输出无任何影响。
+
+### 9. 公开 TSV 兼容性与投影
+- 保持 `mutation_offtarget_links.tsv` 等现有 TSV 头与列顺序完全不变。
+- `project_associations_to_links` 负责将现代 `EventId` 关联投影为兼容旧版 `mut_<id>` 格式的输出；内部数据管道和 `AuditResult` 统一采用 `MutationSiteAssociation`。
+- **M3/M4 证据层级边界（Evidence-Tier Boundary）**：
+  `mutation_offtarget_links.tsv` is an M3 compatibility projection and does not independently carry bulge/search-backend evidence. Consumers requiring association evidence tier must join via `site_id` to `offtarget_sites.tsv`. Public link-level evidence-tier columns are deferred to M4.

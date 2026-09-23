@@ -230,54 +230,9 @@ pub fn mask_intended<'a>(
 }
 
 pub(crate) fn entry_intervals(e: &GdEntry) -> Vec<(String, u64, u64)> {
-    match e.kind {
-        GdKind::Ra => Vec::new(),
-        GdKind::Un | GdKind::Mc => {
-            let Some(seq) = e.fields.first() else {
-                return Vec::new();
-            };
-            let Some(Ok(start)) = e.fields.get(1).map(|x| x.parse::<u64>()) else {
-                return Vec::new();
-            };
-            let Some(Ok(end)) = e.fields.get(2).map(|x| x.parse::<u64>()) else {
-                return Vec::new();
-            };
-            vec![(seq.clone(), start, end)]
-        }
-        GdKind::Jc => {
-            let mut v = Vec::new();
-            if let (Some(s), Some(Ok(p))) =
-                (e.fields.first(), e.fields.get(1).map(|x| x.parse::<u64>()))
-            {
-                v.push((s.clone(), p, p));
-            }
-            if let (Some(s), Some(Ok(p))) =
-                (e.fields.get(3), e.fields.get(4).map(|x| x.parse::<u64>()))
-            {
-                v.push((s.clone(), p, p));
-            }
-            v
-        }
-        GdKind::Del | GdKind::Sub | GdKind::Inv => {
-            let Some(seq) = e.fields.first() else {
-                return Vec::new();
-            };
-            let Some(Ok(start)) = e.fields.get(1).map(|x| x.parse::<u64>()) else {
-                return Vec::new();
-            };
-            let size = e
-                .fields
-                .get(2)
-                .and_then(|x| x.parse::<u64>().ok())
-                .unwrap_or(1)
-                .max(1);
-            vec![(seq.clone(), start, start.saturating_add(size - 1))]
-        }
-        _ => match (e.seq_id(), e.position()) {
-            (Some(s), Some(p)) => vec![(s.to_string(), p, p)],
-            _ => Vec::new(),
-        },
-    }
+    crate::geometry::event_geometry(e)
+        .map(|g| g.intervals())
+        .unwrap_or_default()
 }
 
 fn allele(e: &GdEntry) -> Option<&str> {

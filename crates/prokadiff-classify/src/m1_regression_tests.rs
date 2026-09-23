@@ -42,6 +42,8 @@ fn dsb_options() -> ClassifyOptions {
         pam: None,
         near_distance: 50,
         max_mismatches: 3,
+        max_dna_bulge: 0,
+        max_rna_bulge: 0,
         hypothesis: false,
     }
 }

@@ -1,13 +1,14 @@
 use prokadiff_classify::{
-    AnalysisProvenance, AnnotatedVariant, AuditResult, BoundaryAssessment, EventId,
+    write_mutation_offtarget_links_tsv, write_offtarget_sites_tsv, AnalysisProvenance,
+    AnnotatedVariant, AuditResult, BoundaryAssessment, ClassifiedMutation, EventId,
     EvidenceObservation, EvidenceSummary, GeneAnnotation, GuideRelation, IntendedEditAssessment,
-    IntendedEditStatus, IntendedRelation, MobileElementAnnotation, OriginStatus, RefContig,
-    ReviewPriority, SampleMetadata, SizeClass,
+    IntendedEditStatus, IntendedRelation, MobileElementAnnotation, MutationClass, OriginStatus,
+    RefContig, ReviewPriority, SampleMetadata, SizeClass,
 };
 use prokadiff_gd::GdEntry;
 use prokadiff_report::{
     write_edit_outcomes_tsv, write_markdown_report, write_post_edit_variants_tsv,
-    write_provenance_tsv,
+    write_provenance_tsv, write_unintended_tsv,
 };
 
 fn mock_sample() -> SampleMetadata {
@@ -110,6 +111,7 @@ fn test_fixture_1_clean_edit() {
         variants: vec![intended_var],
         guide_sites: vec![],
         variant_site_links: vec![],
+        associations: vec![],
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -171,6 +173,7 @@ fn test_fixture_2_partial_cassette() {
         variants: vec![],
         guide_sites: vec![],
         variant_site_links: vec![],
+        associations: vec![],
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -221,6 +224,7 @@ fn test_fixture_3_mobile_element_insertion() {
         variants: vec![is_var],
         guide_sites: vec![],
         variant_site_links: vec![],
+        associations: vec![],
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -270,6 +274,7 @@ fn test_fixture_4_candidate_offtarget() {
         variants: vec![ot_var],
         guide_sites: vec![],
         variant_site_links: vec![],
+        associations: vec![],
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -295,6 +300,7 @@ fn test_fixture_5_unvalidated_cfd_gate() {
         variants: vec![],
         guide_sites: vec![],
         variant_site_links: vec![],
+        associations: vec![],
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -393,6 +399,7 @@ fn test_gene_annotation_rendering_in_report_and_tsv() {
         variants: vec![gene_var.clone()],
         guide_sites: vec![],
         variant_site_links: vec![],
+        associations: vec![],
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -406,4 +413,129 @@ fn test_gene_annotation_rendering_in_report_and_tsv() {
 
     let _ = std::fs::remove_file(tmp_report);
     let _ = std::fs::remove_file(tmp_tsv);
+}
+
+#[test]
+fn test_zero_candidate_fixture_renders_no_site_unknown_and_no_fabricated_rows() {
+    let tmp_dir = std::env::temp_dir().join("prokadiff_zero_candidate_test");
+    let _ = std::fs::create_dir_all(&tmp_dir);
+
+    let offtarget_path = tmp_dir.join("offtarget_sites.tsv");
+    let links_path = tmp_dir.join("mutation_offtarget_links.tsv");
+    let unintended_path = tmp_dir.join("unintended.tsv");
+    let report_path = tmp_dir.join("report.md");
+
+    let refs = mock_refs();
+
+    // 1 unintended mutation (SNP at 500)
+    let snp_entry = GdEntry::snp(1, "NC_000913.3", 500, "C");
+    let classified_mut = ClassifiedMutation {
+        entry: snp_entry.clone(),
+        class: MutationClass::ScatteredSnv,
+        pam_profile: None,
+        offtarget_mismatch: None,
+        distance_to_site: None,
+        hypothesis: None,
+        event_id: Some(test_event_id(1)),
+    };
+
+    let variant = AnnotatedVariant {
+        variant_id: "VAR_0001".into(),
+        entry: snp_entry,
+        origin_status: OriginStatus::PostEditDifferential,
+        size_class: SizeClass::Small,
+        intended_relation: IntendedRelation::None,
+        guide_relation: GuideRelation::None,
+        mobile_element_relation: None,
+        repeat_relation: None,
+        gene_annotation: None,
+        evidence: EvidenceSummary {
+            ra: Some(true),
+            mc: None,
+            jc: None,
+            supporting_reads: Some(30),
+            coverage: Some(50.0),
+        },
+        review_priority: ReviewPriority::Review,
+        legacy_class: Some(MutationClass::ScatteredSnv),
+    };
+
+    let audit = AuditResult {
+        sample: mock_sample(),
+        intended_edits: vec![],
+        variants: vec![variant],
+        guide_sites: vec![],
+        variant_site_links: vec![],
+        associations: vec![],
+        provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
+    };
+
+    // Render the four real output surfaces
+    write_offtarget_sites_tsv(&audit.guide_sites, &offtarget_path).unwrap();
+    write_mutation_offtarget_links_tsv(&audit.variant_site_links, &links_path).unwrap();
+    write_unintended_tsv(&unintended_path, &[classified_mut], "cas9", false, &refs).unwrap();
+    write_markdown_report(&report_path, &audit, &refs).unwrap();
+
+    let offtarget_content = std::fs::read_to_string(&offtarget_path).unwrap();
+    let links_content = std::fs::read_to_string(&links_path).unwrap();
+    let unintended_content = std::fs::read_to_string(&unintended_path).unwrap();
+    let report_content = std::fs::read_to_string(&report_path).unwrap();
+
+    // 1. Assert SITE_UNKNOWN appears nowhere in any output surface
+    assert!(
+        !offtarget_content.contains("SITE_UNKNOWN"),
+        "offtarget_sites.tsv must not contain SITE_UNKNOWN"
+    );
+    assert!(
+        !links_content.contains("SITE_UNKNOWN"),
+        "mutation_offtarget_links.tsv must not contain SITE_UNKNOWN"
+    );
+    assert!(
+        !unintended_content.contains("SITE_UNKNOWN"),
+        "unintended.tsv must not contain SITE_UNKNOWN"
+    );
+    assert!(
+        !report_content.contains("SITE_UNKNOWN"),
+        "report.md must not contain SITE_UNKNOWN"
+    );
+
+    // 2. Assert no fabricated zero-distance / zero-mismatch association row exists
+    // offtarget_sites.tsv has exactly 1 line (header)
+    let offtarget_lines: Vec<&str> = offtarget_content.lines().collect();
+    assert_eq!(
+        offtarget_lines.len(),
+        1,
+        "offtarget_sites.tsv must only contain header"
+    );
+
+    // mutation_offtarget_links.tsv has exactly 1 line (header)
+    let links_lines: Vec<&str> = links_content.lines().collect();
+    assert_eq!(
+        links_lines.len(),
+        1,
+        "mutation_offtarget_links.tsv must only contain header and no fabricated rows"
+    );
+
+    // unintended.tsv has 2 lines (header + 1 mutation), but distance and mismatch are empty/not zero
+    let unintended_lines: Vec<&str> = unintended_content.lines().collect();
+    assert_eq!(unintended_lines.len(), 2);
+    let unintended_cols: Vec<&str> = unintended_lines[1].split('\t').collect();
+    // columns: seq_id(0) pos(1) end(2) gd_type(3) ref(4) alt(5) class(6) editor(7) pam_profile(8) offtarget_mismatch(9) distance_to_site(10)
+    assert_eq!(unintended_cols[8], "", "pam_profile must be empty");
+    assert_eq!(
+        unintended_cols[9], "",
+        "offtarget_mismatch must be empty, not 0"
+    );
+    assert_eq!(
+        unintended_cols[10], "",
+        "distance_to_site must be empty, not 0"
+    );
+
+    // report.md explicitly states no candidate off-target events were identified
+    assert!(report_content.contains(
+        "No candidate guide-dependent off-target events were identified within the configured search window."
+    ));
+    assert!(!report_content.contains("| VAR_0001 |"));
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 }

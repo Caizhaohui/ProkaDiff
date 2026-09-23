@@ -8,17 +8,14 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use prokadiff_classify::{
-    classify, parse_intended_path, ClassifyOptions, EditorKind, RefContig, DEFAULT_MAX_MISMATCHES,
-    DEFAULT_NEAR_DISTANCE,
+    classify, parse_intended_path, project_associations_to_links, ClassifyOptions, EditorKind,
+    RefContig, DEFAULT_MAX_MISMATCHES,
 };
 use prokadiff_evidence::align::FastqInput;
 use prokadiff_evidence::engine::{run_sample, EngineOptions};
 use prokadiff_evidence::fasta::{read_reference, read_references, write_combined_fasta};
 use prokadiff_gd::GenomeDiff;
-use prokadiff_offtarget::{
-    link_mutations_to_sites, scan_genome_bulge, write_mutation_offtarget_links_tsv,
-    write_offtarget_sites_tsv, BulgeSearchOptions, NucleaseProfile, PamSide,
-};
+use prokadiff_offtarget::{write_mutation_offtarget_links_tsv, write_offtarget_sites_tsv};
 use prokadiff_report::{
     write_edit_outcomes_tsv, write_markdown_report, write_post_edit_variants_tsv,
     write_provenance_tsv, write_summary, write_unintended_tsv,
@@ -226,8 +223,10 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
             editor: editor_kind,
             spacer: job.spacer.clone(),
             pam: job.pam.clone(),
-            near_distance: DEFAULT_NEAR_DISTANCE,
+            near_distance: job.offtarget_association_window,
             max_mismatches: DEFAULT_MAX_MISMATCHES,
+            max_dna_bulge: job.max_dna_bulge,
+            max_rna_bulge: job.max_rna_bulge,
             hypothesis: job.hypothesis,
         },
     )?;
@@ -251,46 +250,9 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
     let offtarget_tsv = job.outdir.join("offtarget_sites.tsv");
     let links_tsv = job.outdir.join("mutation_offtarget_links.tsv");
 
-    let (offtarget_sites, offtarget_links) = if let Some(spacer) = &job.spacer {
-        let profile = match job.editor {
-            Editor::Cas9 => {
-                let pam = job.pam.as_deref().unwrap_or("NGG");
-                NucleaseProfile::custom("SpCas9", spacer.len(), pam, PamSide::ThreePrime)
-            }
-            Editor::Cas12a => {
-                let pam = job.pam.as_deref().unwrap_or("TTTV");
-                NucleaseProfile::custom("Cas12a", spacer.len(), pam, PamSide::FivePrime)
-            }
-            Editor::Dsb => NucleaseProfile::custom("DSB", spacer.len(), "", PamSide::ThreePrime),
-        };
-        if job.editor != Editor::Dsb {
-            let ref_tuples: Vec<(String, Vec<u8>)> = refs
-                .iter()
-                .map(|r| (r.name.clone(), r.seq.clone()))
-                .collect();
-            let bulge_opts = BulgeSearchOptions {
-                max_mismatches: DEFAULT_MAX_MISMATCHES,
-                max_dna_bulge: job.max_dna_bulge,
-                max_rna_bulge: job.max_rna_bulge,
-            };
-            let sites = scan_genome_bulge(&ref_tuples, spacer, &profile, bulge_opts);
-            let unintended_entries: Vec<prokadiff_gd::GdEntry> = classified
-                .unintended
-                .iter()
-                .map(|u| u.entry.clone())
-                .collect();
-            let links = link_mutations_to_sites(
-                &unintended_entries,
-                &sites,
-                job.offtarget_association_window,
-            );
-            (sites, links)
-        } else {
-            (Vec::new(), Vec::new())
-        }
-    } else {
-        (Vec::new(), Vec::new())
-    };
+    let offtarget_sites = classified.candidate_search.sites.clone();
+    let offtarget_links =
+        project_associations_to_links(&classified.associations, &classified.differential_events);
 
     write_offtarget_sites_tsv(&offtarget_sites, &offtarget_tsv)?;
     write_mutation_offtarget_links_tsv(&offtarget_links, &links_tsv)?;
@@ -406,7 +368,7 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
         &classified.intended_event_ids,
         &classified.differential_events,
         &offtarget_sites,
-        &offtarget_links,
+        &classified.associations,
         provenance,
         &features,
     );

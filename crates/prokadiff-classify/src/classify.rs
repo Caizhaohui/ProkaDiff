@@ -1,7 +1,11 @@
 use prokadiff_gd::{GdEntry, GdKind, GenomeDiff};
+use prokadiff_offtarget::{scan_genome_bulge, BulgeSearchOptions, NucleaseProfile, PamSide};
 
+use crate::association::{
+    associate_events_to_sites, canonical_sort_sites, primary_association, CandidateSearchOutcome,
+    CandidateSearchStatus, MutationSiteAssociation, DEFAULT_MAX_MISMATCHES, DEFAULT_NEAR_DISTANCE,
+};
 use crate::differential::{build_differential_events, DifferentialEvent, EventId};
-use crate::homolog::{scan_homologs, HomologSite};
 use crate::intended::{
     entry_intervals, EvidenceObservation, IntendedEdit, IntendedEventRole, McDiagnostic,
 };
@@ -31,7 +35,24 @@ pub struct ClassifyOptions {
     pub pam: Option<String>,
     pub near_distance: u64,
     pub max_mismatches: u32,
+    pub max_dna_bulge: u32,
+    pub max_rna_bulge: u32,
     pub hypothesis: bool,
+}
+
+impl ClassifyOptions {
+    pub fn new(editor: EditorKind) -> Self {
+        Self {
+            editor,
+            spacer: None,
+            pam: None,
+            near_distance: DEFAULT_NEAR_DISTANCE,
+            max_mismatches: DEFAULT_MAX_MISMATCHES,
+            max_dna_bulge: 0,
+            max_rna_bulge: 0,
+            hypothesis: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +79,10 @@ pub struct ClassifyResult {
     pub intended_edit_assessments: Option<Vec<crate::intended::IntendedEditAssessment>>,
     /// Canonical differential events (M1).
     pub differential_events: Vec<DifferentialEvent>,
+    /// Single candidate-search outcome (M3).
+    pub candidate_search: CandidateSearchOutcome,
+    /// All qualifying mutation-to-site associations (M3).
+    pub associations: Vec<MutationSiteAssociation>,
 }
 
 pub fn classify(
@@ -139,22 +164,56 @@ pub fn classify(
         .collect();
 
     let pam_used = resolved_pam(opts);
-    let sites = match (opts.editor, opts.spacer.as_deref(), pam_used.as_deref()) {
-        (EditorKind::Dsb, _, _) | (_, None | Some(""), _) | (_, _, None | Some("")) => Vec::new(),
+    let candidate_search = match (opts.editor, opts.spacer.as_deref(), pam_used.as_deref()) {
+        (EditorKind::Dsb, _, _) | (_, None | Some(""), _) | (_, _, None | Some("")) => {
+            CandidateSearchOutcome {
+                status: CandidateSearchStatus::NotPerformed,
+                sites: Vec::new(),
+            }
+        }
         (editor, Some(spacer), Some(pam)) => {
-            scan_homologs(refs, spacer, pam, editor, opts.max_mismatches)
+            let profile = match editor {
+                EditorKind::Cas9 => {
+                    NucleaseProfile::custom("SpCas9", spacer.len(), pam, PamSide::ThreePrime)
+                }
+                EditorKind::Cas12a => {
+                    NucleaseProfile::custom("Cas12a", spacer.len(), pam, PamSide::FivePrime)
+                }
+                EditorKind::Dsb => unreachable!(),
+            };
+            let ref_tuples: Vec<(String, Vec<u8>)> = refs
+                .iter()
+                .map(|r| (r.name.clone(), r.seq.clone()))
+                .collect();
+            let bulge_opts = BulgeSearchOptions {
+                max_mismatches: opts.max_mismatches,
+                max_dna_bulge: opts.max_dna_bulge,
+                max_rna_bulge: opts.max_rna_bulge,
+            };
+            let mut sites = scan_genome_bulge(&ref_tuples, spacer, &profile, bulge_opts);
+            canonical_sort_sites(&mut sites);
+            let status = if sites.is_empty() {
+                CandidateSearchStatus::PerformedNoCandidates
+            } else {
+                CandidateSearchStatus::PerformedWithCandidates
+            };
+            CandidateSearchOutcome { status, sites }
         }
     };
 
-    let mob_positions: Vec<(String, u64)> = remain
+    let remain_events: Vec<DifferentialEvent> = remain.into_iter().cloned().collect();
+    let associations =
+        associate_events_to_sites(&remain_events, &candidate_search.sites, opts.near_distance);
+
+    let mob_positions: Vec<(String, u64)> = remain_events
         .iter()
         .filter(|event| event.representative.kind == GdKind::Mob)
         .map(|event| &event.representative)
         .filter_map(|e| Some((e.seq_id()?.to_string(), e.position()?)))
         .collect();
 
-    let mut unintended = Vec::with_capacity(remain.len());
-    for event in remain {
+    let mut unintended = Vec::with_capacity(remain_events.len());
+    for event in &remain_events {
         let e = &event.representative;
         if e.kind == GdKind::Jc && e.attrs.contains_key("mob_evidence") {
             if let (Some(seq), Some(pos)) = (e.seq_id(), e.position()) {
@@ -166,13 +225,54 @@ pub fn classify(
                 }
             }
         }
-        unintended.push(label_one(
-            e,
-            Some(event.event_id.clone()),
-            &sites,
-            opts,
-            pam_used.as_deref(),
-        ));
+
+        let event_assocs: Vec<MutationSiteAssociation> = associations
+            .iter()
+            .filter(|a| a.event_id == event.event_id)
+            .cloned()
+            .collect();
+
+        let del_size = if e.kind == GdKind::Del {
+            e.fields.get(2).and_then(|s| s.parse().ok())
+        } else {
+            None
+        };
+        let is_struct = is_structural(e.kind, del_size);
+        let primary = if !event_assocs.is_empty() {
+            primary_association(&event_assocs).cloned()
+        } else {
+            None
+        };
+
+        let (class, pam_profile, offtarget_mismatch, distance_to_site) = if is_struct {
+            (MutationClass::Structural, None, None, None)
+        } else if opts.editor != EditorKind::Dsb && primary.is_some() {
+            let p = primary.as_ref().unwrap();
+            (
+                MutationClass::NearHomolog,
+                Some(p.pam.clone()),
+                Some(p.mismatches),
+                Some(p.distance_to_site),
+            )
+        } else {
+            (MutationClass::ScatteredSnv, None, None, None)
+        };
+
+        let hypothesis = if opts.hypothesis && class == MutationClass::ScatteredSnv {
+            Some("sos_widney2014".into())
+        } else {
+            None
+        };
+
+        unintended.push(ClassifiedMutation {
+            entry: e.clone(),
+            class,
+            pam_profile,
+            offtarget_mismatch,
+            distance_to_site,
+            hypothesis,
+            event_id: Some(event.event_id.clone()),
+        });
     }
 
     Ok(ClassifyResult {
@@ -183,6 +283,8 @@ pub fn classify(
         starter_vs_ref,
         intended_edit_assessments,
         differential_events,
+        candidate_search,
+        associations,
     })
 }
 
@@ -195,51 +297,6 @@ fn resolved_pam(opts: &ClassifyOptions) -> Option<String> {
     opts.editor.default_pam().map(str::to_string)
 }
 
-fn label_one(
-    e: &GdEntry,
-    event_id: Option<EventId>,
-    sites: &[HomologSite],
-    opts: &ClassifyOptions,
-    pam_used: Option<&str>,
-) -> ClassifiedMutation {
-    let del_size = if e.kind == GdKind::Del {
-        e.fields.get(2).and_then(|s| s.parse().ok())
-    } else {
-        None
-    };
-    let (class, pam_profile, offtarget_mismatch, distance_to_site) =
-        if is_structural(e.kind, del_size) {
-            (MutationClass::Structural, None, None, None)
-        } else if opts.editor != EditorKind::Dsb {
-            if let Some((dist, mm)) = nearest_site(e, sites, opts.near_distance) {
-                (
-                    MutationClass::NearHomolog,
-                    pam_used.map(str::to_string),
-                    Some(mm),
-                    Some(dist),
-                )
-            } else {
-                (MutationClass::ScatteredSnv, None, None, None)
-            }
-        } else {
-            (MutationClass::ScatteredSnv, None, None, None)
-        };
-    let hypothesis = if opts.hypothesis && class == MutationClass::ScatteredSnv {
-        Some("sos_widney2014".into())
-    } else {
-        None
-    };
-    ClassifiedMutation {
-        entry: e.clone(),
-        class,
-        pam_profile,
-        offtarget_mismatch,
-        distance_to_site,
-        hypothesis,
-        event_id,
-    }
-}
-
 /// RW-004: whether an `MC` entry's interval overlaps any declared intended-edit locus.
 /// Used only to widen the input to `assess_intended_edits`; does not affect `unintended`.
 fn mc_overlaps_any_intended(e: &GdEntry, intended: &[IntendedEdit]) -> bool {
@@ -248,39 +305,6 @@ fn mc_overlaps_any_intended(e: &GdEntry, intended: &[IntendedEdit]) -> bool {
             .iter()
             .any(|t| sid == &t.seq_id && *a <= t.end && t.start <= *b)
     })
-}
-
-fn nearest_site(e: &GdEntry, sites: &[HomologSite], max_d: u64) -> Option<(u64, u32)> {
-    let mut best: Option<(u64, u32)> = None;
-    for (sid, a, b) in entry_intervals(e) {
-        for s in sites {
-            if s.seq_id != sid {
-                continue;
-            }
-            let d = interval_distance(a, b, s.start, s.end);
-            if d > max_d {
-                continue;
-            }
-            match best {
-                None => best = Some((d, s.mismatches)),
-                Some((bd, bm)) if d < bd || (d == bd && s.mismatches < bm) => {
-                    best = Some((d, s.mismatches));
-                }
-                _ => {}
-            }
-        }
-    }
-    best
-}
-
-fn interval_distance(a0: u64, a1: u64, b0: u64, b1: u64) -> u64 {
-    if a0 <= b1 && b0 <= a1 {
-        0
-    } else if a0 > b1 {
-        a0 - b1
-    } else {
-        b0 - a1
-    }
 }
 
 #[cfg(test)]
@@ -314,6 +338,8 @@ mod tests {
             pam: None,
             near_distance: 5000,
             max_mismatches: 3,
+            max_dna_bulge: 0,
+            max_rna_bulge: 0,
             hypothesis: false,
         }
     }

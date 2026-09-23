@@ -356,6 +356,8 @@ mod tests {
             starter_vs_ref,
             intended_edit_assessments: None,
             differential_events: Vec::new(),
+            candidate_search: Default::default(),
+            associations: Vec::new(),
         }
     }
 

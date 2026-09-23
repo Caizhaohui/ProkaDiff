@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use prokadiff_gd::{GdEntry, GdKind};
 use prokadiff_offtarget::{MutationOffTargetLink, OffTargetSite};
 
+use crate::association::{primary_association, MutationSiteAssociation};
 use crate::classify::{ClassifiedMutation, MutationClass};
 use crate::differential::{DifferentialEvent, EventId, EvidenceReferences};
 use crate::intended::{IntendedEditAssessment, IntendedEventRole};
@@ -304,6 +305,7 @@ pub struct AuditResult {
     pub variants: Vec<AnnotatedVariant>,
     pub guide_sites: Vec<OffTargetSite>,
     pub variant_site_links: Vec<MutationOffTargetLink>,
+    pub associations: Vec<MutationSiteAssociation>,
     pub provenance: AnalysisProvenance,
 }
 
@@ -316,7 +318,7 @@ pub fn build_audit_result(
     intended_observed: &[EventId],
     differential_events: &[DifferentialEvent],
     guide_sites: &[OffTargetSite],
-    variant_site_links: &[MutationOffTargetLink],
+    associations: &[MutationSiteAssociation],
     provenance: AnalysisProvenance,
     features: &[AnnotatedFeature],
 ) -> AuditResult {
@@ -418,37 +420,22 @@ pub fn build_audit_result(
         let seq_id = entry.seq_id().unwrap_or("");
         let gene_annotation = find_gene_annotation(seq_id, pos, features);
 
-        let mut_id = format!("mut_{}", entry.id);
-        let matched_link = variant_site_links
-            .iter()
-            .filter(|l| l.mutation_id == mut_id)
-            .min_by_key(|l| (l.distance_to_site, l.mismatches));
-
-        let guide_relation = if let Some(link) = matched_link {
-            GuideRelation::CandidateOffTarget {
-                site_id: link.site_id.clone(),
-                spacer_mismatches: link.mismatches,
-                pam: link.pam.clone(),
-                distance_to_site: link.distance_to_site,
-            }
-        } else if cm.class == MutationClass::NearHomolog {
-            let closest_site = guide_sites
+        let event_assocs: Vec<MutationSiteAssociation> = if let Some(ref eid) = cm.event_id {
+            associations
                 .iter()
-                .filter(|s| entry.seq_id().map(|seq| seq == s.seq_id).unwrap_or(false))
-                .min_by_key(|s| {
-                    if pos < s.start {
-                        s.start.saturating_sub(pos)
-                    } else {
-                        pos.saturating_sub(s.end)
-                    }
-                });
+                .filter(|a| &a.event_id == eid)
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let guide_relation = if let Some(primary) = primary_association(&event_assocs) {
             GuideRelation::CandidateOffTarget {
-                site_id: closest_site
-                    .map(|s| s.site_id.clone())
-                    .unwrap_or_else(|| "SITE_UNKNOWN".to_string()),
-                spacer_mismatches: cm.offtarget_mismatch.unwrap_or(0),
-                pam: cm.pam_profile.clone().unwrap_or_default(),
-                distance_to_site: cm.distance_to_site.unwrap_or(0),
+                site_id: primary.site_id.clone(),
+                spacer_mismatches: primary.mismatches,
+                pam: primary.pam.clone(),
+                distance_to_site: primary.distance_to_site,
             }
         } else {
             GuideRelation::None
@@ -485,12 +472,16 @@ pub fn build_audit_result(
         id_counter += 1;
     }
 
+    let variant_site_links =
+        crate::association::project_associations_to_links(associations, differential_events);
+
     AuditResult {
         sample,
         intended_edits: intended_assessments,
         variants,
         guide_sites: guide_sites.to_vec(),
-        variant_site_links: variant_site_links.to_vec(),
+        variant_site_links,
+        associations: associations.to_vec(),
         provenance,
     }
 }
@@ -831,6 +822,7 @@ mod tests {
             run_timestamp: "2026-09-16T12:00:00Z".into(),
         };
 
+        let event_id = EventId::parse(&format!("DV1_{:032x}", 10)).expect("valid test event id");
         let unintended_cm = ClassifiedMutation {
             entry: GdEntry::snp(10, "chr", 125, "C"),
             class: MutationClass::NearHomolog,
@@ -838,20 +830,28 @@ mod tests {
             offtarget_mismatch: Some(1),
             distance_to_site: Some(5),
             hypothesis: None,
-            event_id: None,
+            event_id: Some(event_id.clone()),
         };
 
-        let real_link = MutationOffTargetLink {
-            mutation_id: "mut_10".into(),
-            site_id: "SITE_000042".into(),
+        let real_assoc = MutationSiteAssociation {
+            event_id,
             mutation_type: "SNP".into(),
             mutation_position: 125,
+            junction_side: None,
+            site_id: "SITE_000042".into(),
+            site_seq_id: "chr".into(),
             site_start: 100,
             site_end: 123,
+            site_strand: prokadiff_offtarget::Strand::Plus,
             distance_to_site: 2,
             mismatches: 1,
             pam: "CGG".into(),
             cfd_score: None,
+            hsu_score: None,
+            search_backend: "rust_exact".into(),
+            bulge_type: prokadiff_offtarget::BulgeType::None,
+            bulge_size: 0,
+            target_seq: "GAGTCCGAGCAGAAGAAGAA".into(),
             association_window: 50,
         };
 
@@ -862,7 +862,7 @@ mod tests {
             &[],
             &[],
             &[],
-            &[real_link],
+            &[real_assoc],
             prov,
             &[],
         );

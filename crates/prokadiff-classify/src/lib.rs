@@ -2,9 +2,12 @@
 
 #![deny(unsafe_code)]
 
+pub mod association;
 mod audit;
 mod classify;
 pub mod differential;
+pub mod geometry;
+#[cfg(test)]
 mod homolog;
 mod intended;
 
@@ -14,12 +17,21 @@ mod m1_regression_tests;
 #[cfg(test)]
 mod m2_regression_tests;
 
+#[cfg(test)]
+mod m3_regression_tests;
+
 pub use differential::{
     build_differential_events, CanonicalContig, CanonicalEvent, CanonicalJunctionSide,
     DifferentialError, DifferentialEvent, DifferentialResultSet, EventId, EventIdCollisionGuard,
     EvidenceKind, EvidenceReferences, GdEvidenceRef,
 };
 
+pub use association::{
+    associate_events_to_sites, canonical_sort_associations, canonical_sort_sites,
+    linear_associate_events_to_sites, primary_association, project_associations_to_links,
+    CandidateSearchOutcome, CandidateSearchStatus, MutationSiteAssociation, DEFAULT_MAX_MISMATCHES,
+    DEFAULT_NEAR_DISTANCE,
+};
 pub use audit::{
     build_audit_result, classify_is_family, find_gene_annotation, AnalysisProvenance,
     AnnotatedFeature, AnnotatedVariant, AuditResult, EvidenceSummary, GeneAnnotation,
@@ -27,13 +39,20 @@ pub use audit::{
     ReviewPriority, SampleMetadata, SizeClass, ValidationStatus,
 };
 pub use classify::{classify, ClassifiedMutation, ClassifyOptions, ClassifyResult, MutationClass};
-pub use homolog::{scan_homologs, HomologSite, DEFAULT_MAX_MISMATCHES, DEFAULT_NEAR_DISTANCE};
+pub use geometry::{
+    event_geometries, event_geometry, event_geometry_checked, geometry_distance, interval_distance,
+    junction_side_distance, point_distance, GeometryError, JunctionSide, JunctionSideTag,
+    MutationGeometry,
+};
 pub use intended::{
     assess_intended_edits, mask_intended, parse_intended, parse_intended_path, BoundaryAssessment,
     EvidenceObservation, IntendedEdit, IntendedEditAssessment, IntendedEditStatus, IntendedError,
     IntendedEventRelationship, IntendedEventRole, McDiagnostic,
 };
-pub use prokadiff_offtarget::{MutationOffTargetLink, OffTargetSite};
+pub use prokadiff_offtarget::{
+    write_mutation_offtarget_links_tsv, write_offtarget_sites_tsv, MutationOffTargetLink,
+    OffTargetSite,
+};
 
 use prokadiff_gd::GdKind;
 
@@ -147,6 +166,8 @@ mod tests {
             pam: None,
             near_distance: DEFAULT_NEAR_DISTANCE,
             max_mismatches: DEFAULT_MAX_MISMATCHES,
+            max_dna_bulge: 0,
+            max_rna_bulge: 0,
             hypothesis,
         }
     }
@@ -272,7 +293,7 @@ mod tests {
         let edited = gd(vec![GdEntry::snp(1, "chr", 40, "C")]);
         let out = classify(&edited, &gd(vec![]), &[], &refs, &cas9_opts(false));
         assert_eq!(out.unintended[0].class, MutationClass::NearHomolog);
-        assert_eq!(out.unintended[0].pam_profile.as_deref(), Some("NGG"));
+        assert_eq!(out.unintended[0].pam_profile.as_deref(), Some("TGG"));
         assert_eq!(out.unintended[0].offtarget_mismatch, Some(0));
         assert_eq!(out.unintended[0].distance_to_site, Some(7));
     }
@@ -316,11 +337,13 @@ mod tests {
             pam: None,
             near_distance: DEFAULT_NEAR_DISTANCE,
             max_mismatches: DEFAULT_MAX_MISMATCHES,
+            max_dna_bulge: 0,
+            max_rna_bulge: 0,
             hypothesis: false,
         };
         let out = classify(&edited, &gd(vec![]), &[], &refs, &opts);
         assert_eq!(out.unintended[0].class, MutationClass::NearHomolog);
-        assert_eq!(out.unintended[0].pam_profile.as_deref(), Some("TTTV"));
+        assert_eq!(out.unintended[0].pam_profile.as_deref(), Some("TTTA"));
     }
 
     #[test]
@@ -442,7 +465,7 @@ mod tests {
         let edited = gd(vec![GdEntry::snp(1, "chr", 40, "C")]);
         let out = classify(&edited, &gd(vec![]), &[], &refs, &cas9_opts(false));
         assert_eq!(out.unintended[0].class, MutationClass::NearHomolog);
-        assert_eq!(out.unintended[0].pam_profile.as_deref(), Some("NGG"));
+        assert_eq!(out.unintended[0].pam_profile.as_deref(), Some("TGG"));
         assert_eq!(out.unintended[0].offtarget_mismatch, Some(0));
         assert_eq!(out.unintended[0].distance_to_site, Some(7));
     }
@@ -477,7 +500,7 @@ mod tests {
         nag.pam = Some("NAG".into());
         let out = classify(&edited, &gd(vec![]), &[], &refs, &nag);
         assert_eq!(out.unintended[0].class, MutationClass::NearHomolog);
-        assert_eq!(out.unintended[0].pam_profile.as_deref(), Some("NAG"));
+        assert_eq!(out.unintended[0].pam_profile.as_deref(), Some("TAG"));
     }
 
     #[test]
