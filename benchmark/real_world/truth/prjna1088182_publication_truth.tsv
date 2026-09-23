@@ -1,0 +1,29 @@
+dataset	sample_id	sample_name	group	reported_mutation	pos	ref_allele	alt_allele	mutation_type	gene	edited_gene	cut_site
+prjna1088182	SRR28349244	Cas9_1	Cas9	301690	301690	C	T	synonymous	paoB	fbaB	2177871
+prjna1088182	SRR28349243	Cas9_2	Cas9	NONE	.	.	.	NONE	.	pgi	4234807
+prjna1088182	SRR28349177	Cas9_103	Cas9	3536100	3536100	G	T	nonsynonymous	ompR	acs	4286385
+prjna1088182	SRR28349204	Cas9_3 _and2others	Cas9	1571257	1571257	G	T	synonymous	gadB	cyaA	3992658
+prjna1088182	SRR28349178	Cas9_101_102	Cas9	NONE	.	.	.	NONE	.	acs	4286385
+prjna1088182	SRR28349176	Cas9_104_105	Cas9	2776013	2776013	T	C	nonsynonymous	yfjX	acs	4285506
+prjna1088182	SRR28349176	Cas9_104_105	Cas9	4035824	4035824	T	C	ribosomal RNA	rrsA	acs	4285506
+prjna1088182	SRR28349175	Cas9_106_107	Cas9	NONE	.	.	.	NONE	.	acs	4285506
+prjna1088182	SRR28349174	Cas9_108_109	Cas9	NONE	.	.	.	NONE	.	acs	4285506
+prjna1088182	SRR28349173	Cas9_110_111	Cas9	NONE	.	.	.	NONE	.	acs	4285506
+prjna1088182	SRR28349172	Cas9_112_113	Cas9	NONE	.	.	.	NONE	.	acs	4285506
+prjna1088182	SRR28349226	control_1_2_3_4	control	NONE	.	.	.	NONE	.	.	.
+prjna1088182	SRR28349225	control_5_6_7_8	control	1635887	1635887	A	G	snp_intergenic	cspB/cspF	.	.
+prjna1088182	SRR28349224	control_9_10_11_12	control	NONE	.	.	.	NONE	.	.	.
+prjna1088182	SRR28349223	control_13_14_15_16	control	NONE	.	.	.	NONE	.	.	.
+prjna1088182	SRR28349221	control_17_18_19_20	control	3108123	3108123	G	A	snp_nonsynonymous	yghJ	.	.
+prjna1088182	SRR28349168	lambdaRed_1_2	lambdaRed	NONE	.	.	.	NONE	.	pdxB	.
+prjna1088182	SRR28349167	lambdaRed_3_4	lambdaRed	3112908	3112908	.	+AAT	small indel	yghJ/glcA	pdxB	.
+prjna1088182	SRR28349166	lambdaRed_5_6	lambdaRed	NONE	.	.	.	NONE	.	pdxB	.
+prjna1088182	SRR28349165	lambdaRed_7_8	lambdaRed	161068	161068	A	C	intergenic	hrpB/mrcB	pdxB	.
+prjna1088182	SRR28349164	lambdaRed_9_10	lambdaRed	NONE	.	.	.	NONE	.	pdxB	.
+prjna1088182	SRR28349232	I-SceI_1_2	I-SceI	2653047	2653047	T	A	nonsense	iscA	rpoS	.
+prjna1088182	SRR28349232	I-SceI_1_2	I-SceI	4115617	4115617	C	A	nonsense	priA	rpoS	.
+prjna1088182	SRR28349231	I-SceI_3_4_5_6	I-SceI	NONE	.	.	.	NONE	.	rpoS	.
+prjna1088182	SRR28349230	I-SceI_7_8_9	I-SceI	2872949	2872949	C	A	synonymous	ygbT	rpoS	.
+prjna1088182	SRR28349230	I-SceI_7_8_9	I-SceI	2872949	2872949	C	A	synonymous	ygbT	rpoS	.
+prjna1088182	SRR28349228	I-SceI_14_15_16	I-SceI	3073571	3073571	G	A	nonsynonymous	tktA	rpoS	.
+prjna1088182	SRR28349227	I-SceI_17_18_19	I-SceI	NONE	.	.	.	NONE	.	rpoS	.

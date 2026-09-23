@@ -543,6 +543,7 @@ version = "0.1.0"
 dependencies = [
  "prokadiff-gd",
  "prokadiff-offtarget",
+ "sha2",
  "thiserror",
 ]
 

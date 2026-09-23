@@ -4,6 +4,7 @@
 
 #![deny(unsafe_code)]
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::fs;
@@ -22,6 +23,9 @@ pub enum GdError {
 
 pub type Result<T> = std::result::Result<T, GdError>;
 
+pub mod normalize;
+pub use normalize::{right_align_del, right_align_ins};
+
 /// Three-letter mutation and two-letter evidence types in the first-period subset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GdKind {
@@ -32,6 +36,7 @@ pub enum GdKind {
     Mob,
     Amp,
     Con,
+    Inv,
     Jc,
     Un,
     Ra,
@@ -48,6 +53,7 @@ impl GdKind {
             Self::Mob => "MOB",
             Self::Amp => "AMP",
             Self::Con => "CON",
+            Self::Inv => "INV",
             Self::Jc => "JC",
             Self::Un => "UN",
             Self::Ra => "RA",
@@ -59,7 +65,7 @@ impl GdKind {
         match self {
             Self::Snp | Self::Ins => 3,
             Self::Sub => 4,
-            Self::Del | Self::Un => 3,
+            Self::Del | Self::Un | Self::Inv => 3,
             Self::Mob => 5,
             Self::Amp => 4,
             Self::Con => 4,
@@ -82,6 +88,7 @@ impl FromStr for GdKind {
             "MOB" => Self::Mob,
             "AMP" => Self::Amp,
             "CON" => Self::Con,
+            "INV" => Self::Inv,
             "JC" => Self::Jc,
             "UN" => Self::Un,
             "RA" => Self::Ra,
@@ -210,6 +217,29 @@ impl GdEntry {
         }
     }
 
+    pub fn ra(
+        id: u32,
+        seq_id: impl Into<String>,
+        position: u64,
+        insert_position: u64,
+        ref_base: impl Into<String>,
+        new_base: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: GdKind::Ra,
+            id,
+            parent_ids: Vec::new(),
+            fields: vec![
+                seq_id.into(),
+                position.to_string(),
+                insert_position.to_string(),
+                ref_base.into(),
+                new_base.into(),
+            ],
+            attrs: BTreeMap::new(),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn jc(
         id: u32,
@@ -252,8 +282,72 @@ impl GdEntry {
         }
     }
 
+    pub fn amp(
+        id: u32,
+        seq_id: impl Into<String>,
+        position: u64,
+        size: u64,
+        new_copy_number: u64,
+    ) -> Self {
+        Self {
+            kind: GdKind::Amp,
+            id,
+            parent_ids: Vec::new(),
+            fields: vec![
+                seq_id.into(),
+                position.to_string(),
+                size.to_string(),
+                new_copy_number.to_string(),
+            ],
+            attrs: BTreeMap::new(),
+        }
+    }
+
+    pub fn con(
+        id: u32,
+        seq_id: impl Into<String>,
+        position: u64,
+        size: u64,
+        region: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: GdKind::Con,
+            id,
+            parent_ids: Vec::new(),
+            fields: vec![
+                seq_id.into(),
+                position.to_string(),
+                size.to_string(),
+                region.into(),
+            ],
+            attrs: BTreeMap::new(),
+        }
+    }
+
+    pub fn inv(id: u32, seq_id: impl Into<String>, position: u64, size: u64) -> Self {
+        Self {
+            kind: GdKind::Inv,
+            id,
+            parent_ids: Vec::new(),
+            fields: vec![seq_id.into(), position.to_string(), size.to_string()],
+            attrs: BTreeMap::new(),
+        }
+    }
+
+    pub fn new_inv(id: u32, seq_id: impl Into<String>, position: u64, size: u64) -> Self {
+        Self::inv(id, seq_id, position, size)
+    }
+
     pub fn del_size(&self) -> Option<u64> {
         if self.kind == GdKind::Del {
+            self.fields.get(2).and_then(|s| s.parse().ok())
+        } else {
+            None
+        }
+    }
+
+    pub fn inv_size(&self) -> Option<u64> {
+        if self.kind == GdKind::Inv {
             self.fields.get(2).and_then(|s| s.parse().ok())
         } else {
             None
@@ -289,6 +383,7 @@ pub struct CanonicalJcSide {
 pub struct CanonicalJc {
     pub side1: CanonicalJcSide,
     pub side2: CanonicalJcSide,
+    pub overlap: i64,
 }
 
 fn normalize_strand(s: &str) -> String {
@@ -317,11 +412,17 @@ impl CanonicalJc {
             pos: pos2,
         };
         let (side1, side2) = if s1 <= s2 { (s1, s2) } else { (s2, s1) };
-        Some(Self { side1, side2 })
+        let overlap = fields.get(6).and_then(|s| s.parse().ok())?;
+        Some(Self {
+            side1,
+            side2,
+            overlap,
+        })
     }
 
     pub fn matches_tolerant(&self, other: &Self, tol: u64) -> bool {
-        self.side1.seq_id == other.side1.seq_id
+        self.overlap == other.overlap
+            && self.side1.seq_id == other.side1.seq_id
             && self.side1.strand == other.side1.strand
             && self.side1.pos.abs_diff(other.side1.pos) <= tol
             && self.side2.seq_id == other.side2.seq_id
@@ -336,19 +437,22 @@ pub struct CanonicalMob {
     pub pos: u64,
     pub repeat_name: String,
     pub strand: String,
+    pub duplication_size: i64,
 }
 
 impl CanonicalMob {
     pub fn parse(fields: &[String]) -> Option<Self> {
-        if fields.len() < 4 {
+        if fields.len() < 5 {
             return None;
         }
         let pos: u64 = fields[1].parse().ok()?;
+        let duplication_size: i64 = fields[4].parse().ok()?;
         Some(Self {
             seq_id: fields[0].clone(),
             pos,
             repeat_name: fields[2].clone(),
             strand: normalize_strand(&fields[3]),
+            duplication_size,
         })
     }
 
@@ -356,6 +460,7 @@ impl CanonicalMob {
         self.seq_id == other.seq_id
             && self.repeat_name == other.repeat_name
             && self.strand == other.strand
+            && self.duplication_size == other.duplication_size
             && self.pos.abs_diff(other.pos) <= tol
     }
 }
@@ -381,22 +486,321 @@ impl CanonicalDel {
         })
     }
 
-    pub fn end(&self) -> u64 {
-        self.start.saturating_add(self.size.saturating_sub(1))
+    pub fn end(&self) -> Option<u64> {
+        self.start.checked_add(self.size.checked_sub(1)?)
     }
 
     pub fn matches_tolerant(&self, other: &Self, tol: u64) -> bool {
         if self.seq_id != other.seq_id {
             return false;
         }
-        if self.size > 2 || other.size > 2 {
-            // Structural deletion: both start and end boundaries match within tolerance
-            self.start.abs_diff(other.start) <= tol && self.end().abs_diff(other.end()) <= tol
-        } else {
-            // Short indel (<= 2 bp): exact coordinate and size match
-            self.start == other.start && self.size == other.size
+        if self.size <= 2 || other.size <= 2 {
+            return self.start == other.start && self.size == other.size;
+        }
+        let Some(self_end) = self.end() else {
+            return false;
+        };
+        let Some(other_end) = other.end() else {
+            return false;
+        };
+        self.start.abs_diff(other.start) <= tol && self_end.abs_diff(other_end) <= tol
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MatchCost {
+    max_delta: u64,
+    sum_delta: u64,
+}
+
+impl MatchCost {
+    const ZERO: Self = Self {
+        max_delta: 0,
+        sum_delta: 0,
+    };
+
+    fn checked_add(self, other: Self) -> Option<Self> {
+        Some(Self {
+            max_delta: self.max_delta.checked_add(other.max_delta)?,
+            sum_delta: self.sum_delta.checked_add(other.sum_delta)?,
+        })
+    }
+}
+
+impl Ord for MatchCost {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.max_delta, self.sum_delta).cmp(&(other.max_delta, other.sum_delta))
+    }
+}
+
+impl PartialOrd for MatchCost {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MatchCandidate {
+    edited_index: usize,
+    starter_index: usize,
+    cost: MatchCost,
+    edited_key: Vec<u8>,
+    starter_key: Vec<u8>,
+}
+
+impl Ord for MatchCandidate {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (
+            self.cost,
+            self.edited_key.as_slice(),
+            self.starter_key.as_slice(),
+            self.edited_index,
+            self.starter_index,
+        )
+            .cmp(&(
+                other.cost,
+                other.edited_key.as_slice(),
+                other.starter_key.as_slice(),
+                other.edited_index,
+                other.starter_index,
+            ))
+    }
+}
+
+impl PartialOrd for MatchCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ResidualEdge {
+    to: usize,
+    reverse_index: usize,
+    capacity: u8,
+    cost: MatchCost,
+}
+
+fn add_match_edge(graph: &mut [Vec<ResidualEdge>], from: usize, to: usize, cost: MatchCost) {
+    let forward_index = graph[from].len();
+    let reverse_index = graph[to].len();
+    graph[from].push(ResidualEdge {
+        to,
+        reverse_index,
+        capacity: 1,
+        cost,
+    });
+    graph[to].push(ResidualEdge {
+        to: from,
+        reverse_index: forward_index,
+        capacity: 0,
+        cost,
+    });
+}
+
+fn minimum_cost_maximum_matching(
+    edited_count: usize,
+    starter_count: usize,
+    candidates: &[MatchCandidate],
+) -> Vec<(usize, usize)> {
+    let source = 0;
+    let edited_start = 1;
+    let starter_start = edited_start + edited_count;
+    let sink = starter_start + starter_count;
+    let mut graph = vec![Vec::new(); sink + 1];
+
+    for edited_index in 0..edited_count {
+        add_match_edge(
+            &mut graph,
+            source,
+            edited_start + edited_index,
+            MatchCost::ZERO,
+        );
+    }
+    for candidate in candidates {
+        add_match_edge(
+            &mut graph,
+            edited_start + candidate.edited_index,
+            starter_start + candidate.starter_index,
+            candidate.cost,
+        );
+    }
+    for starter_index in 0..starter_count {
+        add_match_edge(
+            &mut graph,
+            starter_start + starter_index,
+            sink,
+            MatchCost::ZERO,
+        );
+    }
+
+    loop {
+        let mut distance = vec![None; graph.len()];
+        let mut previous = vec![None; graph.len()];
+        distance[source] = Some(MatchCost::ZERO);
+
+        for _ in 1..graph.len() {
+            let mut changed = false;
+            for node in 0..graph.len() {
+                let Some(prefix_cost) = distance[node] else {
+                    continue;
+                };
+                for (edge_index, edge) in graph[node].iter().enumerate() {
+                    if edge.capacity == 0 {
+                        continue;
+                    }
+                    let Some(candidate_cost) = prefix_cost.checked_add(edge.cost) else {
+                        continue;
+                    };
+                    if distance[edge.to].is_none_or(|current| candidate_cost < current) {
+                        distance[edge.to] = Some(candidate_cost);
+                        previous[edge.to] = Some((node, edge_index));
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        if distance[sink].is_none() {
+            break;
+        }
+
+        let mut node = sink;
+        while node != source {
+            let Some((from, edge_index)) = previous[node] else {
+                return collect_min_cost_matches(
+                    &graph,
+                    edited_start,
+                    starter_start,
+                    starter_count,
+                );
+            };
+            let reverse_index = graph[from][edge_index].reverse_index;
+            graph[from][edge_index].capacity = 0;
+            graph[node][reverse_index].capacity = 1;
+            node = from;
         }
     }
+
+    collect_min_cost_matches(&graph, edited_start, starter_start, starter_count)
+}
+
+fn collect_min_cost_matches(
+    graph: &[Vec<ResidualEdge>],
+    edited_start: usize,
+    starter_start: usize,
+    starter_count: usize,
+) -> Vec<(usize, usize)> {
+    let starter_end = starter_start + starter_count;
+    let mut matches = Vec::new();
+    for (edited_index, edges) in graph[edited_start..starter_start].iter().enumerate() {
+        for edge in edges {
+            if (starter_start..starter_end).contains(&edge.to) && edge.capacity == 0 {
+                matches.push((edited_index, edge.to - starter_start));
+            }
+        }
+    }
+    matches
+}
+
+fn canonical_subtract_key(entry: &GdEntry) -> Option<Vec<u8>> {
+    match entry.kind {
+        GdKind::Un => None,
+        GdKind::Jc => {
+            let jc = CanonicalJc::parse(&entry.fields)?;
+            Some(
+                format!(
+                    "JC|{}|{}|{}|{}|{}|{}|{}",
+                    jc.side1.seq_id,
+                    jc.side1.strand,
+                    jc.side1.pos,
+                    jc.side2.seq_id,
+                    jc.side2.strand,
+                    jc.side2.pos,
+                    jc.overlap
+                )
+                .into_bytes(),
+            )
+        }
+        GdKind::Mob => {
+            let mob = CanonicalMob::parse(&entry.fields)?;
+            Some(
+                format!(
+                    "MOB|{}|{}|{}|{}|{}",
+                    mob.seq_id, mob.pos, mob.repeat_name, mob.strand, mob.duplication_size
+                )
+                .into_bytes(),
+            )
+        }
+        _ => Some(entry.subtract_key().into_bytes()),
+    }
+}
+
+fn tolerant_candidate_cost(
+    edited: &GdEntry,
+    starter: &GdEntry,
+    tol: Tolerances,
+) -> Option<MatchCost> {
+    let deltas = match (edited.kind, starter.kind) {
+        (GdKind::Jc, GdKind::Jc) => {
+            let edited_jc = CanonicalJc::parse(&edited.fields)?;
+            let starter_jc = CanonicalJc::parse(&starter.fields)?;
+            if !edited_jc.matches_tolerant(&starter_jc, tol.jc) {
+                return None;
+            }
+            [
+                edited_jc.side1.pos.abs_diff(starter_jc.side1.pos),
+                edited_jc.side2.pos.abs_diff(starter_jc.side2.pos),
+            ]
+        }
+        (GdKind::Mob, GdKind::Mob) => {
+            let edited_mob = CanonicalMob::parse(&edited.fields)?;
+            let starter_mob = CanonicalMob::parse(&starter.fields)?;
+            if !edited_mob.matches_tolerant(&starter_mob, tol.mob) {
+                return None;
+            }
+            let delta = edited_mob.pos.abs_diff(starter_mob.pos);
+            [delta, delta]
+        }
+        (GdKind::Del, GdKind::Del) => {
+            let edited_del = CanonicalDel::parse(&edited.fields)?;
+            let starter_del = CanonicalDel::parse(&starter.fields)?;
+            if edited_del.size <= 2 || starter_del.size <= 2 {
+                return None;
+            }
+            if !edited_del.matches_tolerant(&starter_del, tol.del) {
+                return None;
+            }
+            [
+                edited_del.start.abs_diff(starter_del.start),
+                edited_del.end()?.abs_diff(starter_del.end()?),
+            ]
+        }
+        (GdKind::Snp, _)
+        | (GdKind::Sub, _)
+        | (GdKind::Ins, _)
+        | (GdKind::Amp, _)
+        | (GdKind::Con, _)
+        | (GdKind::Inv, _)
+        | (GdKind::Un, _)
+        | (GdKind::Ra, _)
+        | (GdKind::Mc, _) => return None,
+        (GdKind::Del, _) | (GdKind::Mob, _) | (GdKind::Jc, _) => return None,
+    };
+    Some(MatchCost {
+        max_delta: deltas[0].max(deltas[1]),
+        sum_delta: deltas[0].checked_add(deltas[1])?,
+    })
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Tolerances {
+    jc: u64,
+    mob: u64,
+    del: u64,
 }
 
 /// A Genome Diff document.
@@ -413,7 +817,17 @@ impl GenomeDiff {
             entries: Vec::new(),
         }
     }
+}
 
+impl FromStr for GenomeDiff {
+    type Err = GdError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Self::parse(s)
+    }
+}
+
+impl GenomeDiff {
     pub fn parse(text: &str) -> Result<Self> {
         let mut doc = Self {
             metadata: Vec::new(),
@@ -503,101 +917,92 @@ impl GenomeDiff {
         mob_tol_bp: u64,
         del_tol_bp: u64,
     ) -> GenomeDiff {
-        let remove_exact: HashSet<String> = other
-            .entries
-            .iter()
-            .filter(|e| {
-                e.kind != GdKind::Un
-                    && e.kind != GdKind::Jc
-                    && e.kind != GdKind::Mob
-                    && e.kind != GdKind::Del
-            })
-            .map(GdEntry::subtract_key)
-            .collect();
+        let tolerances = Tolerances {
+            jc: jc_tol_bp.min(DEFAULT_JC_SUBTRACT_TOL_BP),
+            mob: mob_tol_bp.min(DEFAULT_MOB_SUBTRACT_TOL_BP),
+            del: del_tol_bp.min(DEFAULT_DEL_SUBTRACT_TOL_BP),
+        };
 
-        let other_jcs: Vec<(usize, CanonicalJc)> = other
+        let mut used_other = vec![false; other.entries.len()];
+        let mut removed_self = vec![false; self.entries.len()];
+
+        let mut edited_exact: Vec<(Vec<u8>, usize)> = self
             .entries
             .iter()
             .enumerate()
-            .filter(|(_, e)| e.kind == GdKind::Jc)
-            .filter_map(|(idx, e)| CanonicalJc::parse(&e.fields).map(|c| (idx, c)))
+            .filter_map(|(idx, entry)| canonical_subtract_key(entry).map(|key| (key, idx)))
             .collect();
-
-        let other_mobs: Vec<(usize, CanonicalMob)> = other
+        let mut starter_exact: Vec<(Vec<u8>, usize)> = other
             .entries
             .iter()
             .enumerate()
-            .filter(|(_, e)| e.kind == GdKind::Mob)
-            .filter_map(|(idx, e)| CanonicalMob::parse(&e.fields).map(|c| (idx, c)))
+            .filter_map(|(idx, entry)| canonical_subtract_key(entry).map(|key| (key, idx)))
             .collect();
+        edited_exact.sort_unstable();
+        starter_exact.sort_unstable();
 
-        let other_dels: Vec<(usize, CanonicalDel)> = other
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.kind == GdKind::Del)
-            .filter_map(|(idx, e)| CanonicalDel::parse(&e.fields).map(|c| (idx, c)))
-            .collect();
-
-        let mut used_other_jcs: HashSet<usize> = HashSet::new();
-        let mut used_other_mobs: HashSet<usize> = HashSet::new();
-        let mut used_other_dels: HashSet<usize> = HashSet::new();
-        let mut entries = Vec::new();
-
-        for e in &self.entries {
-            if e.kind == GdKind::Un {
-                entries.push(e.clone());
-                continue;
+        let mut starter_cursor = 0usize;
+        for (edited_key, edited_index) in edited_exact {
+            while starter_cursor < starter_exact.len()
+                && starter_exact[starter_cursor].0 < edited_key
+            {
+                starter_cursor += 1;
             }
-            if e.kind == GdKind::Jc {
-                if let Some(jc) = CanonicalJc::parse(&e.fields) {
-                    let mut matched = false;
-                    for (idx, o_jc) in &other_jcs {
-                        if !used_other_jcs.contains(idx) && jc.matches_tolerant(o_jc, jc_tol_bp) {
-                            used_other_jcs.insert(*idx);
-                            matched = true;
-                            break;
-                        }
-                    }
-                    if matched {
-                        continue;
-                    }
+            let mut probe = starter_cursor;
+            while probe < starter_exact.len() && starter_exact[probe].0 == edited_key {
+                let starter_index = starter_exact[probe].1;
+                if !used_other[starter_index] {
+                    used_other[starter_index] = true;
+                    removed_self[edited_index] = true;
+                    break;
                 }
-            } else if e.kind == GdKind::Mob {
-                if let Some(mob) = CanonicalMob::parse(&e.fields) {
-                    let mut matched = false;
-                    for (idx, o_mob) in &other_mobs {
-                        if !used_other_mobs.contains(idx) && mob.matches_tolerant(o_mob, mob_tol_bp)
-                        {
-                            used_other_mobs.insert(*idx);
-                            matched = true;
-                            break;
-                        }
-                    }
-                    if matched {
-                        continue;
-                    }
-                }
-            } else if e.kind == GdKind::Del {
-                if let Some(del) = CanonicalDel::parse(&e.fields) {
-                    let mut matched = false;
-                    for (idx, o_del) in &other_dels {
-                        if !used_other_dels.contains(idx) && del.matches_tolerant(o_del, del_tol_bp)
-                        {
-                            used_other_dels.insert(*idx);
-                            matched = true;
-                            break;
-                        }
-                    }
-                    if matched {
-                        continue;
-                    }
-                }
-            } else if remove_exact.contains(&e.subtract_key()) {
-                continue;
+                probe += 1;
             }
-            entries.push(e.clone());
         }
+
+        let mut candidates = Vec::new();
+        for (edited_index, edited) in self.entries.iter().enumerate() {
+            if removed_self[edited_index] {
+                continue;
+            }
+            let Some(edited_key) = canonical_subtract_key(edited) else {
+                continue;
+            };
+            for (starter_index, starter) in other.entries.iter().enumerate() {
+                if used_other[starter_index] {
+                    continue;
+                }
+                let Some(starter_key) = canonical_subtract_key(starter) else {
+                    continue;
+                };
+                if let Some(cost) = tolerant_candidate_cost(edited, starter, tolerances) {
+                    candidates.push(MatchCandidate {
+                        edited_index,
+                        starter_index,
+                        cost,
+                        edited_key: edited_key.clone(),
+                        starter_key,
+                    });
+                }
+            }
+        }
+        candidates.sort_unstable();
+        for (edited_index, starter_index) in
+            minimum_cost_maximum_matching(self.entries.len(), other.entries.len(), &candidates)
+        {
+            if !removed_self[edited_index] && !used_other[starter_index] {
+                removed_self[edited_index] = true;
+                used_other[starter_index] = true;
+            }
+        }
+
+        let entries = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(idx, entry)| entry.kind == GdKind::Un || !removed_self[*idx])
+            .map(|(_, entry)| entry.clone())
+            .collect();
 
         GenomeDiff {
             metadata: self.metadata.clone(),
@@ -990,5 +1395,30 @@ UN\t6\t.\tNC_000913\t900\t910
         let out = edited.subtract(&starter);
         assert_eq!(out.entries.len(), 1);
         assert_eq!(out.entries[0].kind, GdKind::Sub);
+    }
+
+    #[test]
+    fn test_inv_roundtrip() {
+        let text = "#=GENOME_DIFF\t1.0\nINV\t10\t.\tchr1\t1000\t500\n";
+        let gd = GenomeDiff::from_str(text).unwrap();
+        assert_eq!(gd.entries.len(), 1);
+        let e = &gd.entries[0];
+        assert_eq!(e.kind, GdKind::Inv);
+        assert_eq!(e.seq_id(), Some("chr1"));
+        assert_eq!(e.position(), Some(1000));
+        assert_eq!(e.inv_size(), Some(500));
+        assert_eq!(gd.to_string(), text);
+    }
+
+    #[test]
+    fn inv_rejects_missing_positional_fields() {
+        let text = "INV\t10\t.\tchr1\t1000\n";
+        assert!(GenomeDiff::from_str(text).is_err());
+    }
+
+    #[test]
+    fn inv_rejects_invalid_type() {
+        let text = "INVX\t10\t.\tchr1\t1000\t500\n";
+        assert!(GenomeDiff::from_str(text).is_err());
     }
 }

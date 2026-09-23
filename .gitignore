@@ -1,5 +1,4 @@
-# Local development plans (not published to GitHub)
-DEVELOPMENT_PLAN.md
+# Local development notes (not published to GitHub)
 DEVELOPMENT.md
 AGENTS.md
 原核基因编辑脱靶检测-开发计划.md
@@ -26,6 +25,8 @@ testdata/private/**
 
 testdata/generated/
 testdata/layer2/
+data/
+benchmark/real_world/metadata/
 **/work/
 
 # Benchmark job outputs (templates stay tracked)

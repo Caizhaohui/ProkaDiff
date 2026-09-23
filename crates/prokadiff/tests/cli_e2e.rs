@@ -495,6 +495,34 @@ fn e2e_pipeline_synth_parent_child() {
         "ancestral structural variant must be subtracted and not reported as structural"
     );
 
+    // Check post_edit_variants.tsv
+    let post_edit_tsv = outdir.join("post_edit_variants.tsv");
+    assert!(
+        post_edit_tsv.exists(),
+        "post_edit_variants.tsv must be generated"
+    );
+    let pev_content = std::fs::read_to_string(&post_edit_tsv).unwrap();
+    assert!(
+        pev_content.contains("\tevidence\t"),
+        "post_edit_variants.tsv must contain evidence column"
+    );
+
+    // Check edit_outcomes.tsv
+    let edit_outcomes_tsv = outdir.join("edit_outcomes.tsv");
+    assert!(
+        edit_outcomes_tsv.exists(),
+        "edit_outcomes.tsv must be generated"
+    );
+    let eo_content = std::fs::read_to_string(&edit_outcomes_tsv).unwrap();
+    assert!(
+        eo_content.starts_with("edit_id\tkind\tseq_id\texpected_start\texpected_end\tstatus\tmatched_event_ids\tleft_boundary_status\tright_boundary_status\texpected_size\tobserved_size\tunexpected_events\tnotes"),
+        "edit_outcomes.tsv must have correct header"
+    );
+    assert!(
+        eo_content.contains("edit_1\tsnp\tsynth\t2500\t2500\tCOMPLETE\t"),
+        "intended edit at pos 2500 must be marked COMPLETE in edit_outcomes.tsv"
+    );
+
     let _ = std::fs::remove_dir_all(outdir);
 }
 

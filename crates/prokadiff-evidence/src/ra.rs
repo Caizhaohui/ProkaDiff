@@ -58,13 +58,27 @@ pub enum ConsensusCall {
     InsufficientCoverage,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct RaMetrics {
+    pub depth: usize,
+    pub support_reads: usize,
+    pub frequency: f64,
+}
+
 pub fn call_consensus(col: &PileupColumn, opts: &RaOptions) -> ConsensusCall {
+    call_consensus_with_metrics(col, opts).0
+}
+
+pub fn call_consensus_with_metrics(
+    col: &PileupColumn,
+    opts: &RaOptions,
+) -> (ConsensusCall, Option<RaMetrics>) {
     if !col.insertions.is_empty() {
-        return call_insertion(col, opts);
+        return call_insertion_with_metrics(col, opts);
     }
     let cov = col.observations.len();
     if cov < opts.min_coverage {
-        return ConsensusCall::InsufficientCoverage;
+        return (ConsensusCall::InsufficientCoverage, None);
     }
     let mut counts = [0usize; 5]; // A C G T -
     let mut plus = [0usize; 5];
@@ -80,32 +94,41 @@ pub fn call_consensus(col: &PileupColumn, opts: &RaOptions) -> ConsensusCall {
     }
     let (best_i, best_n) = counts.iter().enumerate().max_by_key(|(_, n)| *n).unwrap();
     if *best_n == 0 {
-        return ConsensusCall::MatchRef;
+        return (ConsensusCall::MatchRef, None);
     }
     let freq = *best_n as f64 / cov as f64;
     if freq < opts.min_frequency {
-        return ConsensusCall::MatchRef;
+        return (ConsensusCall::MatchRef, None);
     }
     let consensus = index_base(best_i);
     if consensus == col.ref_base {
-        return ConsensusCall::MatchRef;
+        return (ConsensusCall::MatchRef, None);
     }
     let plus_cov: usize = plus.iter().sum();
     let minus_cov: usize = minus.iter().sum();
     // Strand bias only when both strands are observed and the consensus is one-sided.
     if plus_cov > 0 && minus_cov > 0 && (plus[best_i] == 0 || minus[best_i] == 0) {
-        return ConsensusCall::RejectedStrandBias;
+        return (ConsensusCall::RejectedStrandBias, None);
     }
+    let metrics = RaMetrics {
+        depth: cov,
+        support_reads: *best_n,
+        frequency: freq,
+    };
     if consensus == b'-' {
-        return ConsensusCall::Del { size: 1 };
+        (ConsensusCall::Del { size: 1 }, Some(metrics))
+    } else {
+        (ConsensusCall::Snp { alt: consensus }, Some(metrics))
     }
-    ConsensusCall::Snp { alt: consensus }
 }
 
-fn call_insertion(col: &PileupColumn, opts: &RaOptions) -> ConsensusCall {
+fn call_insertion_with_metrics(
+    col: &PileupColumn,
+    opts: &RaOptions,
+) -> (ConsensusCall, Option<RaMetrics>) {
     let cov = col.observations.len().max(col.insertions.len());
     if cov < opts.min_coverage {
-        return ConsensusCall::InsufficientCoverage;
+        return (ConsensusCall::InsufficientCoverage, None);
     }
     // Majority inserted oligo of length 1–2.
     let mut best: Option<Vec<u8>> = None;
@@ -133,16 +156,21 @@ fn call_insertion(col: &PileupColumn, opts: &RaOptions) -> ConsensusCall {
         }
     }
     let Some(seq) = best else {
-        return ConsensusCall::MatchRef;
+        return (ConsensusCall::MatchRef, None);
     };
     let freq = best_n as f64 / cov as f64;
     if freq < opts.min_frequency {
-        return ConsensusCall::MatchRef;
+        return (ConsensusCall::MatchRef, None);
     }
     if plus == 0 || minus == 0 {
-        return ConsensusCall::RejectedStrandBias;
+        return (ConsensusCall::RejectedStrandBias, None);
     }
-    ConsensusCall::Ins { seq }
+    let metrics = RaMetrics {
+        depth: cov,
+        support_reads: best_n,
+        frequency: freq,
+    };
+    (ConsensusCall::Ins { seq }, Some(metrics))
 }
 
 fn base_index(b: u8) -> Option<usize> {

@@ -1,11 +1,50 @@
-//! Canonical 3′ (right) alignment of RA short indels.
+//! Canonical 3′ (right) alignment of short indels.
 //!
 //! Bowtie2 CIGAR placement in tandem repeats is not unique: `INS 1999 TA` and
 //! `INS 2000 AT` are the same haplotype. Genome Diff / `gdtools SUBTRACT` keys
 //! are exact, so we slide INS/DEL to the 3′-most equivalent coordinate — the
 //! placement breseq writes on the mutation line (RA evidence may stay 5′).
 
-pub use prokadiff_gd::normalize::{right_align_del, right_align_ins};
+/// Insert `ins` after 1-based reference position `pos`. Slide 3′ while the
+/// first inserted base equals the next reference base, rotating the oligo.
+pub fn right_align_ins(ref_seq: &[u8], pos: u64, ins: &[u8]) -> (u64, Vec<u8>) {
+    if ins.is_empty() || pos == 0 {
+        return (pos, ins.to_vec());
+    }
+    let mut p = pos;
+    let mut s: Vec<u8> = ins.iter().map(|b| b.to_ascii_uppercase()).collect();
+    while (p as usize) < ref_seq.len() {
+        let next = ref_seq[p as usize].to_ascii_uppercase();
+        if s[0] != next {
+            break;
+        }
+        s.rotate_left(1);
+        p += 1;
+    }
+    (p, s)
+}
+
+/// Deletion of `size` bases starting at 1-based `pos`. Slide 3′ while the
+/// first deleted base equals the base immediately after the deleted span.
+pub fn right_align_del(ref_seq: &[u8], pos: u64, size: u64) -> u64 {
+    if pos == 0 || size == 0 {
+        return pos;
+    }
+    let n = size as usize;
+    let mut p = pos;
+    loop {
+        let first = p as usize - 1;
+        let after = first.saturating_add(n);
+        if after >= ref_seq.len() {
+            break;
+        }
+        if !ref_seq[first].eq_ignore_ascii_case(&ref_seq[after]) {
+            break;
+        }
+        p += 1;
+    }
+    p
+}
 
 #[cfg(test)]
 mod tests {

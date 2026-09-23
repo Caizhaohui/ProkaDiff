@@ -105,6 +105,35 @@ if hits[0]["alt"] != extra_alt:
 if any(r["class"] == "structural" for r in rows):
     print("FAIL: ancestral structural variant leaked into unintended:", [r for r in rows if r["class"] == "structural"])
     sys.exit(2)
+
+pev = job / "prokadiff" / "post_edit_variants.tsv"
+if not pev.is_file():
+    print("FAIL: missing post_edit_variants.tsv")
+    sys.exit(2)
+pev_lines = pev.read_text().splitlines()
+if not pev_lines or "\tevidence\t" not in pev_lines[0]:
+    print("FAIL: post_edit_variants.tsv missing evidence column in header")
+    sys.exit(2)
+for line in pev_lines[1:]:
+    cols = line.split("\t")
+    ev_col = [c for c in cols if c.startswith("RA=")]
+    if ev_col:
+        assert "NA" in ev_col[0] or "1" in ev_col[0], f"unexpected evidence format {ev_col[0]}"
+print("M1 evidence assertion passed: observed evidence/NA confirmed in post_edit_variants.tsv")
+
+eo = job / "prokadiff" / "edit_outcomes.tsv"
+if not eo.is_file():
+    print("FAIL: missing edit_outcomes.tsv")
+    sys.exit(2)
+eo_lines = eo.read_text().splitlines()
+if not eo_lines or not eo_lines[0].startswith("edit_id\tkind\tseq_id"):
+    print("FAIL: edit_outcomes.tsv missing valid header")
+    sys.exit(2)
+if not any("COMPLETE" in line and "synth" in line for line in eo_lines[1:]):
+    print("FAIL: intended edit not marked COMPLETE in edit_outcomes.tsv")
+    sys.exit(2)
+print("M2 intended assertion passed: confirmed edit_outcomes.tsv COMPLETE status")
+
 print("synth_parent_child OK: historical subtracted, intended masked, extra SNP scattered_snv, zero structural leak")
 print(f"unintended_rows={len(rows)}")
 PY

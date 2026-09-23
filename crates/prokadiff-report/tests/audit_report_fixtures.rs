@@ -1,7 +1,8 @@
 use prokadiff_classify::{
-    AnalysisProvenance, AnnotatedVariant, AuditResult, BoundaryAssessment, EvidenceSummary,
-    GeneAnnotation, GuideRelation, IntendedEditAssessment, IntendedEditStatus, IntendedRelation,
-    MobileElementAnnotation, OriginStatus, RefContig, ReviewPriority, SampleMetadata, SizeClass,
+    AnalysisProvenance, AnnotatedVariant, AuditResult, BoundaryAssessment, EventId,
+    EvidenceObservation, EvidenceSummary, GeneAnnotation, GuideRelation, IntendedEditAssessment,
+    IntendedEditStatus, IntendedRelation, MobileElementAnnotation, OriginStatus, RefContig,
+    ReviewPriority, SampleMetadata, SizeClass,
 };
 use prokadiff_gd::GdEntry;
 use prokadiff_report::{
@@ -44,6 +45,10 @@ fn mock_refs() -> Vec<RefContig> {
     }]
 }
 
+fn test_event_id(number: u32) -> EventId {
+    EventId::parse(&format!("DV1_{number:032x}")).expect("valid test event id")
+}
+
 #[test]
 fn test_fixture_1_clean_edit() {
     let tmp_report = std::env::temp_dir().join("fixture1_report.md");
@@ -55,7 +60,8 @@ fn test_fixture_1_clean_edit() {
         expected_start: 100000,
         expected_end: 101200,
         status: IntendedEditStatus::Complete,
-        matched_event_ids: vec![1],
+        matched_event_ids: vec![test_event_id(1)],
+        event_relationships: vec![],
         left_boundary: Some(BoundaryAssessment {
             expected_pos: 100000,
             observed_pos: Some(100000),
@@ -71,6 +77,8 @@ fn test_fixture_1_clean_edit() {
         expected_size: Some(1201),
         observed_size: Some(1201),
         unexpected_event_ids: vec![],
+        mc_diagnostics: vec![],
+        mc_observation: EvidenceObservation::Unknown,
         notes: vec!["Both junctions confirmed".into()],
     }];
 
@@ -86,9 +94,9 @@ fn test_fixture_1_clean_edit() {
         repeat_relation: None,
         gene_annotation: None,
         evidence: EvidenceSummary {
-            ra: false,
-            mc: true,
-            jc: true,
+            ra: None,
+            mc: Some(true),
+            jc: Some(true),
             supporting_reads: Some(45),
             coverage: Some(60.0),
         },
@@ -116,7 +124,12 @@ fn test_fixture_1_clean_edit() {
     assert!(content.contains("## 8. Analysis Limitations & Cautions"));
 
     let tmp_outcomes = std::env::temp_dir().join("fixture1_outcomes.tsv");
-    write_edit_outcomes_tsv(&tmp_outcomes, &audit.intended_edits).unwrap();
+    write_edit_outcomes_tsv(
+        &tmp_outcomes,
+        &audit.intended_edits,
+        &[(test_event_id(1), 1)],
+    )
+    .unwrap();
     let outcomes_content = std::fs::read_to_string(&tmp_outcomes).unwrap();
     assert!(outcomes_content.contains("edit_del\tdel\tNC_000913.3\t100000\t101200\tCOMPLETE"));
 
@@ -135,7 +148,8 @@ fn test_fixture_2_partial_cassette() {
         expected_start: 500000,
         expected_end: 500000,
         status: IntendedEditStatus::Partial,
-        matched_event_ids: vec![10],
+        matched_event_ids: vec![test_event_id(10)],
+        event_relationships: vec![],
         left_boundary: Some(BoundaryAssessment {
             expected_pos: 500000,
             observed_pos: Some(500000),
@@ -146,6 +160,8 @@ fn test_fixture_2_partial_cassette() {
         expected_size: Some(3500),
         observed_size: None,
         unexpected_event_ids: vec![],
+        mc_diagnostics: vec![],
+        mc_observation: EvidenceObservation::Unknown,
         notes: vec!["single junction detected (partial integration)".into()],
     }];
 
@@ -189,9 +205,9 @@ fn test_fixture_3_mobile_element_insertion() {
         repeat_relation: None,
         gene_annotation: None,
         evidence: EvidenceSummary {
-            ra: false,
-            mc: false,
-            jc: true,
+            ra: None,
+            mc: None,
+            jc: Some(true),
             supporting_reads: Some(30),
             coverage: Some(50.0),
         },
@@ -238,9 +254,9 @@ fn test_fixture_4_candidate_offtarget() {
         repeat_relation: None,
         gene_annotation: None,
         evidence: EvidenceSummary {
-            ra: true,
-            mc: false,
-            jc: false,
+            ra: Some(true),
+            mc: None,
+            jc: None,
             supporting_reads: Some(40),
             coverage: Some(55.0),
         },
@@ -312,9 +328,9 @@ fn test_post_edit_variants_and_provenance_tsv() {
         repeat_relation: None,
         gene_annotation: None,
         evidence: EvidenceSummary {
-            ra: true,
-            mc: false,
-            jc: false,
+            ra: Some(true),
+            mc: None,
+            jc: None,
             supporting_reads: None,
             coverage: None,
         },
@@ -361,9 +377,9 @@ fn test_gene_annotation_rendering_in_report_and_tsv() {
             consequence: Some("within CDS".into()),
         }),
         evidence: EvidenceSummary {
-            ra: true,
-            mc: false,
-            jc: false,
+            ra: Some(true),
+            mc: None,
+            jc: None,
             supporting_reads: Some(25),
             coverage: Some(40.0),
         },

@@ -4,7 +4,9 @@ use prokadiff_gd::{GdEntry, GdKind};
 use prokadiff_offtarget::{MutationOffTargetLink, OffTargetSite};
 
 use crate::classify::{ClassifiedMutation, MutationClass};
-use crate::intended::IntendedEditAssessment;
+use crate::differential::{DifferentialEvent, EventId, EvidenceReferences};
+use crate::intended::{IntendedEditAssessment, IntendedEventRole};
+use crate::is_structural;
 
 /// Classification of a variant's origin with respect to editing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,21 +116,72 @@ impl ReviewPriority {
 /// Summary of sequencing evidence supporting the variant call.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EvidenceSummary {
-    pub ra: bool,
-    pub mc: bool,
-    pub jc: bool,
+    pub ra: Option<bool>,
+    pub mc: Option<bool>,
+    pub jc: Option<bool>,
     pub supporting_reads: Option<u64>,
     pub coverage: Option<f64>,
 }
 
 impl EvidenceSummary {
     pub fn format_brief(&self) -> String {
+        let fmt_flag = |opt: Option<bool>| match opt {
+            Some(true) => "1",
+            Some(false) => "0",
+            None => "NA",
+        };
         format!(
             "RA={};MC={};JC={}",
-            if self.ra { 1 } else { 0 },
-            if self.mc { 1 } else { 0 },
-            if self.jc { 1 } else { 0 }
+            fmt_flag(self.ra),
+            fmt_flag(self.mc),
+            fmt_flag(self.jc)
         )
+    }
+
+    /// Construct EvidenceSummary by consuming actual observed EvidenceReferences.
+    pub fn from_evidence_references(ev: &EvidenceReferences) -> Self {
+        let has_ra_evidence = ev.ra.is_some()
+            || ev.pd_attributes.contains_key("pd_ra_depth")
+            || ev.pd_attributes.contains_key("pd_ra_support_reads")
+            || ev.pd_attributes.contains_key("pd_ra_frequency");
+        let ra = if has_ra_evidence { Some(true) } else { None };
+
+        let mc = if ev.mc.is_some() { Some(true) } else { None };
+
+        let has_jc_evidence = ev.jc.is_some();
+        let jc = if has_jc_evidence { Some(true) } else { None };
+
+        let supporting_reads = ev
+            .pd_attributes
+            .get("pd_ra_support_reads")
+            .or_else(|| ev.pd_attributes.get("pd_support_reads"))
+            .and_then(|v| v.first())
+            .and_then(|s| s.parse::<u64>().ok());
+
+        let coverage = ev
+            .pd_attributes
+            .get("pd_ra_depth")
+            .or_else(|| ev.pd_attributes.get("pd_depth"))
+            .and_then(|v| v.first())
+            .and_then(|s| s.parse::<f64>().ok());
+
+        Self {
+            ra,
+            mc,
+            jc,
+            supporting_reads,
+            coverage,
+        }
+    }
+
+    pub const fn unknown() -> Self {
+        Self {
+            ra: None,
+            mc: None,
+            jc: None,
+            supporting_reads: None,
+            coverage: None,
+        }
     }
 }
 
@@ -260,7 +313,8 @@ pub fn build_audit_result(
     sample: SampleMetadata,
     intended_assessments: Vec<IntendedEditAssessment>,
     unintended_mutations: &[ClassifiedMutation],
-    intended_observed: &[GdEntry],
+    intended_observed: &[EventId],
+    differential_events: &[DifferentialEvent],
     guide_sites: &[OffTargetSite],
     variant_site_links: &[MutationOffTargetLink],
     provenance: AnalysisProvenance,
@@ -270,20 +324,31 @@ pub fn build_audit_result(
     let mut id_counter = 1usize;
 
     // Collect IDs belonging to intended edits
-    let intended_matched_ids: HashSet<u32> = intended_assessments
+    let intended_matched_ids: HashSet<EventId> = intended_assessments
         .iter()
-        .flat_map(|a| a.matched_event_ids.iter().copied())
+        .flat_map(|assessment| assessment.event_relationships.iter())
+        .filter(|relation| relation.role == IntendedEventRole::ExpectedConstituent)
+        .map(|relation| relation.event_id.clone())
         .collect();
-    let unexpected_ids: HashSet<u32> = intended_assessments
+    let unexpected_ids: HashSet<EventId> = intended_assessments
         .iter()
-        .flat_map(|a| a.unexpected_event_ids.iter().copied())
+        .flat_map(|assessment| assessment.event_relationships.iter())
+        .filter(|relation| relation.role != IntendedEventRole::ExpectedConstituent)
+        .map(|relation| relation.event_id.clone())
         .collect();
 
     // 1. Process intended observed variants
-    for entry in intended_observed {
+    for event_id in intended_observed {
+        let Some(event) = differential_events
+            .iter()
+            .find(|event| &event.event_id == event_id)
+        else {
+            continue;
+        };
+        let entry = &event.representative;
         let is_part_of_multi = intended_assessments
             .iter()
-            .any(|a| a.matched_event_ids.contains(&entry.id) && a.matched_event_ids.len() > 1);
+            .any(|a| a.matched_event_ids.contains(event_id) && a.matched_event_ids.len() > 1);
         let intended_relation = if is_part_of_multi {
             IntendedRelation::PartOfExpectedEdit
         } else {
@@ -291,7 +356,7 @@ pub fn build_audit_result(
         };
 
         let size_class = classify_size(&entry.kind, entry);
-        let evidence = determine_evidence(entry);
+        let evidence = EvidenceSummary::from_evidence_references(&event.evidence);
         let pos = entry.position().unwrap_or(0);
         let seq_id = entry.seq_id().unwrap_or("");
         let gene_annotation = find_gene_annotation(seq_id, pos, features);
@@ -316,8 +381,13 @@ pub fn build_audit_result(
     // 2. Process post-edit differential unintended variants
     for cm in unintended_mutations {
         let entry = &cm.entry;
-        let is_unexpected_on_target = unexpected_ids.contains(&entry.id);
-        let is_intended_matched = intended_matched_ids.contains(&entry.id);
+        let is_unexpected_on_target = cm
+            .event_id
+            .as_ref()
+            .is_some_and(|event_id| unexpected_ids.contains(event_id));
+        let is_intended_matched = cm.event_id.as_ref().is_some_and(|event_id| {
+            intended_matched_ids.contains(event_id) && !unexpected_ids.contains(event_id)
+        });
 
         let origin_status = if is_intended_matched {
             OriginStatus::Intended
@@ -334,7 +404,16 @@ pub fn build_audit_result(
         };
 
         let size_class = classify_size(&entry.kind, entry);
-        let evidence = determine_evidence(entry);
+        let evidence = cm
+            .event_id
+            .as_ref()
+            .and_then(|event_id| {
+                differential_events
+                    .iter()
+                    .find(|event| &event.event_id == event_id)
+            })
+            .map(|event| EvidenceSummary::from_evidence_references(&event.evidence))
+            .unwrap_or_else(EvidenceSummary::unknown);
         let pos = entry.position().unwrap_or(0);
         let seq_id = entry.seq_id().unwrap_or("");
         let gene_annotation = find_gene_annotation(seq_id, pos, features);
@@ -417,59 +496,11 @@ pub fn build_audit_result(
 }
 
 fn classify_size(kind: &GdKind, entry: &GdEntry) -> SizeClass {
-    match kind {
-        GdKind::Mob | GdKind::Jc | GdKind::Amp | GdKind::Con => SizeClass::Structural,
-        GdKind::Del => {
-            let size = entry
-                .fields
-                .get(2)
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(1);
-            if size > 2 {
-                SizeClass::Structural
-            } else {
-                SizeClass::Small
-            }
-        }
-        _ => SizeClass::Small,
-    }
-}
-
-fn determine_evidence(entry: &GdEntry) -> EvidenceSummary {
-    let mut ra = false;
-    let mut mc = false;
-    let mut jc = false;
-    match entry.kind {
-        GdKind::Snp | GdKind::Ins | GdKind::Sub => ra = true,
-        GdKind::Del => {
-            let size = entry
-                .fields
-                .get(2)
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(1);
-            if size <= 2 {
-                ra = true;
-            } else {
-                mc = true;
-            }
-        }
-        GdKind::Jc => jc = true,
-        GdKind::Mob => {
-            jc = true;
-        }
-        GdKind::Amp | GdKind::Con => {
-            mc = true;
-        }
-        GdKind::Ra => ra = true,
-        GdKind::Mc => mc = true,
-        GdKind::Un => {}
-    }
-    EvidenceSummary {
-        ra,
-        mc,
-        jc,
-        supporting_reads: None,
-        coverage: None,
+    let del_size = entry.fields.get(2).and_then(|s| s.parse::<u64>().ok());
+    if is_structural(*kind, del_size) {
+        SizeClass::Structural
+    } else {
+        SizeClass::Small
     }
 }
 
@@ -710,6 +741,21 @@ mod tests {
             run_timestamp: "2026-09-16T12:00:00Z".into(),
         };
 
+        let intended_entry = GdEntry::del(1, "chr", 1000, 201);
+        let reference = [crate::RefContig {
+            name: "chr".into(),
+            seq: vec![b'A'; 6000],
+        }];
+        let canonical = crate::CanonicalEvent::from_gd_entry(&intended_entry, &reference)
+            .expect("valid deletion");
+        let (event_id, _) = canonical.compute_event_id();
+        let differential_event = DifferentialEvent {
+            event_id: event_id.clone(),
+            canonical,
+            representative: intended_entry,
+            merged_source_ids: vec![1],
+            evidence: EvidenceReferences::default(),
+        };
         let intended_edit = IntendedEditAssessment {
             edit_id: "edit_1".into(),
             kind: "del".into(),
@@ -717,16 +763,17 @@ mod tests {
             expected_start: 1000,
             expected_end: 1200,
             status: IntendedEditStatus::Complete,
-            matched_event_ids: vec![1],
+            matched_event_ids: vec![event_id.clone()],
+            event_relationships: vec![],
             left_boundary: None,
             right_boundary: None,
             expected_size: Some(201),
             observed_size: Some(201),
             unexpected_event_ids: vec![],
+            mc_diagnostics: vec![],
+            mc_observation: crate::EvidenceObservation::Unknown,
             notes: vec![],
         };
-
-        let intended_entry = GdEntry::del(1, "chr", 1000, 201);
         let unintended_cm = ClassifiedMutation {
             entry: GdEntry::snp(2, "chr", 5000, "T"),
             class: MutationClass::ScatteredSnv,
@@ -734,13 +781,15 @@ mod tests {
             offtarget_mismatch: None,
             distance_to_site: None,
             hypothesis: None,
+            event_id: None,
         };
 
         let audit = build_audit_result(
             sample,
             vec![intended_edit],
             &[unintended_cm],
-            &[intended_entry],
+            &[event_id],
+            &[differential_event],
             &[],
             &[],
             prov,
@@ -789,6 +838,7 @@ mod tests {
             offtarget_mismatch: Some(1),
             distance_to_site: Some(5),
             hypothesis: None,
+            event_id: None,
         };
 
         let real_link = MutationOffTargetLink {
@@ -809,6 +859,7 @@ mod tests {
             sample,
             vec![],
             &[unintended_cm],
+            &[],
             &[],
             &[],
             &[real_link],

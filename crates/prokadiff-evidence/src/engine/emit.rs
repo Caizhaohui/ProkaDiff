@@ -14,7 +14,17 @@ use crate::jc::accept_junction;
 use crate::mc::{call_missing_coverage, promote_mc_to_del_with_jc, true_missing_core};
 use crate::normalize::{right_align_del, right_align_ins};
 use crate::pileup::SplitCandidate;
-use crate::ra::{call_consensus, ConsensusCall};
+use crate::ra::{call_consensus_with_metrics, ConsensusCall, RaMetrics};
+
+fn format_freq(freq: f64) -> String {
+    let s = format!("{:.4}", freq);
+    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
 
 pub(crate) fn emit_from_pileup(
     fasta: &[FastaRecord],
@@ -44,98 +54,156 @@ pub(crate) fn emit_from_pileup(
             total_depth,
             splits,
         } = &contig_results[idx];
-        let mut pending_del: Option<(u64, u8)> = None;
-        let mut pending_snp: Option<(u64, Vec<u8>)> = None;
-        let flush_del = |gd: &mut GenomeDiff, id: &mut u32, start: u64, size: u8| {
-            // Match breseq mutation coordinates (RA evidence may stay 5′).
-            let start = right_align_del(&rec.seq, start, u64::from(size));
-            gd.entries
-                .push(GdEntry::del(*id, rec.name.clone(), start, u64::from(size)));
-            *id += 1;
-        };
-        let flush_snp = |gd: &mut GenomeDiff, id: &mut u32, start: u64, seq: Vec<u8>| {
+        let mut pending_del: Option<(u64, u8, Vec<RaMetrics>)> = None;
+        let mut pending_snp: Option<(u64, Vec<u8>, Vec<RaMetrics>)> = None;
+        let flush_del =
+            |gd: &mut GenomeDiff, id: &mut u32, start: u64, size: u8, metrics: Vec<RaMetrics>| {
+                // Match breseq mutation coordinates (RA evidence may stay 5′).
+                let start = right_align_del(&rec.seq, start, u64::from(size));
+                let mut entry = GdEntry::del(*id, rec.name.clone(), start, u64::from(size));
+                if !metrics.is_empty() {
+                    let min_depth = metrics.iter().map(|m| m.depth).min().unwrap();
+                    let min_support = metrics.iter().map(|m| m.support_reads).min().unwrap();
+                    let min_freq = metrics.iter().map(|m| m.frequency).fold(1.0, f64::min);
+                    entry
+                        .attrs
+                        .insert("pd_ra_depth".into(), min_depth.to_string());
+                    entry
+                        .attrs
+                        .insert("pd_ra_support_reads".into(), min_support.to_string());
+                    entry
+                        .attrs
+                        .insert("pd_ra_frequency".into(), format_freq(min_freq));
+                }
+                gd.entries.push(entry);
+                *id += 1;
+            };
+        let flush_snp = |gd: &mut GenomeDiff,
+                         id: &mut u32,
+                         start: u64,
+                         seq: Vec<u8>,
+                         metrics: Vec<RaMetrics>| {
             if seq.len() == 1 {
-                gd.entries.push(GdEntry::snp(
-                    *id,
-                    rec.name.clone(),
-                    start,
-                    (seq[0] as char).to_string(),
-                ));
+                let mut entry =
+                    GdEntry::snp(*id, rec.name.clone(), start, (seq[0] as char).to_string());
+                if let Some(m) = metrics.first() {
+                    entry
+                        .attrs
+                        .insert("pd_ra_depth".into(), m.depth.to_string());
+                    entry
+                        .attrs
+                        .insert("pd_ra_support_reads".into(), m.support_reads.to_string());
+                    entry
+                        .attrs
+                        .insert("pd_ra_frequency".into(), format_freq(m.frequency));
+                }
+                gd.entries.push(entry);
                 *id += 1;
             } else if seq.len() > 1 {
-                gd.entries.push(GdEntry::sub(
+                let mut entry = GdEntry::sub(
                     *id,
                     rec.name.clone(),
                     start,
                     seq.len() as u64,
                     String::from_utf8_lossy(&seq).into_owned(),
-                ));
+                );
+                if !metrics.is_empty() {
+                    let min_depth = metrics.iter().map(|m| m.depth).min().unwrap();
+                    let min_support = metrics.iter().map(|m| m.support_reads).min().unwrap();
+                    let min_freq = metrics.iter().map(|m| m.frequency).fold(1.0, f64::min);
+                    entry
+                        .attrs
+                        .insert("pd_ra_depth".into(), min_depth.to_string());
+                    entry
+                        .attrs
+                        .insert("pd_ra_support_reads".into(), min_support.to_string());
+                    entry
+                        .attrs
+                        .insert("pd_ra_frequency".into(), format_freq(min_freq));
+                }
+                gd.entries.push(entry);
                 *id += 1;
             }
         };
 
         for (i, col) in columns.iter().enumerate() {
             let pos = i as u64 + 1;
-            match call_consensus(col, &opts.ra) {
+            let (call, metrics_opt) = call_consensus_with_metrics(col, &opts.ra);
+            match call {
                 ConsensusCall::Snp { alt } => {
-                    if let Some((s, sz)) = pending_del.take() {
-                        flush_del(&mut gd, &mut next_id, s, sz);
+                    if let Some((s, sz, m)) = pending_del.take() {
+                        flush_del(&mut gd, &mut next_id, s, sz, m);
                     }
+                    let m_vec = metrics_opt.into_iter().collect::<Vec<_>>();
                     match pending_snp {
-                        Some((s, mut seq)) if s + seq.len() as u64 == pos => {
+                        Some((s, mut seq, mut ms)) if s + seq.len() as u64 == pos => {
                             seq.push(alt);
-                            pending_snp = Some((s, seq));
+                            ms.extend(m_vec);
+                            pending_snp = Some((s, seq, ms));
                         }
-                        Some((s, seq)) => {
-                            flush_snp(&mut gd, &mut next_id, s, seq);
-                            pending_snp = Some((pos, vec![alt]));
+                        Some((s, seq, ms)) => {
+                            flush_snp(&mut gd, &mut next_id, s, seq, ms);
+                            pending_snp = Some((pos, vec![alt], m_vec));
                         }
-                        None => pending_snp = Some((pos, vec![alt])),
+                        None => pending_snp = Some((pos, vec![alt], m_vec)),
                     }
                 }
                 ConsensusCall::Ins { seq } => {
-                    if let Some((s, sz)) = pending_del.take() {
-                        flush_del(&mut gd, &mut next_id, s, sz);
+                    if let Some((s, sz, m)) = pending_del.take() {
+                        flush_del(&mut gd, &mut next_id, s, sz, m);
                     }
-                    if let Some((s, seq)) = pending_snp.take() {
-                        flush_snp(&mut gd, &mut next_id, s, seq);
+                    if let Some((s, seq, ms)) = pending_snp.take() {
+                        flush_snp(&mut gd, &mut next_id, s, seq, ms);
                     }
                     let (pos, seq) = right_align_ins(&rec.seq, pos, &seq);
                     let s = String::from_utf8_lossy(&seq).into_owned();
-                    gd.entries
-                        .push(GdEntry::ins(next_id, rec.name.clone(), pos, s));
+                    let mut entry = GdEntry::ins(next_id, rec.name.clone(), pos, s);
+                    if let Some(m) = metrics_opt {
+                        entry
+                            .attrs
+                            .insert("pd_ra_depth".into(), m.depth.to_string());
+                        entry
+                            .attrs
+                            .insert("pd_ra_support_reads".into(), m.support_reads.to_string());
+                        entry
+                            .attrs
+                            .insert("pd_ra_frequency".into(), format_freq(m.frequency));
+                    }
+                    gd.entries.push(entry);
                     next_id += 1;
                 }
                 ConsensusCall::Del { size } => {
-                    if let Some((s, seq)) = pending_snp.take() {
-                        flush_snp(&mut gd, &mut next_id, s, seq);
+                    if let Some((s, seq, ms)) = pending_snp.take() {
+                        flush_snp(&mut gd, &mut next_id, s, seq, ms);
                     }
+                    let m_vec = metrics_opt.into_iter().collect::<Vec<_>>();
                     match pending_del {
-                        Some((s, sz)) if s + u64::from(sz) == pos && sz + size <= 2 => {
-                            pending_del = Some((s, sz + size));
+                        Some((s, sz, mut ms)) if s + u64::from(sz) == pos && sz + size <= 2 => {
+                            ms.extend(m_vec);
+                            pending_del = Some((s, sz + size, ms));
                         }
-                        Some((s, sz)) => {
-                            flush_del(&mut gd, &mut next_id, s, sz);
-                            pending_del = Some((pos, size));
+                        Some((s, sz, ms)) => {
+                            flush_del(&mut gd, &mut next_id, s, sz, ms);
+                            pending_del = Some((pos, size, m_vec));
                         }
-                        None => pending_del = Some((pos, size)),
+                        None => pending_del = Some((pos, size, m_vec)),
                     }
                 }
                 _ => {
-                    if let Some((s, sz)) = pending_del.take() {
-                        flush_del(&mut gd, &mut next_id, s, sz);
+                    if let Some((s, sz, m)) = pending_del.take() {
+                        flush_del(&mut gd, &mut next_id, s, sz, m);
                     }
-                    if let Some((s, seq)) = pending_snp.take() {
-                        flush_snp(&mut gd, &mut next_id, s, seq);
+                    if let Some((s, seq, ms)) = pending_snp.take() {
+                        flush_snp(&mut gd, &mut next_id, s, seq, ms);
                     }
                 }
             }
         }
-        if let Some((s, sz)) = pending_del.take() {
-            flush_del(&mut gd, &mut next_id, s, sz);
+        if let Some((s, sz, m)) = pending_del.take() {
+            flush_del(&mut gd, &mut next_id, s, sz, m);
         }
-        if let Some((s, seq)) = pending_snp.take() {
-            flush_snp(&mut gd, &mut next_id, s, seq);
+        if let Some((s, seq, ms)) = pending_snp.take() {
+            flush_snp(&mut gd, &mut next_id, s, seq, ms);
         }
 
         // Junction clustering (replaces exact-key aggregation). Do not key
@@ -321,8 +389,17 @@ pub(crate) fn emit_from_pileup(
         }
     }
 
-    // Promote flanking JCs into MOB mutations
-    let mut mob_entries = Vec::new();
+    // Promote flanking JCs into MOB mutations (two-phase emission).
+    struct CandidateMob {
+        n_tgt: String,
+        p_plus: u64,
+        rep_name: String,
+        strand_str: String,
+        dup: i64,
+        constituent_jc_indices: Vec<usize>,
+    }
+
+    let mut candidate_mobs = Vec::new();
     let mut used_mobs = HashSet::new();
     let mut mob_constituent_jcs = HashSet::new();
 
@@ -465,21 +542,22 @@ pub(crate) fn emit_from_pileup(
                     if used_mobs.insert(key) {
                         mob_constituent_jcs.insert(i);
                         mob_constituent_jcs.insert(j2_idx);
-                        mob_entries.push(GdEntry::mob(
-                            next_id,
-                            n_tgt1,
+                        candidate_mobs.push(CandidateMob {
+                            n_tgt: n_tgt1.to_string(),
                             p_plus,
-                            rep1.name.as_str(),
-                            strand_str,
+                            rep_name: rep1.name.clone(),
+                            strand_str: strand_str.to_string(),
                             dup,
-                        ));
-                        next_id += 1;
+                            constituent_jc_indices: vec![i, j2_idx],
+                        });
                     }
                 }
             }
         }
     }
-    gd.entries.extend(mob_entries);
+
+    // Phase 2: Assign final unique GD IDs to retained evidence records (JCs).
+    let mut jc_index_to_id = std::collections::HashMap::new();
 
     for (idx, j) in folded.into_iter().enumerate() {
         let n1 = fasta[j.c1].name.clone();
@@ -524,9 +602,13 @@ pub(crate) fn emit_from_pileup(
             }
         }
 
+        let jc_id = next_id;
+        next_id += 1;
+        jc_index_to_id.insert(idx, jc_id);
+
         let s1 = if j.m1 { "-1" } else { "1" };
         let s2 = if j.m2 { "-1" } else { "1" };
-        let mut jc_entry = GdEntry::jc(next_id, n1, j.p1, s1, n2, j.p2, s2, j.overlap);
+        let mut jc_entry = GdEntry::jc(jc_id, n1, j.p1, s1, n2, j.p2, s2, j.overlap);
         if mob_constituent_jcs.contains(&idx) {
             jc_entry.attrs.insert("mob_evidence".into(), "1".into());
         }
@@ -557,6 +639,28 @@ pub(crate) fn emit_from_pileup(
             j.support.min_overlap_side2.to_string(),
         );
         gd.entries.push(jc_entry);
+    }
+
+    // Phase 3 & 4: Resolve candidate indices to final JC IDs and emit each MOB with sorted/deduplicated parent_ids.
+    for cand in candidate_mobs {
+        let mut parent_ids: Vec<u32> = cand
+            .constituent_jc_indices
+            .iter()
+            .filter_map(|idx| jc_index_to_id.get(idx).copied())
+            .collect();
+        parent_ids.sort_unstable();
+        parent_ids.dedup();
+
+        let mut mob_entry = GdEntry::mob(
+            next_id,
+            cand.n_tgt,
+            cand.p_plus,
+            cand.rep_name,
+            cand.strand_str,
+            cand.dup,
+        );
+        mob_entry.parent_ids = parent_ids;
+        gd.entries.push(mob_entry);
         next_id += 1;
     }
 

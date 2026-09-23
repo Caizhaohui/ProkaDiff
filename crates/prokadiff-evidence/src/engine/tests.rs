@@ -1212,6 +1212,12 @@ fn is150_microhomology_sliding_recovers_mob_from_dup2() {
     assert_eq!(mobs[0].fields[1], "1701");
     assert_eq!(mobs[0].fields[2], "IS150");
     assert_eq!(mobs[0].fields[4], "3");
+    assert_eq!(
+        mobs[0].parent_ids.len(),
+        2,
+        "MOB must link to constituent JCs: {:?}",
+        mobs[0].parent_ids
+    );
 }
 
 #[test]
@@ -1360,4 +1366,250 @@ fn test_depth_aware_jc_frequency_filter_rejects_noise_and_keeps_true_junction() 
         1,
         "4 reads at 30x depth (13.3% freq >= 5%) must pass"
     );
+}
+
+#[test]
+fn mob_lineage_unlinked() {
+    // 1) Test with emit_from_pileup: MOB is promoted from constituent JCs and links to them.
+    // An unrelated third JC (not flanking this MOB) is emitted independently and NOT in MOB parent_ids.
+    let mut seq = vec![b'G'; 2500];
+    seq[1700..1706].copy_from_slice(b"ACAACA");
+    let fasta = vec![FastaRecord {
+        name: "chr".into(),
+        seq,
+    }];
+    let repeats = vec![RepeatRegion {
+        seq_id: "chr".into(),
+        name: "IS150".into(),
+        strand: 1,
+        start: 500,
+        end: 1500,
+    }];
+    let opts = EngineOptions {
+        repeats,
+        jc_min_support_reads: 3,
+        jc_min_frequency: 0.05,
+        ..Default::default()
+    };
+    let mut splits = Vec::new();
+    // Constituent JC 1: IS150 end (1500, minus) to target (1703, minus)
+    for (i, minus) in [false, false, false, true, true, true]
+        .into_iter()
+        .enumerate()
+    {
+        splits.push(SplitCandidate {
+            contig_idx: 0,
+            side2_contig_idx: 0,
+            minus,
+            side1_minus: true,
+            side2_minus: true,
+            left: SubAlignment {
+                read_start: 0,
+                read_end: 18,
+            },
+            right: SubAlignment {
+                read_start: 18,
+                read_end: 36,
+            },
+            side1_pos_1: 1500,
+            side2_pos_1: 1703,
+            overlap: 0,
+            origin: SplitOrigin::Softclip(100 + i),
+        });
+    }
+    // Constituent JC 2: IS150 start (500, plus) to target (1702, plus)
+    for (i, minus) in [false, false, false, true, true, true]
+        .into_iter()
+        .enumerate()
+    {
+        splits.push(SplitCandidate {
+            contig_idx: 0,
+            side2_contig_idx: 0,
+            minus,
+            side1_minus: false,
+            side2_minus: false,
+            left: SubAlignment {
+                read_start: 0,
+                read_end: 18,
+            },
+            right: SubAlignment {
+                read_start: 18,
+                read_end: 36,
+            },
+            side1_pos_1: 500,
+            side2_pos_1: 1702,
+            overlap: 0,
+            origin: SplitOrigin::Softclip(200 + i),
+        });
+    }
+    // Unrelated JC 3: at positions 100 and 300 (not near repeat)
+    for (i, minus) in [false, false, false, true, true, true]
+        .into_iter()
+        .enumerate()
+    {
+        splits.push(SplitCandidate {
+            contig_idx: 0,
+            side2_contig_idx: 0,
+            minus,
+            side1_minus: true,
+            side2_minus: false,
+            left: SubAlignment {
+                read_start: 0,
+                read_end: 18,
+            },
+            right: SubAlignment {
+                read_start: 18,
+                read_end: 36,
+            },
+            side1_pos_1: 100,
+            side2_pos_1: 300,
+            overlap: 0,
+            origin: SplitOrigin::Softclip(300 + i),
+        });
+    }
+    let contig_results = vec![ContigPileup {
+        columns: fasta[0]
+            .seq
+            .iter()
+            .map(|&b| PileupColumn {
+                ref_base: b,
+                observations: vec![],
+                insertions: vec![],
+            })
+            .collect(),
+        unique_depth: vec![10; 2500],
+        total_depth: vec![10; 2500],
+        splits,
+    }];
+    let gd = emit_from_pileup(&fasta, contig_results, &opts, &[]);
+    let mobs: Vec<_> = gd
+        .entries
+        .iter()
+        .filter(|e| e.kind == prokadiff_gd::GdKind::Mob)
+        .collect();
+    assert_eq!(mobs.len(), 1);
+    let mob = mobs[0];
+    assert_eq!(
+        mob.parent_ids.len(),
+        2,
+        "MOB must link to exactly 2 constituent JCs"
+    );
+
+    let jcs: Vec<_> = gd
+        .entries
+        .iter()
+        .filter(|e| e.kind == prokadiff_gd::GdKind::Jc)
+        .collect();
+    assert_eq!(jcs.len(), 3, "Expected 2 constituent JCs + 1 unrelated JC");
+
+    let unrelated_jc = jcs
+        .iter()
+        .find(|j| j.fields[1] == "100" || j.fields[4] == "100")
+        .expect("unrelated JC exists");
+    assert!(
+        !mob.parent_ids.contains(&unrelated_jc.id),
+        "MOB parent_ids must NOT contain unrelated JC"
+    );
+    assert_eq!(
+        unrelated_jc.attrs.get("mob_evidence"),
+        None,
+        "Unrelated JC must not have mob_evidence=1"
+    );
+
+    for pid in &mob.parent_ids {
+        let constituent = jcs.iter().find(|j| j.id == *pid).expect("parent JC exists");
+        assert_eq!(
+            constituent.attrs.get("mob_evidence"),
+            Some(&"1".to_string())
+        );
+    }
+
+    // 2) Verify unlinked/historical MOB without parent_ids remains unlinked:
+    let unlinked_mob = prokadiff_gd::GdEntry::mob(10, "chr", 1701, "IS150", "1", 3);
+    assert!(unlinked_mob.parent_ids.is_empty());
+}
+
+#[test]
+fn ra_metrics_absent() {
+    // 1) Test an entry not called by RA (e.g. an MC-promoted DEL).
+    // Set up a genome with a true gap that promotes to DEL via MC.
+    let seq = vec![b'A'; 80];
+    let mut reads = covering_reads(&seq, 0, 10, 6, 6, UNIQUE_MAPQ);
+    reads.extend(covering_reads(&seq, 70, 10, 6, 6, UNIQUE_MAPQ));
+    let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
+    let dels: Vec<_> = gd
+        .entries
+        .iter()
+        .filter(|e| e.kind == prokadiff_gd::GdKind::Del)
+        .collect();
+    assert_eq!(dels.len(), 1);
+    let del = dels[0];
+    // MC promoted DEL has parent_ids containing the MC record ID:
+    assert!(!del.parent_ids.is_empty());
+    // But MUST NOT have call-time pd_ra_* metrics:
+    assert_eq!(del.attrs.get("pd_ra_depth"), None);
+    assert_eq!(del.attrs.get("pd_ra_support_reads"), None);
+    assert_eq!(del.attrs.get("pd_ra_frequency"), None);
+
+    // 2) An RA-called SNP DOES have pd_ra_* metrics:
+    let fasta = [FastaRecord {
+        name: "chr".into(),
+        seq: b"ACGTACGTAC".to_vec(),
+    }];
+    let mut alt = fasta[0].seq.clone();
+    alt[2] = b'T';
+    let reads = covering_reads(&alt, 0, 10, 6, 6, UNIQUE_MAPQ);
+    let gd_snp = call_from_aligned(&fasta, &reads, &opts_single_thread());
+    let snps: Vec<_> = gd_snp
+        .entries
+        .iter()
+        .filter(|e| e.kind == prokadiff_gd::GdKind::Snp)
+        .collect();
+    assert_eq!(snps.len(), 1);
+    let snp = snps[0];
+    assert_eq!(snp.attrs.get("pd_ra_depth"), Some(&"12".to_string()));
+    assert_eq!(
+        snp.attrs.get("pd_ra_support_reads"),
+        Some(&"12".to_string())
+    );
+    assert_eq!(snp.attrs.get("pd_ra_frequency"), Some(&"1".to_string()));
+}
+
+#[test]
+fn gd_core_fields_unchanged() {
+    // Assert that adding attributes and parent_ids does not alter
+    // the core positional fields or subtract_key().
+    let snp_raw = prokadiff_gd::GdEntry::snp(1, "chr", 100, "T");
+    let mut snp_with_attrs = prokadiff_gd::GdEntry::snp(1, "chr", 100, "T");
+    snp_with_attrs
+        .attrs
+        .insert("pd_ra_depth".into(), "30".into());
+    snp_with_attrs
+        .attrs
+        .insert("pd_ra_support_reads".into(), "30".into());
+    snp_with_attrs
+        .attrs
+        .insert("pd_ra_frequency".into(), "1".into());
+
+    assert_eq!(snp_raw.fields, snp_with_attrs.fields);
+    assert_eq!(snp_raw.subtract_key(), snp_with_attrs.subtract_key());
+
+    let mob_raw = prokadiff_gd::GdEntry::mob(2, "chr", 1701, "IS150", "1", 3);
+    let mut mob_with_parents = prokadiff_gd::GdEntry::mob(2, "chr", 1701, "IS150", "1", 3);
+    mob_with_parents.parent_ids = vec![5, 6];
+
+    assert_eq!(mob_raw.fields, mob_with_parents.fields);
+    assert_eq!(mob_raw.subtract_key(), mob_with_parents.subtract_key());
+
+    let jc_raw = prokadiff_gd::GdEntry::jc(3, "chr", 500, "1", "chr", 1702, "1", 0);
+    let mut jc_with_attrs = prokadiff_gd::GdEntry::jc(3, "chr", 500, "1", "chr", 1702, "1", 0);
+    jc_with_attrs
+        .attrs
+        .insert("mob_evidence".into(), "1".into());
+    jc_with_attrs
+        .attrs
+        .insert("pd_support_reads".into(), "10".into());
+
+    assert_eq!(jc_raw.fields, jc_with_attrs.fields);
+    assert_eq!(jc_raw.subtract_key(), jc_with_attrs.subtract_key());
 }

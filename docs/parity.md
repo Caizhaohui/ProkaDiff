@@ -138,7 +138,11 @@ gdtools SUBTRACT edited.gd starter.gd
 
 合成夹具 `synth_parent_child`：出发株相对骨架的历史 SNP **不得**出现在非预期列表。
 
-**产品层 subtract 与引擎 JC 容差已闭环：** 单样本引擎允许 junction 坐标 ± 数 bp 的聚类规范化（`JC_CLUSTER_TOL_BP = 5`）。产品层 `M_edited \ M_parent` 在 `prokadiff-gd::GenomeDiff::subtract` 中对 JC、MOB 以及结构缺失 DEL（`size > 2`，起点与终点两端差 ≤5 bp）实施 ±5 bp 规范化容差匹配（`DEFAULT_JC_SUBTRACT_TOL_BP = 5`, `DEFAULT_MOB_SUBTRACT_TOL_BP = 5`, `DEFAULT_DEL_SUBTRACT_TOL_BP = 5`），当双端 contig 与链向匹配且坐标在容差内时，认定为出发株固有变异并予消去；同时提供 `subtract_exact` 供严格文本对拍。该行为已在 Layer 1 合成夹具 `synth_parent_child`（含先祖 300 bp 缺失）及单测中完整验证，彻底消除了出发株先祖 IS/JC/DEL 坐标微漂移引发的假阳性 `structural` 误报。此外，引擎侧多拷贝重复序列放置折叠容差已对齐至 5 bp，纯重复序列间假阳性连接（breseq `prediction=unknown`）已过滤，MOB 组成性 JC 在产品层已做归属抑制，且增加重复序列末端微同源反向位移补偿，100% 召回全部 5 处 MOB 变异，显著收敛了单样本 JC 过报。
+## 双样本差分亲本容差消去
+
+**产品层 subtract 与引擎 JC 容差已闭环：** 单样本引擎允许 junction 坐标 ± 数 bp 的聚类规范化（`JC_CLUSTER_TOL_BP = 5`）。M1 产品层先执行 exact canonical subtraction，再对剩余 JC、MOB 和结构 DEL 执行 ±5 bp 的确定性最小费用最大一对一匹配。JC 还要求两端 contig、链向及带符号 overlap 一致；MOB 还要求 repeat_name、链向及 duplication_size 一致；DEL 仅在出发株与编辑株长度均 >2 bp 时允许容差，且起点和终点差都不得超过 5 bp。匹配先最大化消去数，再最小化坐标费用，最后按 canonical bytes 稳定裁决，输入行顺序不影响结果。`GenomeDiff::subtract_exact` 继续用于严格文本对拍。MOB 显式 parent_ids 指向的组成性 JC 在出发株和编辑株两侧均先吸收为 MOB 证据。
+
+该行为已由层 0 覆盖 ±4/±5/±6 边界、短/结构 DEL 混合拒配、JC overlap 与 MOB duplication_size 不兼容、2×2 歧义最大匹配、全输入排列稳定性及双侧 MOB-JC 吸收。涉及 Layer 1 合成 FASTQ 的产品验证仍须在 `qcpu_18i` 执行；未获得该作业结果前不得新增 parity 或性能声明。
 
 `summary.txt` 报 `intended_provided` / `intended_declared` / `intended_observed` / `intended_status`（`all_observed` \| `partial` \| `none_observed` \| `NA`）以及 QC 行 `intended_missing`。字段契约见 [docs/schema.md](schema.md)。不做逐条长篇报告。
 

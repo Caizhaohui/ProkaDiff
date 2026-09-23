@@ -2,14 +2,30 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use prokadiff_classify::{AnalysisProvenance, AnnotatedVariant, IntendedEditAssessment, RefContig};
+use prokadiff_classify::{
+    AnalysisProvenance, AnnotatedVariant, EventId, IntendedEditAssessment, RefContig,
+};
 use prokadiff_gd::GdKind;
 
 /// Write the per-edit outcome verification audit table (`edit_outcomes.tsv`).
 pub fn write_edit_outcomes_tsv(
     path: impl AsRef<Path>,
     assessments: &[IntendedEditAssessment],
+    legacy_ids: &[(EventId, u32)],
 ) -> std::io::Result<()> {
+    for event_id in assessments.iter().flat_map(|assessment| {
+        assessment
+            .matched_event_ids
+            .iter()
+            .chain(&assessment.unexpected_event_ids)
+    }) {
+        if !legacy_ids.iter().any(|(id, _)| id == event_id) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("missing differential event {event_id}"),
+            ));
+        }
+    }
     let mut w = BufWriter::new(File::create(path)?);
     writeln!(
         w,
@@ -17,13 +33,25 @@ pub fn write_edit_outcomes_tsv(
     )?;
 
     for a in assessments {
+        let legacy_id = |event_id: &EventId| -> std::io::Result<String> {
+            legacy_ids
+                .iter()
+                .find(|(id, _)| id == event_id)
+                .map(|(_, gd_id)| gd_id.to_string())
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("missing differential event {event_id}"),
+                    )
+                })
+        };
         let matched_ids_str = if a.matched_event_ids.is_empty() {
             "NONE".to_string()
         } else {
             a.matched_event_ids
                 .iter()
-                .map(|id| id.to_string())
-                .collect::<Vec<_>>()
+                .map(legacy_id)
+                .collect::<std::io::Result<Vec<_>>>()?
                 .join(",")
         };
 
@@ -63,8 +91,8 @@ pub fn write_edit_outcomes_tsv(
         } else {
             a.unexpected_event_ids
                 .iter()
-                .map(|id| id.to_string())
-                .collect::<Vec<_>>()
+                .map(legacy_id)
+                .collect::<std::io::Result<Vec<_>>>()?
                 .join(",")
         };
 
@@ -228,7 +256,7 @@ fn variant_coords(v: &AnnotatedVariant) -> (String, u64, u64) {
             let p = e.position().unwrap_or(0);
             (s, p, p)
         }
-        GdKind::Del | GdKind::Sub => {
+        GdKind::Del | GdKind::Sub | GdKind::Inv => {
             let s = e.fields.first().cloned().unwrap_or_else(|| ".".into());
             let p: u64 = e.fields.get(1).and_then(|x| x.parse().ok()).unwrap_or(0);
             let size: u64 = e.fields.get(2).and_then(|x| x.parse().ok()).unwrap_or(1);
@@ -295,7 +323,11 @@ pub(crate) fn variant_alleles(v: &AnnotatedVariant, refs: &[RefContig]) -> (Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prokadiff_classify::IntendedEditStatus;
+    use prokadiff_classify::{EventId, EvidenceObservation, IntendedEditStatus};
+
+    fn test_event_id(number: u32) -> EventId {
+        EventId::parse(&format!("DV1_{number:032x}")).expect("valid test event id")
+    }
 
     #[test]
     fn test_write_edit_outcomes_tsv() {
@@ -307,19 +339,208 @@ mod tests {
             expected_start: 100,
             expected_end: 200,
             status: IntendedEditStatus::Complete,
-            matched_event_ids: vec![12],
+            matched_event_ids: vec![test_event_id(12)],
+            event_relationships: vec![],
             left_boundary: None,
             right_boundary: None,
             expected_size: Some(101),
             observed_size: Some(101),
-            unexpected_event_ids: vec![],
+            unexpected_event_ids: vec![test_event_id(13)],
+            mc_diagnostics: vec![],
+            mc_observation: EvidenceObservation::Unknown,
             notes: vec!["Both junctions confirmed".into()],
         }];
 
-        write_edit_outcomes_tsv(&temp_file, &assessments).unwrap();
+        write_edit_outcomes_tsv(
+            &temp_file,
+            &assessments,
+            &[(test_event_id(12), 12), (test_event_id(13), 13)],
+        )
+        .unwrap();
         let content = std::fs::read_to_string(&temp_file).unwrap();
         assert!(content.contains("edit_id\tkind\tseq_id"));
-        assert!(content.contains("edit_1\tdel\tchr\t100\t200\tCOMPLETE\t12\tNA\tNA\t101\t101\tNONE\tBoth junctions confirmed"));
+        assert!(content.contains("edit_1\tdel\tchr\t100\t200\tCOMPLETE\t12\tNA\tNA\t101\t101\t13\tBoth junctions confirmed"));
         let _ = std::fs::remove_file(temp_file);
+    }
+
+    #[test]
+    fn missing_legacy_mapping_does_not_create_outcomes_file() {
+        let path =
+            std::env::temp_dir().join(format!("m2_missing_mapping_{}.tsv", std::process::id()));
+        if path.exists() {
+            std::fs::remove_file(&path).expect("remove prior test artifact");
+        }
+        let assessment = IntendedEditAssessment {
+            edit_id: "edit_1".into(),
+            kind: "snp".into(),
+            seq_id: "chr".into(),
+            expected_start: 100,
+            expected_end: 100,
+            status: IntendedEditStatus::Complete,
+            matched_event_ids: vec![test_event_id(12)],
+            event_relationships: vec![],
+            left_boundary: None,
+            right_boundary: None,
+            expected_size: None,
+            observed_size: None,
+            unexpected_event_ids: vec![],
+            mc_diagnostics: vec![],
+            mc_observation: EvidenceObservation::Unknown,
+            notes: vec![],
+        };
+        assert!(write_edit_outcomes_tsv(&path, &[assessment], &[]).is_err());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_evidence_formatting_and_missing_na() {
+        use prokadiff_classify::{
+            AnnotatedVariant, EvidenceSummary, GuideRelation, OriginStatus, ReviewPriority,
+            SizeClass,
+        };
+        use prokadiff_gd::GdEntry;
+
+        let temp_file = std::env::temp_dir().join("test_evidence_post_edit_variants.tsv");
+        let refs = vec![RefContig {
+            name: "chr".into(),
+            seq: b"ACGTACGT".to_vec(),
+        }];
+
+        let variants = vec![
+            AnnotatedVariant {
+                variant_id: "VAR_0001".into(),
+                entry: GdEntry::snp(1, "chr", 3, "T"),
+                origin_status: OriginStatus::PostEditDifferential,
+                size_class: SizeClass::Small,
+                intended_relation: prokadiff_classify::IntendedRelation::None,
+                guide_relation: GuideRelation::None,
+                mobile_element_relation: None,
+                repeat_relation: None,
+                gene_annotation: None,
+                evidence: EvidenceSummary {
+                    ra: Some(true),
+                    mc: None,
+                    jc: None,
+                    supporting_reads: Some(25),
+                    coverage: Some(30.0),
+                },
+                review_priority: ReviewPriority::Info,
+                legacy_class: None,
+            },
+            AnnotatedVariant {
+                variant_id: "VAR_0002".into(),
+                entry: GdEntry::del(2, "chr", 4, 2),
+                origin_status: OriginStatus::PostEditDifferential,
+                size_class: SizeClass::Small,
+                intended_relation: prokadiff_classify::IntendedRelation::None,
+                guide_relation: GuideRelation::None,
+                mobile_element_relation: None,
+                repeat_relation: None,
+                gene_annotation: None,
+                evidence: EvidenceSummary {
+                    ra: None,
+                    mc: None,
+                    jc: None,
+                    supporting_reads: None,
+                    coverage: None,
+                },
+                review_priority: ReviewPriority::Info,
+                legacy_class: None,
+            },
+        ];
+
+        write_post_edit_variants_tsv(&temp_file, &variants, &refs).unwrap();
+        let content = std::fs::read_to_string(&temp_file).unwrap();
+        let _ = std::fs::remove_file(temp_file);
+
+        let lines: Vec<&str> = content.lines().collect();
+        assert!(lines[0].contains("\tevidence\t"));
+        assert!(lines[1].contains("\tRA=1;MC=NA;JC=NA\t"));
+        assert!(lines[2].contains("\tRA=NA;MC=NA;JC=NA\t"));
+    }
+
+    #[test]
+    fn missing_evidence_renders_na() {
+        use prokadiff_classify::EvidenceSummary;
+
+        let empty_ev = EvidenceSummary {
+            ra: None,
+            mc: None,
+            jc: None,
+            supporting_reads: None,
+            coverage: None,
+        };
+        assert_eq!(empty_ev.format_brief(), "RA=NA;MC=NA;JC=NA");
+
+        let ra_only = EvidenceSummary {
+            ra: Some(true),
+            mc: None,
+            jc: None,
+            supporting_reads: Some(10),
+            coverage: Some(20.0),
+        };
+        assert_eq!(ra_only.format_brief(), "RA=1;MC=NA;JC=NA");
+
+        let jc_only = EvidenceSummary {
+            ra: None,
+            mc: None,
+            jc: Some(true),
+            supporting_reads: None,
+            coverage: None,
+        };
+        assert_eq!(jc_only.format_brief(), "RA=NA;MC=NA;JC=1");
+    }
+
+    #[test]
+    fn public_headers_unchanged() {
+        let temp_dir = std::env::temp_dir();
+
+        // 1. edit_outcomes.tsv
+        let edit_outcomes_path = temp_dir.join("check_edit_outcomes.tsv");
+        write_edit_outcomes_tsv(&edit_outcomes_path, &[], &[]).unwrap();
+        let eo_header = std::fs::read_to_string(&edit_outcomes_path).unwrap();
+        let _ = std::fs::remove_file(edit_outcomes_path);
+        assert_eq!(
+            eo_header.lines().next().unwrap(),
+            "edit_id\tkind\tseq_id\texpected_start\texpected_end\tstatus\tmatched_event_ids\tleft_boundary_status\tright_boundary_status\texpected_size\tobserved_size\tunexpected_events\tnotes"
+        );
+
+        // 2. post_edit_variants.tsv
+        let post_edit_path = temp_dir.join("check_post_edit_variants.tsv");
+        write_post_edit_variants_tsv(&post_edit_path, &[], &[]).unwrap();
+        let pev_header = std::fs::read_to_string(&post_edit_path).unwrap();
+        let _ = std::fs::remove_file(post_edit_path);
+        assert_eq!(
+            pev_header.lines().next().unwrap(),
+            "variant_id\tseq_id\tposition\tend\tgd_type\tref\talt\torigin_status\tintended_relation\tsize_class\treview_priority\tguide_relation\tguide_mismatches\tpam\tdist_to_site\tmobile_element\tevidence\tgene\tlocus_tag\tfeature_type\tlegacy_class"
+        );
+
+        // 3. provenance.tsv
+        let prov_path = temp_dir.join("check_provenance.tsv");
+        let prov = AnalysisProvenance {
+            prokadiff_version: "0.2.0".into(),
+            git_commit: "abc".into(),
+            reference_sha256: None,
+            bowtie2_version: None,
+            offtarget_search_status: "OK".into(),
+            cfd_scoring_status: "OK".into(),
+            hsu_scoring_status: "OK".into(),
+            bulge_search_status: "OK".into(),
+            run_timestamp: "2026-09-21".into(),
+        };
+        write_provenance_tsv(&prov_path, &prov).unwrap();
+        let prov_header = std::fs::read_to_string(&prov_path).unwrap();
+        let _ = std::fs::remove_file(prov_path);
+        assert_eq!(prov_header.lines().next().unwrap(), "key\tvalue");
+
+        // 4. unintended.tsv (from crate root)
+        let unintended_path = temp_dir.join("check_unintended.tsv");
+        crate::write_unintended_tsv(&unintended_path, &[], "cas9", false, &[]).unwrap();
+        let un_header = std::fs::read_to_string(&unintended_path).unwrap();
+        let _ = std::fs::remove_file(unintended_path);
+        assert_eq!(
+            un_header.lines().next().unwrap(),
+            "seq_id\tposition\tend\tgd_type\tref\talt\tclass\teditor\tpam_profile\tofftarget_mismatch\tdistance_to_site\tside2_seq_id\tside2_position"
+        );
     }
 }

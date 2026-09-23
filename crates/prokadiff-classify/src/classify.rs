@@ -1,8 +1,11 @@
 use prokadiff_gd::{GdEntry, GdKind, GenomeDiff};
 
+use crate::differential::{build_differential_events, DifferentialEvent, EventId};
 use crate::homolog::{scan_homologs, HomologSite};
-use crate::intended::{entry_intervals, mask_intended, IntendedEdit};
-use crate::{is_product_mutation, is_structural, EditorKind, RefContig};
+use crate::intended::{
+    entry_intervals, EvidenceObservation, IntendedEdit, IntendedEventRole, McDiagnostic,
+};
+use crate::{is_structural, EditorKind, RefContig};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MutationClass {
@@ -39,18 +42,22 @@ pub struct ClassifiedMutation {
     pub offtarget_mismatch: Option<u32>,
     pub distance_to_site: Option<u64>,
     pub hypothesis: Option<String>,
+    pub event_id: Option<EventId>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct ClassifyResult {
     pub unintended: Vec<ClassifiedMutation>,
     pub intended_observed: Vec<GdEntry>,
+    pub intended_event_ids: Vec<EventId>,
     /// Number of rows in the `--intended` table (`intended.len()`). Zero when omitted.
     pub intended_declared: usize,
     pub starter_vs_ref: usize,
     /// Per-edit assessment (FIX-015): one entry per row in the `--intended` table.
     /// `None` when no intended table was provided.
     pub intended_edit_assessments: Option<Vec<crate::intended::IntendedEditAssessment>>,
+    /// Canonical differential events (M1).
+    pub differential_events: Vec<DifferentialEvent>,
 }
 
 pub fn classify(
@@ -59,28 +66,77 @@ pub fn classify(
     intended: &[IntendedEdit],
     refs: &[RefContig],
     opts: &ClassifyOptions,
-) -> ClassifyResult {
-    let starter_muts: Vec<GdEntry> = starter
-        .entries
+) -> Result<ClassifyResult, crate::differential::DifferentialError> {
+    let diff_res = build_differential_events(starter, edited, refs)?;
+
+    let differential_events = diff_res.events;
+    let starter_vs_ref = diff_res.starter_mutation_count;
+
+    let mut intended_edit_assessments = if intended.is_empty() {
+        None
+    } else {
+        Some(crate::intended::assess_intended_edits(
+            &differential_events,
+            intended,
+        ))
+    };
+    if let Some(assessments) = &mut intended_edit_assessments {
+        for (assessment, edit) in assessments.iter_mut().zip(intended) {
+            for mc in edited.entries.iter().filter(|entry| {
+                entry.kind == GdKind::Mc
+                    && mc_overlaps_any_intended(entry, std::slice::from_ref(edit))
+            }) {
+                let inherited = starter
+                    .entries
+                    .iter()
+                    .any(|parent| parent.kind == GdKind::Mc && parent.fields == mc.fields);
+                if !inherited {
+                    assessment
+                        .mc_diagnostics
+                        .push(McDiagnostic { gd_id: mc.id });
+                }
+            }
+            if !assessment.mc_diagnostics.is_empty() {
+                assessment.mc_observation = EvidenceObservation::Observed;
+                assessment.notes.push(
+                    "MC coverage diagnostic observed at intended locus; differential mutation unconfirmed"
+                        .into(),
+                );
+            }
+        }
+    }
+
+    let expected_ids: std::collections::HashSet<EventId> = intended_edit_assessments
         .iter()
-        .filter(|e| is_product_mutation(e.kind))
-        .cloned()
+        .flatten()
+        .flat_map(|assessment| assessment.event_relationships.iter())
+        .filter(|relation| relation.role == IntendedEventRole::ExpectedConstituent)
+        .map(|relation| relation.event_id.clone())
         .collect();
-    let edited_only = GenomeDiff {
-        metadata: edited.metadata.clone(),
-        entries: edited
-            .entries
-            .iter()
-            .filter(|e| is_product_mutation(e.kind))
-            .cloned()
-            .collect(),
+    let nonexpected_ids: std::collections::HashSet<EventId> = intended_edit_assessments
+        .iter()
+        .flatten()
+        .flat_map(|assessment| assessment.event_relationships.iter())
+        .filter(|relation| relation.role != IntendedEventRole::ExpectedConstituent)
+        .map(|relation| relation.event_id.clone())
+        .collect();
+    let is_expected = |event: &DifferentialEvent| {
+        expected_ids.contains(&event.event_id) && !nonexpected_ids.contains(&event.event_id)
     };
-    let starter_only = GenomeDiff {
-        metadata: starter.metadata.clone(),
-        entries: starter_muts.clone(),
-    };
-    let diff = edited_only.subtract(&starter_only);
-    let (remain, observed) = mask_intended(&diff.entries, intended);
+    let observed: Vec<GdEntry> = differential_events
+        .iter()
+        .filter(|event| is_expected(event))
+        .map(|event| event.representative.clone())
+        .collect();
+    let intended_event_ids = differential_events
+        .iter()
+        .filter(|event| is_expected(event))
+        .map(|event| event.event_id.clone())
+        .collect();
+    let remain: Vec<&DifferentialEvent> = differential_events
+        .iter()
+        .filter(|event| !is_expected(event))
+        .collect();
 
     let pam_used = resolved_pam(opts);
     let sites = match (opts.editor, opts.spacer.as_deref(), pam_used.as_deref()) {
@@ -92,12 +148,14 @@ pub fn classify(
 
     let mob_positions: Vec<(String, u64)> = remain
         .iter()
-        .filter(|e| e.kind == GdKind::Mob)
+        .filter(|event| event.representative.kind == GdKind::Mob)
+        .map(|event| &event.representative)
         .filter_map(|e| Some((e.seq_id()?.to_string(), e.position()?)))
         .collect();
 
     let mut unintended = Vec::with_capacity(remain.len());
-    for e in remain {
+    for event in remain {
+        let e = &event.representative;
         if e.kind == GdKind::Jc && e.attrs.contains_key("mob_evidence") {
             if let (Some(seq), Some(pos)) = (e.seq_id(), e.position()) {
                 if mob_positions
@@ -108,44 +166,24 @@ pub fn classify(
                 }
             }
         }
-        unintended.push(label_one(e, &sites, opts, pam_used.as_deref()));
+        unintended.push(label_one(
+            e,
+            Some(event.event_id.clone()),
+            &sites,
+            opts,
+            pam_used.as_deref(),
+        ));
     }
 
-    // FIX-015: build per-edit assessments using all mutations (including those in unintended)
-    //
-    // RW-004 fix: the intended-edit assessment must also see `MC` (missing-coverage)
-    // evidence at declared loci, not just product mutations. `MC` is intentionally
-    // excluded from `is_product_mutation` (it stays evidence, not a classified
-    // mutation, so `unintended.tsv`/`summary.txt` are unaffected — see docs/schema.md),
-    // but that meant a large aberrant on-target deletion with no matching on-target
-    // JC/DEL call (e.g. an IS-mediated deletion where the on-target junction itself
-    // does not survive JC accept thresholds) was invisible to `assess_intended_edits`,
-    // and got reported as `Missing` instead of `UnexpectedStructure`. Only edited-strain
-    // MC spans that overlap a declared intended-edit locus are added here — this does
-    // not touch the general JC/MC genome-wide noise (tracked separately as RW-002/RW-003)
-    // and does not change `diff`/`unintended` output for any input.
-    let mut all_diff_entries: Vec<GdEntry> = diff.entries.clone();
-    all_diff_entries.extend(
-        edited
-            .entries
-            .iter()
-            .filter(|e| e.kind == GdKind::Mc && mc_overlaps_any_intended(e, intended))
-            .cloned(),
-    );
-    let intended_edit_assessments = if intended.is_empty() {
-        None
-    } else {
-        use crate::intended::assess_intended_edits;
-        Some(assess_intended_edits(&all_diff_entries, intended))
-    };
-
-    ClassifyResult {
+    Ok(ClassifyResult {
         unintended,
-        intended_observed: observed.into_iter().cloned().collect(),
+        intended_observed: observed,
+        intended_event_ids,
         intended_declared: intended.len(),
-        starter_vs_ref: starter_muts.len(),
+        starter_vs_ref,
         intended_edit_assessments,
-    }
+        differential_events,
+    })
 }
 
 fn resolved_pam(opts: &ClassifyOptions) -> Option<String> {
@@ -159,6 +197,7 @@ fn resolved_pam(opts: &ClassifyOptions) -> Option<String> {
 
 fn label_one(
     e: &GdEntry,
+    event_id: Option<EventId>,
     sites: &[HomologSite],
     opts: &ClassifyOptions,
     pam_used: Option<&str>,
@@ -197,6 +236,7 @@ fn label_one(
         offtarget_mismatch,
         distance_to_site,
         hypothesis,
+        event_id,
     }
 }
 
@@ -249,6 +289,17 @@ mod tests {
     use crate::intended::{parse_intended, IntendedEditStatus};
     use prokadiff_gd::GenomeDiff;
 
+    fn classify(
+        edited: &GenomeDiff,
+        starter: &GenomeDiff,
+        intended: &[IntendedEdit],
+        refs: &[RefContig],
+        opts: &ClassifyOptions,
+    ) -> ClassifyResult {
+        super::classify(edited, starter, intended, refs, opts)
+            .expect("test inputs must canonicalize")
+    }
+
     fn gd(entries: Vec<GdEntry>) -> GenomeDiff {
         GenomeDiff {
             metadata: vec![("GENOME_DIFF".into(), "1.0".into())],
@@ -277,7 +328,7 @@ mod tests {
     /// `lacZ` deletion (334876-335735), but the observed event is a much larger
     /// ~20 kb missing-coverage span (331956-352202) with no on-target JC/DEL emitted.
     #[test]
-    fn mc_only_aberrant_deletion_at_intended_locus_yields_unexpected_structure() {
+    fn mc_only_at_intended_locus_remains_evidence_only() {
         let edited = gd(vec![GdEntry::mc(903, "chr", 331956, 352202, 0, 0)]);
         let starter = gd(vec![]);
         let intended =
@@ -290,10 +341,10 @@ mod tests {
             .intended_edit_assessments
             .expect("intended edits were declared");
         assert_eq!(assessments.len(), 1);
-        assert_eq!(
-            assessments[0].status,
-            IntendedEditStatus::UnexpectedStructure
-        );
+        assert_eq!(assessments[0].status, IntendedEditStatus::Missing);
+        assert_eq!(assessments[0].mc_observation, EvidenceObservation::Observed);
+        assert_eq!(assessments[0].mc_diagnostics[0].gd_id, 903);
+        assert!(assessments[0].unexpected_event_ids.is_empty());
 
         // The MC-widening must not leak into the general unintended/diff output: MC
         // stays evidence, not a classified mutation (unintended.tsv backward compat).

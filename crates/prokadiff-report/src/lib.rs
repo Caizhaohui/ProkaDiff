@@ -135,7 +135,7 @@ fn intended_edit_level_fields(
             .iter()
             .filter(|a| a.status == IntendedEditStatus::Missing)
             .count();
-        let events: usize = assessments.iter().map(|a| a.matched_event_ids.len()).sum();
+        let events = result.intended_event_ids.len();
         (
             complete.to_string(),
             partial.to_string(),
@@ -224,7 +224,7 @@ fn opt_u64(v: Option<u64>) -> String {
 fn coords(e: &GdEntry) -> (String, u64, u64) {
     let seq = e.seq_id().unwrap_or("").to_string();
     let pos = e.position().unwrap_or(0);
-    if e.kind == GdKind::Del || e.kind == GdKind::Sub {
+    if e.kind == GdKind::Del || e.kind == GdKind::Sub || e.kind == GdKind::Inv {
         let size = e
             .fields
             .get(2)
@@ -336,6 +336,7 @@ mod tests {
             offtarget_mismatch: None,
             distance_to_site: None,
             hypothesis: Some("sos_widney2014".into()),
+            event_id: None,
         }
     }
 
@@ -350,9 +351,11 @@ mod tests {
             intended_observed: (0..observed)
                 .map(|i| GdEntry::snp(i as u32 + 10, "chr", 1000 + i as u64, "A"))
                 .collect(),
+            intended_event_ids: Vec::new(),
             intended_declared: declared,
             starter_vs_ref,
             intended_edit_assessments: None,
+            differential_events: Vec::new(),
         }
     }
 
@@ -435,6 +438,7 @@ mod tests {
             offtarget_mismatch: None,
             distance_to_site: None,
             hypothesis: None,
+            event_id: None,
         };
         write_unintended_tsv(&path, &[row], "cas9", false, &refs).unwrap();
         let cols = data_cols(&path);
@@ -452,6 +456,7 @@ mod tests {
             offtarget_mismatch: None,
             distance_to_site: None,
             hypothesis: None,
+            event_id: None,
         };
         write_unintended_tsv(&path, &[row], "cas9", false, &[]).unwrap();
         let cols = data_cols(&path);
@@ -475,6 +480,7 @@ mod tests {
                 offtarget_mismatch: Some(0),
                 distance_to_site: Some(7),
                 hypothesis: None,
+                event_id: None,
             }],
             50,
         );

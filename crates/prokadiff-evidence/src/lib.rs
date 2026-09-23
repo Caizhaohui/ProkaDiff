@@ -26,4 +26,7 @@ pub use fasta::{
 };
 pub use mc::call_missing_coverage;
 pub use normalize::{right_align_del, right_align_ins};
-pub use ra::{call_consensus, BaseObs, ConsensusCall, PileupColumn, RaOptions, Strand};
+pub use ra::{
+    call_consensus, call_consensus_with_metrics, BaseObs, ConsensusCall, PileupColumn, RaMetrics,
+    RaOptions, Strand,
+};

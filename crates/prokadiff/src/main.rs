@@ -64,6 +64,7 @@ enum RunError {
     Evidence(prokadiff_evidence::EvidenceError),
     Gd(prokadiff_gd::GdError),
     Intended(prokadiff_classify::IntendedError),
+    Differential(prokadiff_classify::DifferentialError),
     Io(std::io::Error),
 }
 
@@ -91,6 +92,12 @@ impl From<prokadiff_classify::IntendedError> for RunError {
     }
 }
 
+impl From<prokadiff_classify::DifferentialError> for RunError {
+    fn from(e: prokadiff_classify::DifferentialError) -> Self {
+        Self::Differential(e)
+    }
+}
+
 impl From<std::io::Error> for RunError {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e)
@@ -104,6 +111,7 @@ impl std::fmt::Display for RunError {
             Self::Evidence(e) => write!(f, "{e}"),
             Self::Gd(e) => write!(f, "{e}"),
             Self::Intended(e) => write!(f, "{e}"),
+            Self::Differential(e) => write!(f, "{e}"),
             Self::Io(e) => write!(f, "{e}"),
         }
     }
@@ -222,7 +230,7 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
             max_mismatches: DEFAULT_MAX_MISMATCHES,
             hypothesis: job.hypothesis,
         },
-    );
+    )?;
 
     let tsv = job.outdir.join("unintended.tsv");
     let summary = job.outdir.join("summary.txt");
@@ -395,7 +403,8 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
             .clone()
             .unwrap_or_default(),
         &classified.unintended,
-        &classified.intended_observed,
+        &classified.intended_event_ids,
+        &classified.differential_events,
         &offtarget_sites,
         &offtarget_links,
         provenance,
@@ -408,7 +417,16 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
     let provenance_tsv = job.outdir.join("provenance.tsv");
 
     write_markdown_report(&report_md, &audit_result, &refs)?;
-    write_edit_outcomes_tsv(&edit_outcomes_tsv, &audit_result.intended_edits)?;
+    let legacy_event_ids: Vec<_> = classified
+        .differential_events
+        .iter()
+        .map(|event| (event.event_id.clone(), event.representative.id))
+        .collect();
+    write_edit_outcomes_tsv(
+        &edit_outcomes_tsv,
+        &audit_result.intended_edits,
+        &legacy_event_ids,
+    )?;
     write_post_edit_variants_tsv(&post_edit_variants_tsv, &audit_result.variants, &refs)?;
     write_provenance_tsv(&provenance_tsv, &audit_result.provenance)?;
 

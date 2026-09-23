@@ -1,4 +1,7 @@
 use prokadiff_gd::{GdEntry, GdKind};
+use std::ops::Deref;
+
+use crate::differential::{DifferentialEvent, EventId};
 
 #[derive(Debug, thiserror::Error)]
 pub enum IntendedError {
@@ -65,18 +68,60 @@ pub struct IntendedEditAssessment {
     pub expected_start: u64,
     pub expected_end: u64,
     pub status: IntendedEditStatus,
-    /// IDs of GdEntry records that matched this intended edit (using real GdEntry.id).
-    pub matched_event_ids: Vec<u32>,
+    pub matched_event_ids: Vec<EventId>,
+    pub event_relationships: Vec<IntendedEventRelationship>,
     /// Optional boundary assessments for structural edits.
     pub left_boundary: Option<BoundaryAssessment>,
     pub right_boundary: Option<BoundaryAssessment>,
     /// Expected vs observed event size (e.g. deletion length).
     pub expected_size: Option<u64>,
     pub observed_size: Option<u64>,
-    /// IDs of unexpected/aberrant secondary events at or near this locus.
-    pub unexpected_event_ids: Vec<u32>,
+    pub unexpected_event_ids: Vec<EventId>,
+    pub mc_diagnostics: Vec<McDiagnostic>,
+    pub mc_observation: EvidenceObservation,
     /// Human and machine readable notes.
     pub notes: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntendedEventRole {
+    ExpectedConstituent,
+    PartialObservation,
+    UnexpectedAtLocus,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntendedEventRelationship {
+    pub event_id: EventId,
+    pub role: IntendedEventRole,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvidenceObservation {
+    Observed,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McDiagnostic {
+    pub gd_id: u32,
+}
+
+#[derive(Clone, Copy)]
+struct EventView<'a>(&'a DifferentialEvent);
+
+impl EventView<'_> {
+    fn event_id(self) -> EventId {
+        self.0.event_id.clone()
+    }
+}
+
+impl Deref for EventView<'_> {
+    type Target = GdEntry;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0.representative
+    }
 }
 
 pub fn parse_intended(text: &str) -> Result<Vec<IntendedEdit>, IntendedError> {
@@ -127,6 +172,12 @@ pub fn parse_intended(text: &str) -> Result<Vec<IntendedEdit>, IntendedError> {
         let end: u64 = get(i_end)
             .parse()
             .map_err(|_| IntendedError::Parse(format!("line {}: bad end", n + 2)))?;
+        if start == 0 || end < start || end > i64::MAX as u64 {
+            return Err(IntendedError::Parse(format!(
+                "line {}: invalid intended interval",
+                n + 2
+            )));
+        }
         let edit_id = match i_edit_id {
             Some(idx) => {
                 let s = get(idx);
@@ -207,7 +258,7 @@ pub(crate) fn entry_intervals(e: &GdEntry) -> Vec<(String, u64, u64)> {
             }
             v
         }
-        GdKind::Del | GdKind::Sub => {
+        GdKind::Del | GdKind::Sub | GdKind::Inv => {
             let Some(seq) = e.fields.first() else {
                 return Vec::new();
             };
@@ -282,6 +333,15 @@ fn del_size(e: &GdEntry) -> Option<u64> {
     e.fields.get(2).and_then(|s| s.parse().ok())
 }
 
+fn signed_diff(observed: u64, expected: u64) -> i64 {
+    let distance = observed.abs_diff(expected).min(i64::MAX as u64) as i64;
+    if observed < expected {
+        -distance
+    } else {
+        distance
+    }
+}
+
 fn del_matches_intended(e: &GdEntry, t: &IntendedEdit) -> bool {
     if e.kind != GdKind::Del {
         return false;
@@ -334,8 +394,8 @@ fn classify_cassette_junction(
 
     let mut best: Option<(CassetteJunctionSide, u64, i64, u64)> = None;
     for (pos, strand) in hits {
-        let d_start = (pos as i64 - edit.start as i64).unsigned_abs();
-        let d_end = (pos as i64 - edit.end as i64).unsigned_abs();
+        let d_start = pos.abs_diff(edit.start);
+        let d_end = pos.abs_diff(edit.end);
 
         if d_start > window && d_end > window {
             continue;
@@ -348,38 +408,38 @@ fn classify_cassette_junction(
             if strand == "+" || strand == "0" || strand == "F" || strand == "forward" {
                 (
                     CassetteJunctionSide::Left,
-                    pos as i64 - edit.start as i64,
+                    signed_diff(pos, edit.start),
                     d_start,
                 )
             } else if strand == "-" || strand == "1" || strand == "R" || strand == "reverse" {
                 (
                     CassetteJunctionSide::Right,
-                    pos as i64 - edit.end as i64,
+                    signed_diff(pos, edit.end),
                     d_end,
                 )
             } else {
                 (
                     CassetteJunctionSide::Ambiguous,
-                    pos as i64 - edit.start as i64,
+                    signed_diff(pos, edit.start),
                     d_start,
                 )
             }
         } else if d_start < d_end && d_start <= window {
             (
                 CassetteJunctionSide::Left,
-                pos as i64 - edit.start as i64,
+                signed_diff(pos, edit.start),
                 d_start,
             )
         } else if d_end < d_start && d_end <= window {
             (
                 CassetteJunctionSide::Right,
-                pos as i64 - edit.end as i64,
+                signed_diff(pos, edit.end),
                 d_end,
             )
         } else if d_start <= window {
             (
                 CassetteJunctionSide::Ambiguous,
-                pos as i64 - edit.start as i64,
+                signed_diff(pos, edit.start),
                 d_start,
             )
         } else {
@@ -399,11 +459,12 @@ fn classify_cassette_junction(
 }
 
 /// Assess a single intended edit against the set of observed mutations.
-fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEditAssessment {
+fn assess_single_edit(edit: &IntendedEdit, mutations: &[EventView<'_>]) -> IntendedEditAssessment {
     let kind = edit.kind.to_ascii_lowercase();
-    let expected_span = edit.end.saturating_sub(edit.start) + 1;
+    let expected_span = edit.end.saturating_sub(edit.start).saturating_add(1);
 
     let mut matched_event_ids = Vec::new();
+    let mut partial_event_ids = Vec::new();
     let mut unexpected_event_ids = Vec::new();
     let mut notes = Vec::new();
     let mut left_boundary = None;
@@ -411,7 +472,7 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
     let mut expected_size = None;
     let mut observed_size = None;
 
-    match kind.as_str() {
+    let mut assessment = match kind.as_str() {
         "snp" | "sub" | "ins" => {
             let target_kind = match kind.as_str() {
                 "snp" => GdKind::Snp,
@@ -431,7 +492,7 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                         } else {
                             allele_mismatches.push(e);
                         }
-                    } else if matches!(e.kind, GdKind::Jc | GdKind::Del | GdKind::Mob) {
+                    } else {
                         other_events.push(e);
                     }
                 }
@@ -439,20 +500,32 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
 
             let status = if !exact_matches.is_empty() {
                 for e in &exact_matches {
-                    matched_event_ids.push(e.id);
+                    matched_event_ids.push(e.event_id());
                 }
-                if !other_events.is_empty() {
+                for e in &allele_mismatches {
+                    unexpected_event_ids.push(e.event_id());
+                }
+                let has_structural = other_events
+                    .iter()
+                    .any(|event| matches!(event.kind, GdKind::Jc | GdKind::Del | GdKind::Mob));
+                if has_structural {
                     for e in &other_events {
-                        unexpected_event_ids.push(e.id);
+                        unexpected_event_ids.push(e.event_id());
                     }
                     notes.push("additional unexpected structural event at target locus".into());
                     IntendedEditStatus::UnexpectedStructure
+                } else if !allele_mismatches.is_empty() || !other_events.is_empty() {
+                    for e in &other_events {
+                        unexpected_event_ids.push(e.event_id());
+                    }
+                    notes.push("additional discordant sequence event at target locus".into());
+                    IntendedEditStatus::Partial
                 } else {
                     IntendedEditStatus::Complete
                 }
             } else if !allele_mismatches.is_empty() {
                 for e in &allele_mismatches {
-                    matched_event_ids.push(e.id);
+                    matched_event_ids.push(e.event_id());
                     if let Some(obs) = allele(e) {
                         notes.push(format!(
                             "mismatched allele: expected {}, observed {}",
@@ -460,13 +533,35 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                         ));
                     }
                 }
-                IntendedEditStatus::Partial
+                for e in &other_events {
+                    unexpected_event_ids.push(e.event_id());
+                }
+                if other_events
+                    .iter()
+                    .any(|event| matches!(event.kind, GdKind::Jc | GdKind::Del | GdKind::Mob))
+                {
+                    notes.push("additional unexpected structural event at target locus".into());
+                    IntendedEditStatus::UnexpectedStructure
+                } else {
+                    IntendedEditStatus::Partial
+                }
             } else if !other_events.is_empty() {
                 for e in &other_events {
-                    unexpected_event_ids.push(e.id);
+                    unexpected_event_ids.push(e.event_id());
                 }
-                notes.push("target site disrupted by unexpected structural variant".into());
-                IntendedEditStatus::UnexpectedStructure
+                if other_events
+                    .iter()
+                    .any(|event| matches!(event.kind, GdKind::Jc | GdKind::Del | GdKind::Mob))
+                {
+                    notes.push("target site disrupted by unexpected structural variant".into());
+                    IntendedEditStatus::UnexpectedStructure
+                } else {
+                    notes.push(
+                        "expected edit absent with unexpected sequence event at target locus"
+                            .into(),
+                    );
+                    IntendedEditStatus::Missing
+                }
             } else {
                 IntendedEditStatus::Missing
             };
@@ -479,11 +574,14 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                 expected_end: edit.end,
                 status,
                 matched_event_ids,
+                event_relationships: Vec::new(),
                 left_boundary,
                 right_boundary,
                 expected_size,
                 observed_size,
                 unexpected_event_ids,
+                mc_diagnostics: Vec::new(),
+                mc_observation: EvidenceObservation::Unknown,
                 notes,
             }
         }
@@ -505,15 +603,35 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                 }
             }
 
+            del_matches.sort_by_key(|e| {
+                let start = e.position().unwrap_or(0);
+                let size = del_size(e).unwrap_or(0);
+                let end = start.saturating_add(size.saturating_sub(1));
+                (
+                    start.abs_diff(edit.start) + end.abs_diff(edit.end),
+                    size.abs_diff(expected_span),
+                    e.event_id(),
+                )
+            });
+
             let status = if let Some(e) = del_matches.first() {
-                matched_event_ids.push(e.id);
+                matched_event_ids.push(e.event_id());
+                for extra in del_matches.iter().skip(1) {
+                    unexpected_event_ids.push(extra.event_id());
+                }
+                for extra in &jc_matches {
+                    unexpected_event_ids.push(extra.event_id());
+                }
+                for extra in &other_events {
+                    unexpected_event_ids.push(extra.event_id());
+                }
                 let d_size = del_size(e).unwrap_or(1);
                 observed_size = Some(d_size);
                 let obs_start = e.position().unwrap_or(edit.start);
                 let obs_end = obs_start.saturating_add(d_size.saturating_sub(1));
 
-                let left_diff = (obs_start as i64) - (edit.start as i64);
-                let right_diff = (obs_end as i64) - (edit.end as i64);
+                let left_diff = signed_diff(obs_start, edit.start);
+                let right_diff = signed_diff(obs_end, edit.end);
                 let left_pass = left_diff.abs() <= 2;
                 let right_pass = right_diff.abs() <= 2;
 
@@ -530,7 +648,14 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                     passed: right_pass,
                 });
 
-                if left_pass && right_pass && (edit.alt.is_empty() || edit.alt == ".") {
+                if !unexpected_event_ids.is_empty() {
+                    notes.push("additional unexpected event at deletion locus".into());
+                    IntendedEditStatus::UnexpectedStructure
+                } else if left_pass
+                    && right_pass
+                    && d_size == expected_span
+                    && (edit.alt.is_empty() || edit.alt == ".")
+                {
                     IntendedEditStatus::Complete
                 } else {
                     notes.push(format!(
@@ -546,29 +671,29 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                         .fields
                         .get(1)
                         .and_then(|p| p.parse::<u64>().ok())
-                        .map(|p| (p as i64 - edit.start as i64).abs() <= 5)
+                        .map(|p| p.abs_diff(edit.start) <= 5)
                         .unwrap_or(false);
                     let side2_matches_end = jc
                         .fields
                         .get(4)
                         .and_then(|p| p.parse::<u64>().ok())
-                        .map(|p| (p as i64 - edit.end as i64).abs() <= 5)
+                        .map(|p| p.abs_diff(edit.end) <= 5)
                         .unwrap_or(false);
                     if side1_matches_start && side2_matches_end {
                         matched_valid_jc = true;
-                        matched_event_ids.push(jc.id);
+                        matched_event_ids.push(jc.event_id());
                     } else {
-                        unexpected_event_ids.push(jc.id);
+                        unexpected_event_ids.push(jc.event_id());
                     }
+                }
+                for event in &other_events {
+                    unexpected_event_ids.push(event.event_id());
                 }
                 if matched_valid_jc && unexpected_event_ids.is_empty() {
                     notes.push("deletion supported by junction evidence".into());
                     IntendedEditStatus::Complete
                 } else if matched_valid_jc {
-                    notes.push(
-                        "expected deletion junction present with additional aberrant junctions"
-                            .into(),
-                    );
+                    notes.push("expected deletion junction present with additional unexpected events at deletion locus".into());
                     IntendedEditStatus::UnexpectedStructure
                 } else {
                     notes.push("aberrant junction at deletion locus".into());
@@ -576,7 +701,7 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                 }
             } else if !other_events.is_empty() {
                 for e in &other_events {
-                    unexpected_event_ids.push(e.id);
+                    unexpected_event_ids.push(e.event_id());
                 }
                 notes.push("unexpected variant at deletion locus".into());
                 IntendedEditStatus::UnexpectedStructure
@@ -592,11 +717,14 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                 expected_end: edit.end,
                 status,
                 matched_event_ids,
+                event_relationships: Vec::new(),
                 left_boundary,
                 right_boundary,
                 expected_size,
                 observed_size,
                 unexpected_event_ids,
+                mc_diagnostics: Vec::new(),
+                mc_observation: EvidenceObservation::Unknown,
                 notes,
             }
         }
@@ -630,6 +758,10 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                 }
             }
 
+            left_candidates.sort_by_key(|(e, _, diff)| (diff.unsigned_abs(), e.event_id()));
+            right_candidates.sort_by_key(|(e, _, diff)| (diff.unsigned_abs(), e.event_id()));
+            ambiguous_candidates.sort_by_key(|(e, _, diff)| (diff.unsigned_abs(), e.event_id()));
+
             // Differentiate ambiguous candidates when one side is missing
             if left_candidates.is_empty()
                 && !ambiguous_candidates.is_empty()
@@ -661,11 +793,17 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                 let (left_e, left_pos, left_diff) = left_candidates[0];
                 let (right_e, right_pos, right_diff) = right_candidates[0];
 
-                matched_event_ids.push(left_e.id);
-                matched_event_ids.push(right_e.id);
+                matched_event_ids.push(left_e.event_id());
+                matched_event_ids.push(right_e.event_id());
 
                 let left_pass = left_diff.abs() <= 5;
                 let right_pass = right_diff.abs() <= 5;
+                if !left_pass {
+                    partial_event_ids.push(left_e.event_id());
+                }
+                if !right_pass {
+                    partial_event_ids.push(right_e.event_id());
+                }
 
                 left_boundary = Some(BoundaryAssessment {
                     expected_pos: edit.start,
@@ -696,7 +834,10 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                 && other_events.is_empty()
             {
                 let (left_e, left_pos, left_diff) = left_candidates[0];
-                matched_event_ids.push(left_e.id);
+                matched_event_ids.push(left_e.event_id());
+                if left_diff.abs() > 5 {
+                    partial_event_ids.push(left_e.event_id());
+                }
                 left_boundary = Some(BoundaryAssessment {
                     expected_pos: edit.start,
                     observed_pos: Some(left_pos),
@@ -713,7 +854,10 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                 && other_events.is_empty()
             {
                 let (right_e, right_pos, right_diff) = right_candidates[0];
-                matched_event_ids.push(right_e.id);
+                matched_event_ids.push(right_e.event_id());
+                if right_diff.abs() > 5 {
+                    partial_event_ids.push(right_e.event_id());
+                }
                 right_boundary = Some(BoundaryAssessment {
                     expected_pos: edit.end,
                     observed_pos: Some(right_pos),
@@ -724,15 +868,22 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                     "single junction detected (right flank candidate, partial integration)".into(),
                 );
                 IntendedEditStatus::Partial
+            } else if ambiguous_candidates.len() == 1
+                && jc_matches.len() == 1
+                && other_events.is_empty()
+            {
+                matched_event_ids.push(ambiguous_candidates[0].0.event_id());
+                notes.push("single ambiguous cassette junction detected".into());
+                IntendedEditStatus::Partial
             } else if left_candidates.len() >= 2 && right_candidates.is_empty() {
                 for (e, _, _) in &left_candidates {
-                    unexpected_event_ids.push(e.id);
+                    unexpected_event_ids.push(e.event_id());
                 }
                 notes.push("aberrant multiple left junctions detected at cassette locus".into());
                 IntendedEditStatus::UnexpectedStructure
             } else if right_candidates.len() >= 2 && left_candidates.is_empty() {
                 for (e, _, _) in &right_candidates {
-                    unexpected_event_ids.push(e.id);
+                    unexpected_event_ids.push(e.event_id());
                 }
                 notes.push("aberrant multiple right junctions detected at cassette locus".into());
                 IntendedEditStatus::UnexpectedStructure
@@ -740,8 +891,14 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                 // Correct pair + extra events
                 let (left_e, left_pos, left_diff) = left_candidates[0];
                 let (right_e, right_pos, right_diff) = right_candidates[0];
-                matched_event_ids.push(left_e.id);
-                matched_event_ids.push(right_e.id);
+                matched_event_ids.push(left_e.event_id());
+                matched_event_ids.push(right_e.event_id());
+                if left_diff.abs() > 5 {
+                    partial_event_ids.push(left_e.event_id());
+                }
+                if right_diff.abs() > 5 {
+                    partial_event_ids.push(right_e.event_id());
+                }
                 left_boundary = Some(BoundaryAssessment {
                     expected_pos: edit.start,
                     observed_pos: Some(left_pos),
@@ -755,21 +912,21 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                     passed: right_diff.abs() <= 5,
                 });
                 for e in &jc_matches {
-                    if e.id != left_e.id && e.id != right_e.id {
-                        unexpected_event_ids.push(e.id);
+                    if e.event_id() != left_e.event_id() && e.event_id() != right_e.event_id() {
+                        unexpected_event_ids.push(e.event_id());
                     }
                 }
                 for e in &other_events {
-                    unexpected_event_ids.push(e.id);
+                    unexpected_event_ids.push(e.event_id());
                 }
                 notes.push("correct junction pair detected with additional aberrant events at cassette locus".into());
                 IntendedEditStatus::UnexpectedStructure
             } else if !jc_matches.is_empty() || !other_events.is_empty() {
                 for e in &jc_matches {
-                    unexpected_event_ids.push(e.id);
+                    unexpected_event_ids.push(e.event_id());
                 }
                 for e in &other_events {
-                    unexpected_event_ids.push(e.id);
+                    unexpected_event_ids.push(e.event_id());
                 }
                 let msg = if jc_matches.len() > 1 {
                     "aberrant multiple junctions detected at cassette locus"
@@ -790,19 +947,22 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                 expected_end: edit.end,
                 status,
                 matched_event_ids,
+                event_relationships: Vec::new(),
                 left_boundary,
                 right_boundary,
                 expected_size,
                 observed_size,
                 unexpected_event_ids,
+                mc_diagnostics: Vec::new(),
+                mc_observation: EvidenceObservation::Unknown,
                 notes,
             }
         }
         _ => {
-            let matched: Vec<u32> = mutations
+            let matched: Vec<EventId> = mutations
                 .iter()
                 .filter(|e| matches_intended(e, edit))
-                .map(|e| e.id)
+                .map(|e| e.event_id())
                 .collect();
             let status = if matched.is_empty() {
                 IntendedEditStatus::Missing
@@ -817,33 +977,161 @@ fn assess_single_edit(edit: &IntendedEdit, mutations: &[GdEntry]) -> IntendedEdi
                 expected_end: edit.end,
                 status,
                 matched_event_ids: matched,
+                event_relationships: Vec::new(),
                 left_boundary: None,
                 right_boundary: None,
                 expected_size: None,
                 observed_size: None,
                 unexpected_event_ids: Vec::new(),
+                mc_diagnostics: Vec::new(),
+                mc_observation: EvidenceObservation::Unknown,
                 notes: Vec::new(),
             }
         }
-    }
+    };
+
+    assessment.matched_event_ids.sort();
+    assessment.matched_event_ids.dedup();
+    assessment.unexpected_event_ids.sort();
+    assessment.unexpected_event_ids.dedup();
+    assessment.event_relationships =
+        assessment
+            .matched_event_ids
+            .iter()
+            .map(|event_id| IntendedEventRelationship {
+                event_id: event_id.clone(),
+                role: if partial_event_ids.contains(event_id)
+                    || (assessment.status == IntendedEditStatus::Partial
+                        && !matches!(kind.as_str(), "cassette" | "snp" | "sub" | "ins"))
+                    || (matches!(kind.as_str(), "snp" | "sub" | "ins")
+                        && mutations.iter().any(|event| {
+                            event.0.event_id == *event_id && !matches_intended(event, edit)
+                        }))
+                {
+                    IntendedEventRole::PartialObservation
+                } else {
+                    IntendedEventRole::ExpectedConstituent
+                },
+            })
+            .chain(assessment.unexpected_event_ids.iter().map(|event_id| {
+                IntendedEventRelationship {
+                    event_id: event_id.clone(),
+                    role: if matches!(kind.as_str(), "snp" | "sub" | "ins")
+                        && mutations.iter().any(|event| {
+                            event.0.event_id == *event_id
+                                && event.kind.as_str().eq_ignore_ascii_case(&kind)
+                        }) {
+                        IntendedEventRole::PartialObservation
+                    } else {
+                        IntendedEventRole::UnexpectedAtLocus
+                    },
+                }
+            }))
+            .collect();
+    assessment
 }
 
 /// Assess each intended edit against the set of observed mutations.
 ///
 /// Returns one `IntendedEditAssessment` per entry in `intended`.
 pub fn assess_intended_edits(
-    mutations: &[GdEntry],
+    mutations: &[DifferentialEvent],
     intended: &[IntendedEdit],
 ) -> Vec<IntendedEditAssessment> {
+    let mut ordered: Vec<EventView<'_>> = mutations.iter().map(EventView).collect();
+    ordered.sort_by(|a, b| {
+        a.0.canonical
+            .cmp(&b.0.canonical)
+            .then_with(|| a.0.event_id.cmp(&b.0.event_id))
+    });
     intended
         .iter()
-        .map(|edit| assess_single_edit(edit, mutations))
+        .map(|edit| assess_single_edit(edit, &ordered))
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{CanonicalEvent, EvidenceReferences, RefContig};
+
+    struct LegacyAssessment {
+        assessment: IntendedEditAssessment,
+        matched_event_ids: Vec<u32>,
+        unexpected_event_ids: Vec<u32>,
+    }
+
+    impl Deref for LegacyAssessment {
+        type Target = IntendedEditAssessment;
+
+        fn deref(&self) -> &Self::Target {
+            &self.assessment
+        }
+    }
+
+    fn assess_entries(entries: &[GdEntry], intended: &[IntendedEdit]) -> Vec<LegacyAssessment> {
+        let refs = [
+            RefContig {
+                name: "chr".into(),
+                seq: vec![b'A'; 100_000],
+            },
+            RefContig {
+                name: "NZ_CP053602.1".into(),
+                seq: vec![b'A'; 400_000],
+            },
+            RefContig {
+                name: "NC_000913.3".into(),
+                seq: vec![b'A'; 100_000],
+            },
+            RefContig {
+                name: "plasmid".into(),
+                seq: vec![b'A'; 100_000],
+            },
+            RefContig {
+                name: "donor".into(),
+                seq: vec![b'A'; 100_000],
+            },
+        ];
+        let events: Vec<DifferentialEvent> = entries
+            .iter()
+            .filter_map(|entry| {
+                let canonical = CanonicalEvent::from_gd_entry(entry, &refs).ok()?;
+                let (event_id, _) = canonical.compute_event_id();
+                Some(DifferentialEvent {
+                    event_id,
+                    canonical,
+                    representative: entry.clone(),
+                    merged_source_ids: vec![entry.id],
+                    evidence: EvidenceReferences::default(),
+                })
+            })
+            .collect();
+        assess_intended_edits(&events, intended)
+            .into_iter()
+            .map(|assessment| {
+                let legacy = |ids: &[EventId]| {
+                    ids.iter()
+                        .filter_map(|id| events.iter().find(|event| &event.event_id == id))
+                        .map(|event| event.representative.id)
+                        .collect()
+                };
+                LegacyAssessment {
+                    matched_event_ids: legacy(&assessment.matched_event_ids),
+                    unexpected_event_ids: legacy(&assessment.unexpected_event_ids),
+                    assessment,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn parse_rejects_invalid_intended_coordinates() {
+        for (start, end) in [(0, 1), (2, 1), (1, u64::MAX)] {
+            let table =
+                format!("seq_id\tstart\tend\tref\talt\tkind\nchr\t{start}\t{end}\t.\tT\tsnp\n");
+            assert!(parse_intended(&table).is_err());
+        }
+    }
 
     #[test]
     fn test_versioned_seq_id_from_genbank_matches_intended_edit() {
@@ -863,7 +1151,7 @@ mod tests {
             alt: ".".into(),
             kind: "del".into(),
         };
-        let assessments = assess_intended_edits(&[entry], &[edit]);
+        let assessments = assess_entries(&[entry], &[edit]);
         assert_eq!(assessments.len(), 1);
         assert_eq!(assessments[0].status, IntendedEditStatus::Complete);
         assert_eq!(assessments[0].matched_event_ids, vec![7]);
@@ -881,7 +1169,7 @@ mod tests {
             alt: "T".into(),
             kind: "snp".into(),
         };
-        let assessments = assess_intended_edits(&[entry], &[edit]);
+        let assessments = assess_entries(&[entry], &[edit]);
         assert_eq!(assessments.len(), 1);
         assert_eq!(assessments[0].status, IntendedEditStatus::Complete);
         assert_eq!(assessments[0].matched_event_ids, vec![42]);
@@ -899,7 +1187,7 @@ mod tests {
             alt: "T".into(),
             kind: "snp".into(),
         };
-        let assessments = assess_intended_edits(&[entry], &[edit]);
+        let assessments = assess_entries(&[entry], &[edit]);
         assert_eq!(assessments[0].status, IntendedEditStatus::Partial);
         assert_eq!(assessments[0].matched_event_ids, vec![10]);
         assert!(assessments[0].notes[0].contains("mismatched allele"));
@@ -917,7 +1205,7 @@ mod tests {
             alt: ".".into(),
             kind: "del".into(),
         };
-        let assessments = assess_intended_edits(&[entry], &[edit]);
+        let assessments = assess_entries(&[entry], &[edit]);
         assert_eq!(assessments[0].status, IntendedEditStatus::Complete);
         assert_eq!(assessments[0].matched_event_ids, vec![15]);
         assert_eq!(assessments[0].expected_size, Some(500));
@@ -938,7 +1226,7 @@ mod tests {
             alt: ".".into(),
             kind: "del".into(),
         };
-        let assessments = assess_intended_edits(&[entry], &[edit]);
+        let assessments = assess_entries(&[entry], &[edit]);
         assert_eq!(assessments[0].status, IntendedEditStatus::Partial);
         assert_eq!(assessments[0].matched_event_ids, vec![16]);
         assert_eq!(assessments[0].observed_size, Some(300));
@@ -957,7 +1245,7 @@ mod tests {
             alt: ".".into(),
             kind: "cassette".into(),
         };
-        let assessments = assess_intended_edits(&[jc1], &[edit]);
+        let assessments = assess_entries(&[jc1], &[edit]);
         assert_eq!(assessments[0].status, IntendedEditStatus::Partial);
         assert_eq!(assessments[0].matched_event_ids, vec![21]);
         assert!(assessments[0].notes[0].contains("single junction detected"));
@@ -976,9 +1264,11 @@ mod tests {
             alt: ".".into(),
             kind: "cassette".into(),
         };
-        let assessments = assess_intended_edits(&[jc1, jc2], &[edit]);
+        let assessments = assess_entries(&[jc1, jc2], &[edit]);
         assert_eq!(assessments[0].status, IntendedEditStatus::Complete);
-        assert_eq!(assessments[0].matched_event_ids, vec![31, 32]);
+        let mut ids = assessments[0].matched_event_ids.clone();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![31, 32]);
         assert!(assessments[0].left_boundary.as_ref().unwrap().passed);
         assert!(assessments[0].right_boundary.as_ref().unwrap().passed);
     }
@@ -997,7 +1287,7 @@ mod tests {
             alt: ".".into(),
             kind: "cassette".into(),
         };
-        let assessments = assess_intended_edits(&[jc1, jc2, jc3], &[edit]);
+        let assessments = assess_entries(&[jc1, jc2, jc3], &[edit]);
         assert_eq!(
             assessments[0].status,
             IntendedEditStatus::UnexpectedStructure
@@ -1019,7 +1309,7 @@ mod tests {
             alt: ".".into(),
             kind: "cassette".into(),
         };
-        let assessments = assess_intended_edits(&[jc1, jc2], &[edit]);
+        let assessments = assess_entries(&[jc1, jc2], &[edit]);
         assert_eq!(
             assessments[0].status,
             IntendedEditStatus::UnexpectedStructure
@@ -1042,7 +1332,7 @@ mod tests {
             alt: ".".into(),
             kind: "cassette".into(),
         };
-        let assessments = assess_intended_edits(&[jc_left, jc_right], &[edit]);
+        let assessments = assess_entries(&[jc_left, jc_right], &[edit]);
         assert_eq!(assessments[0].status, IntendedEditStatus::Complete);
         let left_b = assessments[0].left_boundary.as_ref().unwrap();
         assert_eq!(left_b.expected_pos, 1000);
@@ -1068,13 +1358,13 @@ mod tests {
             alt: "G".into(),
             kind: "snp".into(),
         };
-        let assessments = assess_intended_edits(&[], &[edit]);
+        let assessments = assess_entries(&[], &[edit]);
         assert_eq!(assessments[0].status, IntendedEditStatus::Missing);
         assert!(assessments[0].matched_event_ids.is_empty());
     }
 
     #[test]
-    fn test_aberrant_large_del_overlapping_target_yields_unexpected_structure() {
+    fn test_mc_only_does_not_create_differential_event() {
         // Target: clean deletion 334876..=335735 (860 bp)
         // Observed: 20 kb missing coverage MC from 331956 to 352202
         let mc = GdEntry::mc(903, "chr", 331956, 352202, 0, 0);
@@ -1087,13 +1377,9 @@ mod tests {
             alt: ".".into(),
             kind: "del".into(),
         };
-        let assessments = assess_intended_edits(&[mc], &[edit]);
-        assert_eq!(
-            assessments[0].status,
-            IntendedEditStatus::UnexpectedStructure
-        );
-        assert_eq!(assessments[0].unexpected_event_ids, vec![903]);
-        assert!(assessments[0].notes[0].contains("unexpected variant at deletion locus"));
+        let assessments = assess_entries(&[mc], &[edit]);
+        assert_eq!(assessments[0].status, IntendedEditStatus::Missing);
+        assert!(assessments[0].unexpected_event_ids.is_empty());
     }
 
     #[test]
@@ -1110,7 +1396,7 @@ mod tests {
             alt: ".".into(),
             kind: "del".into(),
         };
-        let assessments = assess_intended_edits(&[jc], &[edit]);
+        let assessments = assess_entries(&[jc], &[edit]);
         assert_eq!(
             assessments[0].status,
             IntendedEditStatus::UnexpectedStructure

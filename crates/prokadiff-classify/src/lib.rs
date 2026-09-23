@@ -4,8 +4,21 @@
 
 mod audit;
 mod classify;
+pub mod differential;
 mod homolog;
 mod intended;
+
+#[cfg(test)]
+mod m1_regression_tests;
+
+#[cfg(test)]
+mod m2_regression_tests;
+
+pub use differential::{
+    build_differential_events, CanonicalContig, CanonicalEvent, CanonicalJunctionSide,
+    DifferentialError, DifferentialEvent, DifferentialResultSet, EventId, EventIdCollisionGuard,
+    EvidenceKind, EvidenceReferences, GdEvidenceRef,
+};
 
 pub use audit::{
     build_audit_result, classify_is_family, find_gene_annotation, AnalysisProvenance,
@@ -17,7 +30,8 @@ pub use classify::{classify, ClassifiedMutation, ClassifyOptions, ClassifyResult
 pub use homolog::{scan_homologs, HomologSite, DEFAULT_MAX_MISMATCHES, DEFAULT_NEAR_DISTANCE};
 pub use intended::{
     assess_intended_edits, mask_intended, parse_intended, parse_intended_path, BoundaryAssessment,
-    IntendedEdit, IntendedEditAssessment, IntendedEditStatus, IntendedError,
+    EvidenceObservation, IntendedEdit, IntendedEditAssessment, IntendedEditStatus, IntendedError,
+    IntendedEventRelationship, IntendedEventRole, McDiagnostic,
 };
 pub use prokadiff_offtarget::{MutationOffTargetLink, OffTargetSite};
 
@@ -67,14 +81,15 @@ pub fn is_product_mutation(kind: GdKind) -> bool {
             | GdKind::Mob
             | GdKind::Amp
             | GdKind::Con
+            | GdKind::Inv
             | GdKind::Jc
     )
 }
 
-/// Structural (class 3): MOB/JC/AMP/CON, or DEL longer than the RA 2 bp subset.
+/// Structural (class 3): MOB/JC/AMP/CON/INV, or DEL longer than the RA 2 bp subset.
 pub fn is_structural(kind: GdKind, del_size: Option<u64>) -> bool {
     match kind {
-        GdKind::Mob | GdKind::Jc | GdKind::Amp | GdKind::Con => true,
+        GdKind::Mob | GdKind::Jc | GdKind::Amp | GdKind::Con | GdKind::Inv => true,
         GdKind::Del => del_size.is_some_and(|s| s > 2),
         _ => false,
     }
@@ -84,6 +99,39 @@ pub fn is_structural(kind: GdKind, del_size: Option<u64>) -> bool {
 mod tests {
     use super::*;
     use prokadiff_gd::{GdEntry, GenomeDiff};
+
+    fn classify(
+        edited: &GenomeDiff,
+        starter: &GenomeDiff,
+        intended: &[IntendedEdit],
+        refs: &[RefContig],
+        opts: &ClassifyOptions,
+    ) -> ClassifyResult {
+        let fallback_refs;
+        let effective_refs = if refs.is_empty()
+            && edited
+                .entries
+                .iter()
+                .chain(&starter.entries)
+                .any(|entry| is_product_mutation(entry.kind))
+        {
+            fallback_refs = vec![RefContig {
+                name: "chr".into(),
+                seq: b"ACGT".iter().copied().cycle().take(10_000).collect(),
+            }];
+            &fallback_refs
+        } else {
+            refs
+        };
+        super::classify(edited, starter, intended, effective_refs, opts)
+            .expect("test inputs must canonicalize")
+    }
+
+    #[test]
+    fn inv_pass_through() {
+        assert!(is_product_mutation(GdKind::Inv));
+        assert!(is_structural(GdKind::Inv, None));
+    }
 
     fn gd(entries: Vec<GdEntry>) -> GenomeDiff {
         GenomeDiff {
@@ -470,9 +518,11 @@ mod tests {
         let out = classify(&edited, &gd(vec![]), &[], &[], &cas9_opts(false));
         // MOB is structural (1), SNP is scattered_snv (1); jc_flank is subsumed and not duplicated
         assert_eq!(out.unintended.len(), 2);
-        assert_eq!(out.unintended[0].entry.kind, GdKind::Mob);
-        assert_eq!(out.unintended[0].class, MutationClass::Structural);
-        assert_eq!(out.unintended[1].entry.kind, GdKind::Snp);
-        assert_eq!(out.unintended[1].class, MutationClass::ScatteredSnv);
+        assert!(out.unintended.iter().any(|mutation| {
+            mutation.entry.kind == GdKind::Mob && mutation.class == MutationClass::Structural
+        }));
+        assert!(out.unintended.iter().any(|mutation| {
+            mutation.entry.kind == GdKind::Snp && mutation.class == MutationClass::ScatteredSnv
+        }));
     }
 }
