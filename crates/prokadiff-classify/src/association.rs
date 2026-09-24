@@ -41,6 +41,8 @@ pub struct CandidateSearchOutcome {
 pub enum AssociationProjectionError {
     #[error("association references unknown differential event {0}")]
     UnknownEventId(EventId),
+    #[error("association references unknown candidate site {0}")]
+    UnknownSiteId(String),
 }
 
 impl Default for CandidateSearchOutcome {

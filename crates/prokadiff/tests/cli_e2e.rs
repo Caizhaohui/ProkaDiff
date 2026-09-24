@@ -451,7 +451,7 @@ fn e2e_pipeline_synth_parent_child() {
     assert!(!lines.is_empty(), "unintended.tsv must have header");
     assert_eq!(
         lines[0],
-        "seq_id\tposition\tend\tgd_type\tref\talt\tclass\teditor\tpam_profile\tofftarget_mismatch\tdistance_to_site\tside2_seq_id\tside2_position"
+        "seq_id\tposition\tend\tgd_type\tref\talt\tclass\teditor\tpam_profile\tofftarget_mismatch\tdistance_to_site\tside2_seq_id\tside2_position\tevent_id"
     );
 
     // Historical SNPs (from historical_snps.txt) should NOT be in unintended.tsv
@@ -506,6 +506,13 @@ fn e2e_pipeline_synth_parent_child() {
         pev_content.contains("\tevidence\t"),
         "post_edit_variants.tsv must contain evidence column"
     );
+    assert!(
+        pev_content
+            .lines()
+            .next()
+            .is_some_and(|header| header.ends_with("\tevent_id")),
+        "post_edit_variants.tsv must expose the v2 EventId column"
+    );
 
     // Check edit_outcomes.tsv
     let edit_outcomes_tsv = outdir.join("edit_outcomes.tsv");
@@ -515,7 +522,7 @@ fn e2e_pipeline_synth_parent_child() {
     );
     let eo_content = std::fs::read_to_string(&edit_outcomes_tsv).unwrap();
     assert!(
-        eo_content.starts_with("edit_id\tkind\tseq_id\texpected_start\texpected_end\tstatus\tmatched_event_ids\tleft_boundary_status\tright_boundary_status\texpected_size\tobserved_size\tunexpected_events\tnotes"),
+        eo_content.starts_with("edit_id\tkind\tseq_id\texpected_start\texpected_end\tstatus\tmatched_event_ids\tleft_boundary_status\tright_boundary_status\texpected_size\tobserved_size\tunexpected_events\tnotes\tmatched_event_ids_dv1\tunexpected_event_ids_dv1"),
         "edit_outcomes.tsv must have correct header"
     );
     assert!(

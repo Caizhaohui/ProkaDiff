@@ -1,15 +1,16 @@
 use prokadiff_classify::{
     write_mutation_offtarget_links_tsv, write_offtarget_sites_tsv, AnalysisProvenance,
-    AnnotatedVariant, AuditResult, BoundaryAssessment, CandidateSearchStatus, ClassifiedMutation,
-    EventId, EvidenceObservation, EvidenceSummary, GeneAnnotation, GuideRelation,
-    IntendedEditAssessment, IntendedEditStatus, IntendedRelation, MobileElementAnnotation,
-    MutationClass, OriginStatus, RefContig, ReviewPriority, SampleMetadata, SizeClass,
+    AnnotatedVariant, AuditResult, AuditSummary, BoundaryAssessment, CandidateSearchStatus,
+    ClassifiedMutation, EventId, EvidenceObservation, EvidenceSummary, GeneAnnotation,
+    GuideRelation, IntendedEditAssessment, IntendedEditStatus, IntendedRelation,
+    MobileElementAnnotation, MutationClass, OriginStatus, RefContig, ReviewPriority,
+    SampleMetadata, SizeClass,
 };
 use prokadiff_gd::GdEntry;
 use prokadiff_offtarget::{BulgeType, OffTargetSite, Strand};
 use prokadiff_report::{
     write_edit_outcomes_tsv, write_markdown_report, write_post_edit_variants_tsv,
-    write_provenance_tsv, write_unintended_tsv,
+    write_provenance_tsv, write_unintended_tsv, SchemaVersion,
 };
 
 fn mock_sample() -> SampleMetadata {
@@ -37,6 +38,52 @@ fn mock_provenance(cfd_status: &str) -> AnalysisProvenance {
         hsu_scoring_status: "DISABLED_UNVALIDATED_ORACLE".into(),
         bulge_search_status: "EXACT_UNGAPPED".into(),
         run_timestamp: "2026-09-16T12:00:00Z".into(),
+    }
+}
+
+fn empty_audit() -> AuditResult {
+    AuditResult {
+        sample: mock_sample(),
+        intended_provided: false,
+        intended_edits: vec![],
+        intended_observed_event_ids: vec![],
+        starter_vs_reference: 0,
+        hypothesis_enabled: false,
+        event_index: std::collections::BTreeMap::new(),
+        event_display: std::collections::BTreeMap::new(),
+        unintended: vec![],
+        variants: vec![],
+        guide_sites: vec![],
+        variant_site_links: vec![],
+        associations: vec![],
+        candidate_search_status: CandidateSearchStatus::NotPerformed,
+        summary: AuditSummary {
+            intended_provided: false,
+            intended_declared: None,
+            intended_edits_complete: None,
+            intended_edits_partial: None,
+            intended_edits_missing: None,
+            intended_edits_unexpected: None,
+            intended_events_observed: None,
+            intended_status: None,
+            intended_missing: None,
+            starter_vs_reference: 0,
+            unintended_count: 0,
+            post_edit_variant_count: 0,
+            structural_count: 0,
+            near_homolog_count: 0,
+            scattered_snv_count: 0,
+            mobile_element_count: 0,
+            non_mobile_structural_count: 0,
+            candidate_offtarget_count: 0,
+            unassociated_small_count: 0,
+            high_attention_count: 0,
+            review_count: 0,
+            info_count: 0,
+            association_count: 0,
+            candidate_search_status: CandidateSearchStatus::NotPerformed,
+        },
+        provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     }
 }
 
@@ -87,6 +134,7 @@ fn test_fixture_1_clean_edit() {
     // 0 additional unintended variants, 1 intended
     let intended_var = AnnotatedVariant {
         variant_id: "VAR_0001".into(),
+        event_id: None,
         entry: GdEntry::del(1, "NC_000913.3", 100000, 1201),
         origin_status: OriginStatus::Intended,
         size_class: SizeClass::Structural,
@@ -104,10 +152,12 @@ fn test_fixture_1_clean_edit() {
         },
         review_priority: ReviewPriority::Info,
         legacy_class: None,
+        hypothesis: None,
     };
 
-    let audit = AuditResult {
+    let mut audit = AuditResult {
         sample: mock_sample(),
+        intended_provided: true,
         intended_edits: intended,
         variants: vec![intended_var],
         guide_sites: vec![],
@@ -115,9 +165,19 @@ fn test_fixture_1_clean_edit() {
         associations: vec![],
         candidate_search_status: CandidateSearchStatus::NotPerformed,
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
+        ..empty_audit()
     };
+    audit.summary.intended_provided = true;
+    audit.summary.intended_declared = Some(1);
+    audit.summary.intended_edits_complete = Some(1);
+    audit.summary.intended_edits_partial = Some(0);
+    audit.summary.intended_edits_missing = Some(0);
+    audit.summary.intended_edits_unexpected = Some(0);
+    audit.summary.intended_events_observed = Some(1);
+    audit.summary.intended_status = Some(prokadiff_classify::IntendedSummaryStatus::AllObserved);
+    audit.summary.intended_missing = Some(0);
 
-    write_markdown_report(&tmp_report, &audit, &mock_refs()).unwrap();
+    write_markdown_report(&tmp_report, &audit, SchemaVersion::V1).unwrap();
     let content = std::fs::read_to_string(&tmp_report).unwrap();
 
     assert!(content.contains("**Intended Edit Outcome: PASS**"));
@@ -169,8 +229,9 @@ fn test_fixture_2_partial_cassette() {
         notes: vec!["single junction detected (partial integration)".into()],
     }];
 
-    let audit = AuditResult {
+    let mut audit = AuditResult {
         sample: mock_sample(),
+        intended_provided: true,
         intended_edits: intended,
         variants: vec![],
         guide_sites: vec![],
@@ -178,9 +239,19 @@ fn test_fixture_2_partial_cassette() {
         associations: vec![],
         candidate_search_status: CandidateSearchStatus::NotPerformed,
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
+        ..empty_audit()
     };
+    audit.summary.intended_provided = true;
+    audit.summary.intended_declared = Some(1);
+    audit.summary.intended_edits_complete = Some(0);
+    audit.summary.intended_edits_partial = Some(1);
+    audit.summary.intended_edits_missing = Some(0);
+    audit.summary.intended_edits_unexpected = Some(0);
+    audit.summary.intended_events_observed = Some(1);
+    audit.summary.intended_status = Some(prokadiff_classify::IntendedSummaryStatus::Partial);
+    audit.summary.intended_missing = Some(0);
 
-    write_markdown_report(&tmp_report, &audit, &mock_refs()).unwrap();
+    write_markdown_report(&tmp_report, &audit, SchemaVersion::V1).unwrap();
     let content = std::fs::read_to_string(&tmp_report).unwrap();
 
     assert!(content.contains("**Intended Edit Outcome: PARTIAL**"));
@@ -196,6 +267,7 @@ fn test_fixture_3_mobile_element_insertion() {
 
     let is_var = AnnotatedVariant {
         variant_id: "VAR_0001".into(),
+        event_id: None,
         entry: GdEntry::mob(5, "NC_000913.3", 3445210, "IS1", "+", 9),
         origin_status: OriginStatus::PostEditDifferential,
         size_class: SizeClass::Structural,
@@ -219,6 +291,7 @@ fn test_fixture_3_mobile_element_insertion() {
         },
         review_priority: ReviewPriority::HighAttention,
         legacy_class: None,
+        hypothesis: None,
     };
 
     let audit = AuditResult {
@@ -230,9 +303,10 @@ fn test_fixture_3_mobile_element_insertion() {
         associations: vec![],
         candidate_search_status: CandidateSearchStatus::NotPerformed,
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
+        ..empty_audit()
     };
 
-    write_markdown_report(&tmp_report, &audit, &mock_refs()).unwrap();
+    write_markdown_report(&tmp_report, &audit, SchemaVersion::V1).unwrap();
     let content = std::fs::read_to_string(&tmp_report).unwrap();
 
     assert!(content.contains("Mobile element IS1 insertion (TSD=9bp)"));
@@ -248,6 +322,7 @@ fn test_fixture_4_candidate_offtarget() {
 
     let ot_var = AnnotatedVariant {
         variant_id: "VAR_0002".into(),
+        event_id: None,
         entry: GdEntry::snp(8, "NC_000913.3", 2135820, "G"),
         origin_status: OriginStatus::PostEditDifferential,
         size_class: SizeClass::Small,
@@ -270,6 +345,7 @@ fn test_fixture_4_candidate_offtarget() {
         },
         review_priority: ReviewPriority::Review,
         legacy_class: None,
+        hypothesis: None,
     };
 
     let audit = AuditResult {
@@ -281,9 +357,10 @@ fn test_fixture_4_candidate_offtarget() {
         associations: vec![],
         candidate_search_status: CandidateSearchStatus::PerformedWithCandidates,
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
+        ..empty_audit()
     };
 
-    write_markdown_report(&tmp_report, &audit, &mock_refs()).unwrap();
+    write_markdown_report(&tmp_report, &audit, SchemaVersion::V1).unwrap();
     let content = std::fs::read_to_string(&tmp_report).unwrap();
 
     assert!(content.contains("## 6. Candidate Guide-dependent Off-target Events"));
@@ -308,9 +385,10 @@ fn test_fixture_5_unvalidated_cfd_gate() {
         associations: vec![],
         candidate_search_status: CandidateSearchStatus::NotPerformed,
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
+        ..empty_audit()
     };
 
-    write_markdown_report(&tmp_report, &audit, &mock_refs()).unwrap();
+    write_markdown_report(&tmp_report, &audit, SchemaVersion::V1).unwrap();
     let content = std::fs::read_to_string(&tmp_report).unwrap();
 
     assert!(content.contains("CFD Scoring Unavailable"));
@@ -326,6 +404,7 @@ fn test_post_edit_variants_and_provenance_tsv() {
 
     let ot_var = AnnotatedVariant {
         variant_id: "VAR_0001".into(),
+        event_id: None,
         entry: GdEntry::snp(1, "NC_000913.3", 100, "T"),
         origin_status: OriginStatus::PostEditDifferential,
         size_class: SizeClass::Small,
@@ -348,6 +427,7 @@ fn test_post_edit_variants_and_provenance_tsv() {
         },
         review_priority: ReviewPriority::HighAttention,
         legacy_class: None,
+        hypothesis: None,
     };
 
     write_post_edit_variants_tsv(&tmp_var_tsv, &[ot_var], &mock_refs()).unwrap();
@@ -372,6 +452,7 @@ fn test_on_target_without_site_has_no_mechanistic_measurements() {
     let path = std::env::temp_dir().join("prokadiff_on_target_unmeasured.tsv");
     let variant = AnnotatedVariant {
         variant_id: "VAR_0001".into(),
+        event_id: None,
         entry: GdEntry::snp(1, "NC_000913.3", 3, "G"),
         origin_status: OriginStatus::Intended,
         size_class: SizeClass::Small,
@@ -383,6 +464,7 @@ fn test_on_target_without_site_has_no_mechanistic_measurements() {
         evidence: EvidenceSummary::unknown(),
         review_priority: ReviewPriority::Info,
         legacy_class: None,
+        hypothesis: None,
     };
 
     write_post_edit_variants_tsv(&path, &[variant], &mock_refs()).unwrap();
@@ -401,6 +483,7 @@ fn test_report_distinguishes_candidate_search_states() {
     let path = std::env::temp_dir().join("prokadiff_search_states_report.md");
     let variant = AnnotatedVariant {
         variant_id: "VAR_0001".into(),
+        event_id: None,
         entry: GdEntry::snp(1, "NC_000913.3", 3, "G"),
         origin_status: OriginStatus::PostEditDifferential,
         size_class: SizeClass::Small,
@@ -412,6 +495,7 @@ fn test_report_distinguishes_candidate_search_states() {
         evidence: EvidenceSummary::unknown(),
         review_priority: ReviewPriority::Review,
         legacy_class: Some(MutationClass::ScatteredSnv),
+        hypothesis: None,
     };
     let site = OffTargetSite {
         site_id: "SITE_000001".into(),
@@ -438,6 +522,7 @@ fn test_report_distinguishes_candidate_search_states() {
         associations: vec![],
         candidate_search_status: CandidateSearchStatus::NotPerformed,
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
+        ..empty_audit()
     };
 
     let cases = [
@@ -462,12 +547,18 @@ fn test_report_distinguishes_candidate_search_states() {
     ];
     for (status, section_text, distal_text, interpretation_text) in cases {
         audit.candidate_search_status = status;
+        audit.summary.candidate_search_status = status;
+        audit.summary.post_edit_variant_count = 1;
+        audit.summary.unintended_count = 1;
+        audit.summary.scattered_snv_count = 1;
+        audit.summary.unassociated_small_count = 1;
+        audit.summary.review_count = 1;
         audit.guide_sites = if status == CandidateSearchStatus::PerformedWithCandidates {
             vec![site.clone()]
         } else {
             vec![]
         };
-        write_markdown_report(&path, &audit, &mock_refs()).unwrap();
+        write_markdown_report(&path, &audit, SchemaVersion::V1).unwrap();
         let report = std::fs::read_to_string(&path).unwrap();
         assert!(report.contains(section_text));
         assert!(report.contains(distal_text));
@@ -483,6 +574,7 @@ fn test_gene_annotation_rendering_in_report_and_tsv() {
 
     let gene_var = AnnotatedVariant {
         variant_id: "VAR_0001".into(),
+        event_id: None,
         entry: GdEntry::snp(1, "NC_000913.3", 150, "C"),
         origin_status: OriginStatus::PostEditDifferential,
         size_class: SizeClass::Small,
@@ -506,9 +598,10 @@ fn test_gene_annotation_rendering_in_report_and_tsv() {
         },
         review_priority: ReviewPriority::Review,
         legacy_class: None,
+        hypothesis: None,
     };
 
-    let audit = AuditResult {
+    let mut audit = AuditResult {
         sample: mock_sample(),
         intended_edits: vec![],
         variants: vec![gene_var.clone()],
@@ -517,9 +610,15 @@ fn test_gene_annotation_rendering_in_report_and_tsv() {
         associations: vec![],
         candidate_search_status: CandidateSearchStatus::NotPerformed,
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
+        ..empty_audit()
     };
+    audit.summary.post_edit_variant_count = 1;
+    audit.summary.unintended_count = 1;
+    audit.summary.scattered_snv_count = 1;
+    audit.summary.unassociated_small_count = 1;
+    audit.summary.review_count = 1;
 
-    write_markdown_report(&tmp_report, &audit, &mock_refs()).unwrap();
+    write_markdown_report(&tmp_report, &audit, SchemaVersion::V1).unwrap();
     let rep_content = std::fs::read_to_string(&tmp_report).unwrap();
     assert!(rep_content.contains("dnaA (b0001) [CDS]"));
 
@@ -557,6 +656,7 @@ fn test_zero_candidate_fixture_renders_no_site_unknown_and_no_fabricated_rows() 
 
     let variant = AnnotatedVariant {
         variant_id: "VAR_0001".into(),
+        event_id: Some(test_event_id(1)),
         entry: snp_entry,
         origin_status: OriginStatus::PostEditDifferential,
         size_class: SizeClass::Small,
@@ -574,9 +674,10 @@ fn test_zero_candidate_fixture_renders_no_site_unknown_and_no_fabricated_rows() 
         },
         review_priority: ReviewPriority::Review,
         legacy_class: Some(MutationClass::ScatteredSnv),
+        hypothesis: None,
     };
 
-    let audit = AuditResult {
+    let mut audit = AuditResult {
         sample: mock_sample(),
         intended_edits: vec![],
         variants: vec![variant],
@@ -585,13 +686,20 @@ fn test_zero_candidate_fixture_renders_no_site_unknown_and_no_fabricated_rows() 
         associations: vec![],
         candidate_search_status: CandidateSearchStatus::PerformedNoCandidates,
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
+        ..empty_audit()
     };
+    audit.summary.post_edit_variant_count = 1;
+    audit.summary.unintended_count = 1;
+    audit.summary.scattered_snv_count = 1;
+    audit.summary.unassociated_small_count = 1;
+    audit.summary.review_count = 1;
+    audit.summary.candidate_search_status = CandidateSearchStatus::PerformedNoCandidates;
 
     // Render the four real output surfaces
     write_offtarget_sites_tsv(&audit.guide_sites, &offtarget_path).unwrap();
     write_mutation_offtarget_links_tsv(&audit.variant_site_links, &links_path).unwrap();
     write_unintended_tsv(&unintended_path, &[classified_mut], "cas9", false, &refs).unwrap();
-    write_markdown_report(&report_path, &audit, &refs).unwrap();
+    write_markdown_report(&report_path, &audit, SchemaVersion::V1).unwrap();
 
     let offtarget_content = std::fs::read_to_string(&offtarget_path).unwrap();
     let links_content = std::fs::read_to_string(&links_path).unwrap();

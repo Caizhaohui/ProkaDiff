@@ -1,0 +1,2 @@
+site_id	seq_id	start	end	strand	target_seq	pam	mismatches	bulge_type	bulge_size	search_backend	cfd_score	hsu_score
+SITE_000001	chr	18	22	+	ACGTAGG	AGG	1	DNA	1	rust_bulge	0.5000	NA

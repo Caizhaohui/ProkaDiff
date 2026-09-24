@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use prokadiff_gd::{GdEntry, GdKind};
 use prokadiff_offtarget::{MutationOffTargetLink, OffTargetSite};
@@ -232,6 +232,7 @@ pub struct GeneAnnotation {
 #[derive(Clone, Debug)]
 pub struct AnnotatedVariant {
     pub variant_id: String, // E.g. "VAR_0001"
+    pub event_id: Option<EventId>,
     pub entry: GdEntry,
 
     pub origin_status: OriginStatus,
@@ -247,6 +248,60 @@ pub struct AnnotatedVariant {
     pub review_priority: ReviewPriority,
 
     pub legacy_class: Option<MutationClass>,
+    pub hypothesis: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventDisplay {
+    pub unintended_reference: String,
+    pub unintended_alternate: String,
+    pub variant_reference: String,
+    pub variant_alternate: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntendedSummaryStatus {
+    AllObserved,
+    Partial,
+    NoneObserved,
+}
+
+impl IntendedSummaryStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AllObserved => "all_observed",
+            Self::Partial => "partial",
+            Self::NoneObserved => "none_observed",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AuditSummary {
+    pub intended_provided: bool,
+    pub intended_declared: Option<usize>,
+    pub intended_edits_complete: Option<usize>,
+    pub intended_edits_partial: Option<usize>,
+    pub intended_edits_missing: Option<usize>,
+    pub intended_edits_unexpected: Option<usize>,
+    pub intended_events_observed: Option<usize>,
+    pub intended_status: Option<IntendedSummaryStatus>,
+    pub intended_missing: Option<usize>,
+    pub starter_vs_reference: usize,
+    pub unintended_count: usize,
+    pub post_edit_variant_count: usize,
+    pub structural_count: usize,
+    pub near_homolog_count: usize,
+    pub scattered_snv_count: usize,
+    pub mobile_element_count: usize,
+    pub non_mobile_structural_count: usize,
+    pub candidate_offtarget_count: usize,
+    pub unassociated_small_count: usize,
+    pub high_attention_count: usize,
+    pub review_count: usize,
+    pub info_count: usize,
+    pub association_count: usize,
+    pub candidate_search_status: CandidateSearchStatus,
 }
 
 /// Metadata about the analyzed sample and run context.
@@ -303,16 +358,23 @@ pub struct AnalysisProvenance {
 #[derive(Clone, Debug)]
 pub struct AuditResult {
     pub sample: SampleMetadata,
+    pub intended_provided: bool,
     pub intended_edits: Vec<IntendedEditAssessment>,
+    pub intended_observed_event_ids: Vec<EventId>,
+    pub starter_vs_reference: usize,
+    pub hypothesis_enabled: bool,
+    pub event_index: BTreeMap<EventId, DifferentialEvent>,
+    pub event_display: BTreeMap<EventId, EventDisplay>,
+    pub unintended: Vec<ClassifiedMutation>,
     pub variants: Vec<AnnotatedVariant>,
     pub guide_sites: Vec<OffTargetSite>,
     pub variant_site_links: Vec<MutationOffTargetLink>,
     pub associations: Vec<MutationSiteAssociation>,
     pub candidate_search_status: CandidateSearchStatus,
+    pub summary: AuditSummary,
     pub provenance: AnalysisProvenance,
 }
 
-/// Build a unified `AuditResult` from the classified mutations and intended assessments.
 #[allow(clippy::too_many_arguments)]
 pub fn build_audit_result(
     sample: SampleMetadata,
@@ -326,6 +388,93 @@ pub fn build_audit_result(
     provenance: AnalysisProvenance,
     features: &[AnnotatedFeature],
 ) -> Result<AuditResult, AssociationProjectionError> {
+    let intended_provided = !intended_assessments.is_empty();
+    build_complete_audit_result(
+        sample,
+        intended_provided,
+        intended_assessments,
+        intended_observed.to_vec(),
+        0,
+        false,
+        unintended_mutations,
+        differential_events,
+        guide_sites,
+        associations,
+        candidate_search_status,
+        provenance,
+        features,
+        &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_complete_audit_result(
+    sample: SampleMetadata,
+    intended_provided: bool,
+    intended_assessments: Vec<IntendedEditAssessment>,
+    intended_observed_event_ids: Vec<EventId>,
+    starter_vs_reference: usize,
+    hypothesis_enabled: bool,
+    unintended_mutations: &[ClassifiedMutation],
+    differential_events: &[DifferentialEvent],
+    guide_sites: &[OffTargetSite],
+    associations: &[MutationSiteAssociation],
+    candidate_search_status: CandidateSearchStatus,
+    provenance: AnalysisProvenance,
+    features: &[AnnotatedFeature],
+    refs: &[crate::RefContig],
+) -> Result<AuditResult, AssociationProjectionError> {
+    let event_index: BTreeMap<EventId, DifferentialEvent> = differential_events
+        .iter()
+        .map(|event| (event.event_id.clone(), event.clone()))
+        .collect();
+    let event_display: BTreeMap<EventId, EventDisplay> = differential_events
+        .iter()
+        .map(|event| {
+            (
+                event.event_id.clone(),
+                resolve_event_display(&event.representative, refs),
+            )
+        })
+        .collect();
+    for event_id in intended_observed_event_ids
+        .iter()
+        .chain(intended_assessments.iter().flat_map(|assessment| {
+            assessment
+                .event_relationships
+                .iter()
+                .map(|relationship| &relationship.event_id)
+                .chain(assessment.matched_event_ids.iter())
+                .chain(assessment.unexpected_event_ids.iter())
+        }))
+    {
+        if !event_index.contains_key(event_id) {
+            return Err(AssociationProjectionError::UnknownEventId(event_id.clone()));
+        }
+    }
+    for event_id in unintended_mutations
+        .iter()
+        .filter_map(|mutation| mutation.event_id.as_ref())
+    {
+        if !event_index.contains_key(event_id) {
+            return Err(AssociationProjectionError::UnknownEventId(event_id.clone()));
+        }
+    }
+    for association in associations {
+        if !event_index.contains_key(&association.event_id) {
+            return Err(AssociationProjectionError::UnknownEventId(
+                association.event_id.clone(),
+            ));
+        }
+        if !guide_sites
+            .iter()
+            .any(|site| site.site_id == association.site_id)
+        {
+            return Err(AssociationProjectionError::UnknownSiteId(
+                association.site_id.clone(),
+            ));
+        }
+    }
     let mut variants = Vec::new();
     let mut id_counter = 1usize;
 
@@ -344,7 +493,7 @@ pub fn build_audit_result(
         .collect();
 
     // 1. Process intended observed variants
-    for event_id in intended_observed {
+    for event_id in &intended_observed_event_ids {
         let Some(event) = differential_events
             .iter()
             .find(|event| &event.event_id == event_id)
@@ -369,6 +518,7 @@ pub fn build_audit_result(
 
         variants.push(AnnotatedVariant {
             variant_id: format!("VAR_{id_counter:04}"),
+            event_id: Some(event_id.clone()),
             entry: entry.clone(),
             origin_status: OriginStatus::Intended,
             size_class,
@@ -380,6 +530,7 @@ pub fn build_audit_result(
             evidence,
             review_priority: ReviewPriority::Info,
             legacy_class: None,
+            hypothesis: None,
         });
         id_counter += 1;
     }
@@ -461,6 +612,7 @@ pub fn build_audit_result(
 
         variants.push(AnnotatedVariant {
             variant_id: format!("VAR_{id_counter:04}"),
+            event_id: cm.event_id.clone(),
             entry: entry.clone(),
             origin_status,
             size_class,
@@ -472,23 +624,312 @@ pub fn build_audit_result(
             evidence,
             review_priority,
             legacy_class: Some(cm.class),
+            hypothesis: cm.hypothesis.clone(),
         });
         id_counter += 1;
     }
 
     let variant_site_links =
         crate::association::project_associations_to_links(associations, differential_events)?;
+    let summary = build_summary(AuditSummaryInput {
+        intended_provided,
+        intended_edits: &intended_assessments,
+        intended_observed_event_ids: &intended_observed_event_ids,
+        starter_vs_reference,
+        unintended: unintended_mutations,
+        variants: &variants,
+        association_count: associations.len(),
+        candidate_search_status,
+    });
 
     Ok(AuditResult {
         sample,
+        intended_provided,
         intended_edits: intended_assessments,
+        intended_observed_event_ids,
+        starter_vs_reference,
+        hypothesis_enabled,
+        event_index,
+        event_display,
+        unintended: unintended_mutations.to_vec(),
         variants,
         guide_sites: guide_sites.to_vec(),
         variant_site_links,
         associations: associations.to_vec(),
         candidate_search_status,
+        summary,
         provenance,
     })
+}
+
+struct AuditSummaryInput<'a> {
+    intended_provided: bool,
+    intended_edits: &'a [IntendedEditAssessment],
+    intended_observed_event_ids: &'a [EventId],
+    starter_vs_reference: usize,
+    unintended: &'a [ClassifiedMutation],
+    variants: &'a [AnnotatedVariant],
+    association_count: usize,
+    candidate_search_status: CandidateSearchStatus,
+}
+
+fn build_summary(input: AuditSummaryInput<'_>) -> AuditSummary {
+    let AuditSummaryInput {
+        intended_provided,
+        intended_edits,
+        intended_observed_event_ids,
+        starter_vs_reference,
+        unintended,
+        variants,
+        association_count,
+        candidate_search_status,
+    } = input;
+    let (
+        intended_declared,
+        intended_edits_complete,
+        intended_edits_partial,
+        intended_edits_missing,
+        intended_edits_unexpected,
+        intended_events_observed,
+        intended_status,
+        intended_missing,
+    ) = if !intended_provided {
+        (None, None, None, None, None, None, None, None)
+    } else {
+        let declared = intended_edits.len();
+        let complete = intended_edits
+            .iter()
+            .filter(|assessment| assessment.status == crate::IntendedEditStatus::Complete)
+            .count();
+        let partial = intended_edits
+            .iter()
+            .filter(|assessment| assessment.status == crate::IntendedEditStatus::Partial)
+            .count();
+        let missing = intended_edits
+            .iter()
+            .filter(|assessment| assessment.status == crate::IntendedEditStatus::Missing)
+            .count();
+        let unexpected = intended_edits
+            .iter()
+            .filter(|assessment| {
+                assessment.status == crate::IntendedEditStatus::UnexpectedStructure
+            })
+            .count();
+        let observed = intended_observed_event_ids.len();
+        let status = if declared == 0 {
+            None
+        } else if intended_edits
+            .iter()
+            .all(|assessment| assessment.status == crate::IntendedEditStatus::Complete)
+        {
+            Some(IntendedSummaryStatus::AllObserved)
+        } else if intended_edits
+            .iter()
+            .all(|assessment| assessment.status == crate::IntendedEditStatus::Missing)
+        {
+            Some(IntendedSummaryStatus::NoneObserved)
+        } else {
+            Some(IntendedSummaryStatus::Partial)
+        };
+        (
+            Some(declared),
+            Some(complete),
+            Some(partial),
+            Some(missing),
+            Some(unexpected),
+            Some(observed),
+            status,
+            (declared != 0).then_some(declared.saturating_sub(observed)),
+        )
+    };
+    let structural_count = unintended
+        .iter()
+        .filter(|mutation| mutation.class == MutationClass::Structural)
+        .count();
+    let near_homolog_count = unintended
+        .iter()
+        .filter(|mutation| mutation.class == MutationClass::NearHomolog)
+        .count();
+    let scattered_snv_count = unintended
+        .iter()
+        .filter(|mutation| mutation.class == MutationClass::ScatteredSnv)
+        .count();
+    let post_edit: Vec<&AnnotatedVariant> = variants
+        .iter()
+        .filter(|variant| variant.origin_status == OriginStatus::PostEditDifferential)
+        .collect();
+    AuditSummary {
+        intended_provided,
+        intended_declared,
+        intended_edits_complete,
+        intended_edits_partial,
+        intended_edits_missing,
+        intended_edits_unexpected,
+        intended_events_observed,
+        intended_status,
+        intended_missing,
+        starter_vs_reference,
+        unintended_count: unintended.len(),
+        post_edit_variant_count: post_edit.len(),
+        structural_count,
+        near_homolog_count,
+        scattered_snv_count,
+        mobile_element_count: post_edit
+            .iter()
+            .filter(|variant| variant.entry.kind == GdKind::Mob)
+            .count(),
+        non_mobile_structural_count: post_edit
+            .iter()
+            .filter(|variant| {
+                variant.size_class == SizeClass::Structural && variant.entry.kind != GdKind::Mob
+            })
+            .count(),
+        candidate_offtarget_count: post_edit
+            .iter()
+            .filter(|variant| {
+                matches!(
+                    variant.guide_relation,
+                    GuideRelation::CandidateOffTarget { .. }
+                )
+            })
+            .count(),
+        unassociated_small_count: post_edit
+            .iter()
+            .filter(|variant| {
+                variant.size_class == SizeClass::Small
+                    && matches!(variant.guide_relation, GuideRelation::None)
+            })
+            .count(),
+        high_attention_count: post_edit
+            .iter()
+            .filter(|variant| variant.review_priority == ReviewPriority::HighAttention)
+            .count(),
+        review_count: post_edit
+            .iter()
+            .filter(|variant| variant.review_priority == ReviewPriority::Review)
+            .count(),
+        info_count: post_edit
+            .iter()
+            .filter(|variant| variant.review_priority == ReviewPriority::Info)
+            .count(),
+        association_count,
+        candidate_search_status,
+    }
+}
+
+fn resolve_event_display(entry: &GdEntry, refs: &[crate::RefContig]) -> EventDisplay {
+    let seq_id = entry.seq_id().unwrap_or("");
+    let pos = entry.position().unwrap_or(0);
+    let genomic_reference = |size: usize| {
+        if pos == 0 {
+            return ".".to_string();
+        }
+        refs.iter()
+            .find(|contig| contig.name == seq_id)
+            .and_then(|contig| {
+                let start = (pos - 1) as usize;
+                (start < contig.seq.len()).then(|| {
+                    contig.seq[start..(start + size).min(contig.seq.len())]
+                        .iter()
+                        .map(|base| (*base as char).to_ascii_uppercase())
+                        .collect()
+                })
+            })
+            .unwrap_or_else(|| ".".to_string())
+    };
+    let (unintended_reference, unintended_alternate) = match entry.kind {
+        GdKind::Snp => (
+            genomic_reference(1),
+            entry
+                .fields
+                .get(2)
+                .cloned()
+                .unwrap_or_else(|| ".".to_string()),
+        ),
+        GdKind::Sub => (
+            genomic_reference(
+                entry
+                    .fields
+                    .get(2)
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(1),
+            ),
+            entry
+                .fields
+                .get(3)
+                .cloned()
+                .unwrap_or_else(|| ".".to_string()),
+        ),
+        GdKind::Ins => (
+            ".".to_string(),
+            entry
+                .fields
+                .get(2)
+                .cloned()
+                .unwrap_or_else(|| ".".to_string()),
+        ),
+        _ => (".".to_string(), ".".to_string()),
+    };
+    let (variant_reference, variant_alternate) = match entry.kind {
+        GdKind::Snp => (
+            genomic_reference(1),
+            entry
+                .fields
+                .get(2)
+                .cloned()
+                .unwrap_or_else(|| ".".to_string()),
+        ),
+        GdKind::Sub => (
+            entry
+                .fields
+                .get(2)
+                .cloned()
+                .unwrap_or_else(|| ".".to_string()),
+            entry
+                .fields
+                .get(3)
+                .cloned()
+                .unwrap_or_else(|| ".".to_string()),
+        ),
+        GdKind::Ins => (
+            ".".to_string(),
+            entry
+                .fields
+                .get(2)
+                .cloned()
+                .unwrap_or_else(|| ".".to_string()),
+        ),
+        GdKind::Del => (
+            entry
+                .fields
+                .get(2)
+                .map_or_else(|| ".".to_string(), |size| format!("{size}bp")),
+            "none".to_string(),
+        ),
+        GdKind::Mob => (
+            "none".to_string(),
+            entry
+                .fields
+                .get(2)
+                .cloned()
+                .unwrap_or_else(|| "IS".to_string()),
+        ),
+        GdKind::Jc => (
+            "none".to_string(),
+            format!(
+                "{}:{}",
+                entry.fields.get(3).map_or(".", String::as_str),
+                entry.fields.get(4).map_or(".", String::as_str)
+            ),
+        ),
+        _ => (".".to_string(), ".".to_string()),
+    };
+    EventDisplay {
+        unintended_reference,
+        unintended_alternate,
+        variant_reference,
+        variant_alternate,
+    }
 }
 
 fn classify_size(kind: &GdKind, entry: &GdEntry) -> SizeClass {
@@ -874,6 +1315,22 @@ mod tests {
             target_seq: "GAGTCCGAGCAGAAGAAGAA".into(),
             association_window: 50,
         };
+        let site = prokadiff_offtarget::OffTargetSite {
+            site_id: "SITE_000042".into(),
+            seq_id: "chr".into(),
+            start: 100,
+            end: 123,
+            strand: prokadiff_offtarget::Strand::Plus,
+            guide: "GAGTCCGAGCAGAAGAAGAA".into(),
+            target_seq: "GAGTCCGAGCAGAAGAAGAACGG".into(),
+            pam: "CGG".into(),
+            mismatches: 1,
+            bulge_type: prokadiff_offtarget::BulgeType::None,
+            bulge_size: 0,
+            search_backend: "rust_exact".into(),
+            cfd_score: None,
+            hsu_score: None,
+        };
 
         let audit = build_audit_result(
             sample,
@@ -881,7 +1338,7 @@ mod tests {
             &[unintended_cm],
             &[],
             &[event],
-            &[],
+            &[site],
             &[real_assoc],
             CandidateSearchStatus::PerformedWithCandidates,
             prov,

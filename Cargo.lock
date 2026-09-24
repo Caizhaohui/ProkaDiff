@@ -580,6 +580,7 @@ dependencies = [
  "prokadiff-classify",
  "prokadiff-gd",
  "prokadiff-offtarget",
+ "thiserror",
 ]
 
 [[package]]

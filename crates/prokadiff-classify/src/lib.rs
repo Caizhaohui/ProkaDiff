@@ -33,10 +33,11 @@ pub use association::{
     MutationSiteAssociation, DEFAULT_MAX_MISMATCHES, DEFAULT_NEAR_DISTANCE,
 };
 pub use audit::{
-    build_audit_result, classify_is_family, find_gene_annotation, AnalysisProvenance,
-    AnnotatedFeature, AnnotatedVariant, AuditResult, EvidenceSummary, GeneAnnotation,
-    GuideRelation, IntendedRelation, MobileElementAnnotation, OriginStatus, RepeatAnnotation,
-    ReviewPriority, SampleMetadata, SizeClass, ValidationStatus,
+    build_audit_result, build_complete_audit_result, classify_is_family, find_gene_annotation,
+    AnalysisProvenance, AnnotatedFeature, AnnotatedVariant, AuditResult, AuditSummary,
+    EventDisplay, EvidenceSummary, GeneAnnotation, GuideRelation, IntendedRelation,
+    IntendedSummaryStatus, MobileElementAnnotation, OriginStatus, RepeatAnnotation, ReviewPriority,
+    SampleMetadata, SizeClass, ValidationStatus,
 };
 pub use classify::{classify, ClassifiedMutation, ClassifyOptions, ClassifyResult, MutationClass};
 pub use geometry::{

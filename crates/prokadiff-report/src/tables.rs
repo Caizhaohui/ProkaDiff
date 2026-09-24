@@ -3,9 +3,11 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use prokadiff_classify::{
-    AnalysisProvenance, AnnotatedVariant, EventId, IntendedEditAssessment, RefContig,
+    AnalysisProvenance, AnnotatedVariant, AuditResult, EventId, IntendedEditAssessment, RefContig,
 };
 use prokadiff_gd::GdKind;
+
+use crate::{event_display, SchemaVersion};
 
 /// Write the per-edit outcome verification audit table (`edit_outcomes.tsv`).
 pub fn write_edit_outcomes_tsv(
@@ -125,6 +127,103 @@ pub fn write_edit_outcomes_tsv(
     Ok(())
 }
 
+pub(crate) fn write_edit_outcomes_from_audit(
+    path: impl AsRef<Path>,
+    audit: &AuditResult,
+    schema_version: SchemaVersion,
+) -> std::io::Result<()> {
+    let legacy_ids: Vec<(EventId, u32)> = audit
+        .event_index
+        .values()
+        .map(|event| (event.event_id.clone(), event.representative.id))
+        .collect();
+    if !schema_version.is_v2() {
+        return write_edit_outcomes_tsv(path, &audit.intended_edits, &legacy_ids);
+    }
+    let mut w = BufWriter::new(File::create(path)?);
+    writeln!(
+        w,
+        "edit_id\tkind\tseq_id\texpected_start\texpected_end\tstatus\tmatched_event_ids\tleft_boundary_status\tright_boundary_status\texpected_size\tobserved_size\tunexpected_events\tnotes\tmatched_event_ids_dv1\tunexpected_event_ids_dv1"
+    )?;
+    for assessment in &audit.intended_edits {
+        let legacy_id = |event_id: &EventId| -> std::io::Result<String> {
+            audit
+                .event_index
+                .get(event_id)
+                .map(|event| event.representative.id.to_string())
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("missing differential event {event_id}"),
+                    )
+                })
+        };
+        let legacy_list = |event_ids: &[EventId]| -> std::io::Result<String> {
+            if event_ids.is_empty() {
+                Ok("NONE".to_string())
+            } else {
+                event_ids
+                    .iter()
+                    .map(legacy_id)
+                    .collect::<std::io::Result<Vec<_>>>()
+                    .map(|ids| ids.join(","))
+            }
+        };
+        let dv1_list = |event_ids: &[EventId]| {
+            if event_ids.is_empty() {
+                "NONE".to_string()
+            } else {
+                event_ids
+                    .iter()
+                    .map(EventId::as_str)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            }
+        };
+        let left_status = boundary_status(assessment.left_boundary.as_ref());
+        let right_status = boundary_status(assessment.right_boundary.as_ref());
+        let expected_size = assessment
+            .expected_size
+            .map_or_else(|| "NA".to_string(), |size| size.to_string());
+        let observed_size = assessment
+            .observed_size
+            .map_or_else(|| "NA".to_string(), |size| size.to_string());
+        let notes = if assessment.notes.is_empty() {
+            "NONE".to_string()
+        } else {
+            assessment.notes.join("; ")
+        };
+        writeln!(
+            w,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            assessment.edit_id,
+            assessment.kind,
+            assessment.seq_id,
+            assessment.expected_start,
+            assessment.expected_end,
+            assessment.status.as_str().to_ascii_uppercase(),
+            legacy_list(&assessment.matched_event_ids)?,
+            left_status,
+            right_status,
+            expected_size,
+            observed_size,
+            legacy_list(&assessment.unexpected_event_ids)?,
+            notes,
+            dv1_list(&assessment.matched_event_ids),
+            dv1_list(&assessment.unexpected_event_ids),
+        )?;
+    }
+    w.flush()
+}
+
+fn boundary_status(boundary: Option<&prokadiff_classify::BoundaryAssessment>) -> String {
+    match boundary {
+        Some(boundary) if boundary.passed => "PASS".to_string(),
+        Some(boundary) => format!("FAIL({}bp)", boundary.diff_bp),
+        None => "NA".to_string(),
+    }
+}
+
 /// Write the unified multi-dimensionally annotated variants table (`post_edit_variants.tsv`).
 pub fn write_post_edit_variants_tsv(
     path: impl AsRef<Path>,
@@ -213,6 +312,166 @@ pub fn write_post_edit_variants_tsv(
 
     w.flush()?;
     Ok(())
+}
+
+pub(crate) fn write_post_edit_variants_from_audit(
+    path: impl AsRef<Path>,
+    audit: &AuditResult,
+    schema_version: SchemaVersion,
+) -> std::io::Result<()> {
+    let mut w = BufWriter::new(File::create(path)?);
+    write!(
+        w,
+        "variant_id\tseq_id\tposition\tend\tgd_type\tref\talt\torigin_status\tintended_relation\tsize_class\treview_priority\tguide_relation\tguide_mismatches\tpam\tdist_to_site\tmobile_element\tevidence\tgene\tlocus_tag\tfeature_type\tlegacy_class"
+    )?;
+    if schema_version.is_v2() {
+        write!(w, "\tevent_id")?;
+    }
+    writeln!(w)?;
+    for variant in &audit.variants {
+        write_variant_row_from_audit(&mut w, audit, variant)?;
+        if schema_version.is_v2() {
+            write!(
+                w,
+                "\t{}",
+                variant.event_id.as_ref().map_or("NA", EventId::as_str)
+            )?;
+        }
+        writeln!(w)?;
+    }
+    w.flush()
+}
+
+fn write_variant_row_from_audit(
+    w: &mut impl Write,
+    audit: &AuditResult,
+    variant: &AnnotatedVariant,
+) -> std::io::Result<()> {
+    let (seq_id, pos, end) = variant_coords(variant);
+    let display = event_display(audit, variant.event_id.as_ref())?;
+    let (guide_relation, mismatches, pam, distance) = match &variant.guide_relation {
+        prokadiff_classify::GuideRelation::None => {
+            ("NONE", "NA".to_string(), "NA".to_string(), "NA".to_string())
+        }
+        prokadiff_classify::GuideRelation::OnTarget => (
+            "ON_TARGET",
+            "NA".to_string(),
+            "NA".to_string(),
+            "NA".to_string(),
+        ),
+        prokadiff_classify::GuideRelation::CandidateOffTarget {
+            spacer_mismatches,
+            pam,
+            distance_to_site,
+            ..
+        } => (
+            "CANDIDATE_OFF_TARGET",
+            spacer_mismatches.to_string(),
+            pam.clone(),
+            distance_to_site.to_string(),
+        ),
+    };
+    let mobile_element = match &variant.mobile_element_relation {
+        Some(annotation) => {
+            let name = annotation.element_name.as_deref().unwrap_or("IS");
+            let duplication = annotation
+                .target_site_duplication
+                .as_deref()
+                .unwrap_or("none");
+            format!("{name}(TSD={duplication})")
+        }
+        None => "NONE".to_string(),
+    };
+    let (gene, locus_tag, feature_type) = match &variant.gene_annotation {
+        Some(annotation) => (
+            annotation.gene_name.as_deref().unwrap_or("NA"),
+            annotation.locus_tag.as_deref().unwrap_or("NA"),
+            annotation.feature_type.as_str(),
+        ),
+        None => ("NA", "NA", "NA"),
+    };
+    let legacy_class = variant.legacy_class.map_or("none", |class| class.as_str());
+    write!(
+        w,
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        variant.variant_id,
+        seq_id,
+        pos,
+        end,
+        variant.entry.kind.as_str(),
+        display.variant_reference,
+        display.variant_alternate,
+        variant.origin_status.as_str(),
+        variant.intended_relation.as_str(),
+        variant.size_class.as_str(),
+        variant.review_priority.as_str(),
+        guide_relation,
+        mismatches,
+        pam,
+        distance,
+        mobile_element,
+        variant.evidence.format_brief(),
+        gene,
+        locus_tag,
+        feature_type,
+        legacy_class,
+    )
+}
+
+pub(crate) fn write_mutation_offtarget_links_from_audit(
+    path: impl AsRef<Path>,
+    audit: &AuditResult,
+    schema_version: SchemaVersion,
+) -> std::io::Result<()> {
+    if !schema_version.is_v2() {
+        return prokadiff_classify::write_mutation_offtarget_links_tsv(
+            &audit.variant_site_links,
+            path,
+        );
+    }
+    let mut w = BufWriter::new(File::create(path)?);
+    writeln!(
+        w,
+        "mutation_id\tsite_id\tmutation_type\tmutation_position\tsite_start\tsite_end\tdistance_to_site\tmismatches\tpam\tcfd_score\tassociation_window\tevent_id\tjunction_side\tsearch_backend\tbulge_type\tbulge_size"
+    )?;
+    for association in &audit.associations {
+        let event = audit
+            .event_index
+            .get(&association.event_id)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("missing differential event {}", association.event_id),
+                )
+            })?;
+        let junction_side = association
+            .junction_side
+            .map_or("NA", prokadiff_classify::JunctionSideTag::as_str);
+        let cfd_score = association
+            .cfd_score
+            .map_or_else(|| "NA".to_string(), |score| format!("{score:.4}"));
+        writeln!(
+            w,
+            "mut_{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            event.representative.id,
+            association.site_id,
+            association.mutation_type,
+            association.mutation_position,
+            association.site_start,
+            association.site_end,
+            association.distance_to_site,
+            association.mismatches,
+            association.pam,
+            cfd_score,
+            association.association_window,
+            association.event_id,
+            junction_side,
+            association.search_backend,
+            association.bulge_type,
+            association.bulge_size,
+        )?;
+    }
+    w.flush()
 }
 
 /// Write technical provenance information (`provenance.tsv`).
@@ -409,6 +668,7 @@ mod tests {
         let variants = vec![
             AnnotatedVariant {
                 variant_id: "VAR_0001".into(),
+                event_id: None,
                 entry: GdEntry::snp(1, "chr", 3, "T"),
                 origin_status: OriginStatus::PostEditDifferential,
                 size_class: SizeClass::Small,
@@ -426,9 +686,11 @@ mod tests {
                 },
                 review_priority: ReviewPriority::Info,
                 legacy_class: None,
+                hypothesis: None,
             },
             AnnotatedVariant {
                 variant_id: "VAR_0002".into(),
+                event_id: None,
                 entry: GdEntry::del(2, "chr", 4, 2),
                 origin_status: OriginStatus::PostEditDifferential,
                 size_class: SizeClass::Small,
@@ -446,6 +708,7 @@ mod tests {
                 },
                 review_priority: ReviewPriority::Info,
                 legacy_class: None,
+                hypothesis: None,
             },
         ];
 

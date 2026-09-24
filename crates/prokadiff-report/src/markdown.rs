@@ -3,16 +3,17 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use prokadiff_classify::{
-    AnnotatedVariant, AuditResult, CandidateSearchStatus, GuideRelation, IntendedEditStatus,
-    OriginStatus, RefContig, ReviewPriority, SizeClass,
+    AnnotatedVariant, AuditResult, CandidateSearchStatus, GuideRelation, OriginStatus, SizeClass,
 };
 use prokadiff_gd::GdKind;
+
+use crate::SchemaVersion;
 
 /// Render the complete human-readable Genome Audit Report (`report.md`).
 pub fn write_markdown_report(
     path: impl AsRef<Path>,
     audit: &AuditResult,
-    refs: &[RefContig],
+    schema_version: SchemaVersion,
 ) -> std::io::Result<()> {
     let mut w = BufWriter::new(File::create(path)?);
 
@@ -20,25 +21,25 @@ pub fn write_markdown_report(
     writeln!(w, "# ProkaDiff Genome Audit Report\n")?;
 
     // 2. Executive Summary
-    write_executive_summary(&mut w, audit)?;
+    write_executive_summary(&mut w, audit, schema_version)?;
 
     // 3. Sample Context
     write_sample_context(&mut w, audit)?;
 
     // 4. Intended Edit Assessment
-    write_intended_assessment(&mut w, audit)?;
+    write_intended_assessment(&mut w, audit, schema_version)?;
 
     // 5. Genome-wide Findings Overview
     write_differential_summary(&mut w, audit)?;
 
     // 6. Structural & Mobile Element Events
-    write_structural_events(&mut w, audit, refs)?;
+    write_structural_events(&mut w, audit, schema_version)?;
 
     // 7. Candidate Guide-dependent Off-target Events
-    write_candidate_offtarget_events(&mut w, audit, refs)?;
+    write_candidate_offtarget_events(&mut w, audit, schema_version)?;
 
     // 8. Distal Small Variants
-    write_distal_small_variants(&mut w, audit, refs)?;
+    write_distal_small_variants(&mut w, audit, schema_version)?;
 
     // 9. Analysis Limitations
     write_limitations(&mut w, audit)?;
@@ -50,38 +51,33 @@ pub fn write_markdown_report(
     Ok(())
 }
 
-fn write_executive_summary(w: &mut impl Write, audit: &AuditResult) -> std::io::Result<()> {
+fn write_executive_summary(
+    w: &mut impl Write,
+    audit: &AuditResult,
+    schema_version: SchemaVersion,
+) -> std::io::Result<()> {
     writeln!(w, "## 1. Executive Summary\n")?;
 
     // Intended edits status line
-    if audit.intended_edits.is_empty() {
+    if (!schema_version.is_v2() && audit.intended_edits.is_empty())
+        || (schema_version.is_v2() && !audit.summary.intended_provided)
+    {
         writeln!(
             w,
             "**Intended Edit Outcome:** *Not Specified* (Analysis run in untargeted differential mode).\n"
         )?;
+    } else if schema_version.is_v2() && audit.summary.intended_declared == Some(0) {
+        writeln!(
+            w,
+            "**Intended Edit Outcome:** *No edits declared* (the supplied intended-edit table contains zero rows).\n"
+        )?;
     } else {
-        let complete = audit
-            .intended_edits
-            .iter()
-            .filter(|a| a.status == IntendedEditStatus::Complete)
-            .count();
-        let partial = audit
-            .intended_edits
-            .iter()
-            .filter(|a| a.status == IntendedEditStatus::Partial)
-            .count();
-        let missing = audit
-            .intended_edits
-            .iter()
-            .filter(|a| a.status == IntendedEditStatus::Missing)
-            .count();
-        let unexpected = audit
-            .intended_edits
-            .iter()
-            .filter(|a| a.status == IntendedEditStatus::UnexpectedStructure)
-            .count();
+        let complete = audit.summary.intended_edits_complete.unwrap_or_default();
+        let partial = audit.summary.intended_edits_partial.unwrap_or_default();
+        let missing = audit.summary.intended_edits_missing.unwrap_or_default();
+        let unexpected = audit.summary.intended_edits_unexpected.unwrap_or_default();
 
-        if complete == audit.intended_edits.len() {
+        if complete == audit.summary.intended_declared.unwrap_or_default() {
             writeln!(
                 w,
                 "**Intended Edit Outcome: PASS** — All declared intended edits ({}) were confirmed with expected genomic structures.\n",
@@ -108,31 +104,12 @@ fn write_executive_summary(w: &mut impl Write, audit: &AuditResult) -> std::io::
     }
 
     // Post-edit differential variants count
-    let post_edit_vars: Vec<&AnnotatedVariant> = audit
-        .variants
-        .iter()
-        .filter(|v| v.origin_status == OriginStatus::PostEditDifferential)
-        .collect();
-
-    let n_total = post_edit_vars.len();
-    let n_mob = post_edit_vars
-        .iter()
-        .filter(|v| v.entry.kind == GdKind::Mob)
-        .count();
-    let n_struct = post_edit_vars
-        .iter()
-        .filter(|v| v.size_class == SizeClass::Structural && v.entry.kind != GdKind::Mob)
-        .count();
-    let n_candidate_ot = post_edit_vars
-        .iter()
-        .filter(|v| matches!(v.guide_relation, GuideRelation::CandidateOffTarget { .. }))
-        .count();
-    let n_small = post_edit_vars
-        .iter()
-        .filter(|v| {
-            v.size_class == SizeClass::Small && matches!(v.guide_relation, GuideRelation::None)
-        })
-        .count();
+    let summary = &audit.summary;
+    let n_total = summary.post_edit_variant_count;
+    let n_mob = summary.mobile_element_count;
+    let n_struct = summary.non_mobile_structural_count;
+    let n_candidate_ot = summary.candidate_offtarget_count;
+    let n_small = summary.unassociated_small_count;
 
     writeln!(w, "### Key Findings Breakdown")?;
     writeln!(
@@ -151,7 +128,7 @@ fn write_executive_summary(w: &mut impl Write, audit: &AuditResult) -> std::io::
         "- **Candidate guide-dependent off-target events:** {}",
         n_candidate_ot
     )?;
-    let small_label = match audit.candidate_search_status {
+    let small_label = match summary.candidate_search_status {
         CandidateSearchStatus::NotPerformed => "Small variants with unassessed guide proximity",
         CandidateSearchStatus::PerformedNoCandidates
         | CandidateSearchStatus::PerformedWithCandidates => "Distal / collateral small variants",
@@ -164,14 +141,8 @@ fn write_executive_summary(w: &mut impl Write, audit: &AuditResult) -> std::io::
             "> **Audit Conclusion:** No additional post-edit differential variants were detected outside declared edits.\n"
         )?;
     } else {
-        let n_high = post_edit_vars
-            .iter()
-            .filter(|v| v.review_priority == ReviewPriority::HighAttention)
-            .count();
-        let n_rev = post_edit_vars
-            .iter()
-            .filter(|v| v.review_priority == ReviewPriority::Review)
-            .count();
+        let n_high = summary.high_attention_count;
+        let n_rev = summary.review_count;
 
         writeln!(
             w,
@@ -217,24 +188,47 @@ fn write_sample_context(w: &mut impl Write, audit: &AuditResult) -> std::io::Res
     Ok(())
 }
 
-fn write_intended_assessment(w: &mut impl Write, audit: &AuditResult) -> std::io::Result<()> {
+fn write_intended_assessment(
+    w: &mut impl Write,
+    audit: &AuditResult,
+    schema_version: SchemaVersion,
+) -> std::io::Result<()> {
     writeln!(w, "## 3. Intended Edit Assessment\n")?;
-    if audit.intended_edits.is_empty() {
+    if !schema_version.is_v2() && audit.intended_edits.is_empty() {
         writeln!(
             w,
             "*No intended edits were declared. To verify targeting outcomes, supply an `--intended` TSV table.*\n"
         )?;
         return Ok(());
     }
+    if schema_version.is_v2() && !audit.summary.intended_provided {
+        writeln!(
+            w,
+            "*No intended edits were declared. To verify targeting outcomes, supply an `--intended` TSV table.*\n"
+        )?;
+        return Ok(());
+    }
+    if schema_version.is_v2() && audit.summary.intended_declared == Some(0) {
+        writeln!(
+            w,
+            "*The supplied intended-edit table contains zero declared edits.*\n"
+        )?;
+        return Ok(());
+    }
 
-    writeln!(
-        w,
-        "| Edit ID | Kind | Locus | Status | Left Boundary | Right Boundary | Exp / Obs Size | Diagnostics |"
-    )?;
-    writeln!(
-        w,
-        "| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :--- |"
-    )?;
+    if schema_version.is_v2() {
+        writeln!(w, "| Edit ID | Kind | Locus | Status | Left Boundary | Right Boundary | Exp / Obs Size | Matched Event IDs | Unexpected Event IDs | Diagnostics |")?;
+        writeln!(
+            w,
+            "| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :--- | :--- | :--- |"
+        )?;
+    } else {
+        writeln!(w, "| Edit ID | Kind | Locus | Status | Left Boundary | Right Boundary | Exp / Obs Size | Diagnostics |")?;
+        writeln!(
+            w,
+            "| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :--- |"
+        )?;
+    }
 
     for a in &audit.intended_edits {
         let left_str = match &a.left_boundary {
@@ -264,52 +258,65 @@ fn write_intended_assessment(w: &mut impl Write, audit: &AuditResult) -> std::io
             a.notes.join("; ")
         };
 
-        writeln!(
-            w,
-            "| **{}** | `{}` | {}:{}-{} | **{}** | {} | {} | {} | {} |",
-            a.edit_id,
-            a.kind,
-            a.seq_id,
-            a.expected_start,
-            a.expected_end,
-            a.status.as_str().to_ascii_uppercase(),
-            left_str,
-            right_str,
-            size_str,
-            notes
-        )?;
+        if schema_version.is_v2() {
+            writeln!(
+                w,
+                "| **{}** | `{}` | {}:{}-{} | **{}** | {} | {} | {} | {} | {} | {} |",
+                a.edit_id,
+                a.kind,
+                a.seq_id,
+                a.expected_start,
+                a.expected_end,
+                a.status.as_str().to_ascii_uppercase(),
+                left_str,
+                right_str,
+                size_str,
+                format_event_ids(&a.matched_event_ids),
+                format_event_ids(&a.unexpected_event_ids),
+                notes
+            )?;
+        } else {
+            writeln!(
+                w,
+                "| **{}** | `{}` | {}:{}-{} | **{}** | {} | {} | {} | {} |",
+                a.edit_id,
+                a.kind,
+                a.seq_id,
+                a.expected_start,
+                a.expected_end,
+                a.status.as_str().to_ascii_uppercase(),
+                left_str,
+                right_str,
+                size_str,
+                notes
+            )?;
+        }
     }
     writeln!(w)?;
     Ok(())
 }
 
+fn format_event_ids(event_ids: &[prokadiff_classify::EventId]) -> String {
+    if event_ids.is_empty() {
+        "NONE".to_string()
+    } else {
+        event_ids
+            .iter()
+            .map(|event_id| format!("`{event_id}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 fn write_differential_summary(w: &mut impl Write, audit: &AuditResult) -> std::io::Result<()> {
     writeln!(w, "## 4. Genome-wide Differential Summary\n")?;
 
-    let post_edit: Vec<&AnnotatedVariant> = audit
-        .variants
-        .iter()
-        .filter(|v| v.origin_status == OriginStatus::PostEditDifferential)
-        .collect();
-
-    if post_edit.is_empty() {
+    if audit.summary.post_edit_variant_count == 0 {
         writeln!(
             w,
             "No post-edit differential variants were detected in the edited strain relative to the starter strain.\n"
         )?;
         return Ok(());
-    }
-
-    let mut high_count = 0;
-    let mut rev_count = 0;
-    let mut info_count = 0;
-
-    for v in &post_edit {
-        match v.review_priority {
-            ReviewPriority::HighAttention => high_count += 1,
-            ReviewPriority::Review => rev_count += 1,
-            ReviewPriority::Info => info_count += 1,
-        }
     }
 
     writeln!(
@@ -320,17 +327,17 @@ fn write_differential_summary(w: &mut impl Write, audit: &AuditResult) -> std::i
     writeln!(
         w,
         "| **HIGH_ATTENTION** | **{}** | Large structural rearrangements, IS transposon insertions, or aberrant target structures |",
-        high_count
+        audit.summary.high_attention_count
     )?;
     writeln!(
         w,
         "| **REVIEW** | **{}** | Small point mutations, indels, or coding variants requiring review |",
-        rev_count
+        audit.summary.review_count
     )?;
     writeln!(
         w,
         "| **INFO** | **{}** | Confirmed expected edits and neutral background changes |",
-        info_count
+        audit.summary.info_count
     )?;
     writeln!(w)?;
     Ok(())
@@ -339,7 +346,7 @@ fn write_differential_summary(w: &mut impl Write, audit: &AuditResult) -> std::i
 fn write_structural_events(
     w: &mut impl Write,
     audit: &AuditResult,
-    _refs: &[RefContig],
+    schema_version: SchemaVersion,
 ) -> std::io::Result<()> {
     writeln!(w, "## 5. Structural and Mobile-element Events\n")?;
 
@@ -360,11 +367,19 @@ fn write_structural_events(
         return Ok(());
     }
 
-    writeln!(
-        w,
-        "| Variant ID | Type | Locus | Description | Evidence | Priority |"
-    )?;
-    writeln!(w, "| :--- | :---: | :--- | :--- | :---: | :---: |")?;
+    if schema_version.is_v2() {
+        writeln!(
+            w,
+            "| Variant ID | Event ID | Type | Locus | Description | Evidence | Priority |"
+        )?;
+        writeln!(w, "| :--- | :--- | :---: | :--- | :--- | :---: | :---: |")?;
+    } else {
+        writeln!(
+            w,
+            "| Variant ID | Type | Locus | Description | Evidence | Priority |"
+        )?;
+        writeln!(w, "| :--- | :---: | :--- | :--- | :---: | :---: |")?;
+    }
 
     for v in struct_vars {
         let locus = format!(
@@ -406,16 +421,32 @@ fn write_structural_events(
             },
         };
 
-        writeln!(
-            w,
-            "| **{}** | `{}` | {} | {} | `{}` | **{}** |",
-            v.variant_id,
-            v.entry.kind.as_str(),
-            locus,
-            desc,
-            v.evidence.format_brief(),
-            v.review_priority.as_str()
-        )?;
+        if schema_version.is_v2() {
+            writeln!(
+                w,
+                "| **{}** | `{}` | `{}` | {} | {} | `{}` | **{}** |",
+                v.variant_id,
+                v.event_id
+                    .as_ref()
+                    .map_or("NA", |event_id| event_id.as_str()),
+                v.entry.kind.as_str(),
+                locus,
+                desc,
+                v.evidence.format_brief(),
+                v.review_priority.as_str()
+            )?;
+        } else {
+            writeln!(
+                w,
+                "| **{}** | `{}` | {} | {} | `{}` | **{}** |",
+                v.variant_id,
+                v.entry.kind.as_str(),
+                locus,
+                desc,
+                v.evidence.format_brief(),
+                v.review_priority.as_str()
+            )?;
+        }
     }
     writeln!(w)?;
     Ok(())
@@ -424,7 +455,7 @@ fn write_structural_events(
 fn write_candidate_offtarget_events(
     w: &mut impl Write,
     audit: &AuditResult,
-    _refs: &[RefContig],
+    schema_version: SchemaVersion,
 ) -> std::io::Result<()> {
     writeln!(w, "## 6. Candidate Guide-dependent Off-target Events\n")?;
 
@@ -438,7 +469,7 @@ fn write_candidate_offtarget_events(
         .collect();
 
     if ot_vars.is_empty() {
-        let message = match audit.candidate_search_status {
+        let message = match audit.summary.candidate_search_status {
             CandidateSearchStatus::NotPerformed =>
                 "Candidate guide-site search was not performed; no off-target association can be assessed.",
             CandidateSearchStatus::PerformedNoCandidates =>
@@ -450,11 +481,16 @@ fn write_candidate_offtarget_events(
         return Ok(());
     }
 
-    writeln!(
-        w,
-        "| Variant ID | Locus | Change | Mismatches | PAM | Distance to Site | Review Priority |"
-    )?;
-    writeln!(w, "| :--- | :--- | :---: | :---: | :---: | :---: | :---: |")?;
+    if schema_version.is_v2() {
+        writeln!(w, "| Variant ID | Event ID | Locus | Change | Mismatches | PAM | Distance to Site | Review Priority |")?;
+        writeln!(
+            w,
+            "| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: |"
+        )?;
+    } else {
+        writeln!(w, "| Variant ID | Locus | Change | Mismatches | PAM | Distance to Site | Review Priority |")?;
+        writeln!(w, "| :--- | :--- | :---: | :---: | :---: | :---: | :---: |")?;
+    }
 
     for v in ot_vars {
         let locus = format!(
@@ -463,14 +499,16 @@ fn write_candidate_offtarget_events(
             v.entry.position().unwrap_or(0)
         );
 
-        let (mismatches, pam, dist) = match &v.guide_relation {
+        let Some((mismatches, pam, dist)) = (match &v.guide_relation {
             GuideRelation::CandidateOffTarget {
                 spacer_mismatches,
                 pam,
                 distance_to_site,
                 ..
-            } => (*spacer_mismatches, pam.as_str(), *distance_to_site),
-            _ => (0, "NA", 0),
+            } => Some((*spacer_mismatches, pam.as_str(), *distance_to_site)),
+            _ => None,
+        }) else {
+            continue;
         };
 
         let change = match v.entry.kind {
@@ -483,17 +521,34 @@ fn write_candidate_offtarget_events(
             _ => v.entry.kind.as_str().to_string(),
         };
 
-        writeln!(
-            w,
-            "| **{}** | {} | `{}` | {} | `{}` | {} bp | **{}** |",
-            v.variant_id,
-            locus,
-            change,
-            mismatches,
-            pam,
-            dist,
-            v.review_priority.as_str()
-        )?;
+        if schema_version.is_v2() {
+            writeln!(
+                w,
+                "| **{}** | `{}` | {} | `{}` | {} | `{}` | {} bp | **{}** |",
+                v.variant_id,
+                v.event_id
+                    .as_ref()
+                    .map_or("NA", |event_id| event_id.as_str()),
+                locus,
+                change,
+                mismatches,
+                pam,
+                dist,
+                v.review_priority.as_str()
+            )?;
+        } else {
+            writeln!(
+                w,
+                "| **{}** | {} | `{}` | {} | `{}` | {} bp | **{}** |",
+                v.variant_id,
+                locus,
+                change,
+                mismatches,
+                pam,
+                dist,
+                v.review_priority.as_str()
+            )?;
+        }
     }
 
     writeln!(
@@ -506,9 +561,9 @@ fn write_candidate_offtarget_events(
 fn write_distal_small_variants(
     w: &mut impl Write,
     audit: &AuditResult,
-    refs: &[RefContig],
+    schema_version: SchemaVersion,
 ) -> std::io::Result<()> {
-    let section_title = match audit.candidate_search_status {
+    let section_title = match audit.summary.candidate_search_status {
         CandidateSearchStatus::NotPerformed => "Small Variants With Unassessed Guide Proximity",
         CandidateSearchStatus::PerformedNoCandidates
         | CandidateSearchStatus::PerformedWithCandidates => "Distal Small Variants",
@@ -526,7 +581,7 @@ fn write_distal_small_variants(
         .collect();
 
     if distal_vars.is_empty() {
-        let message = match audit.candidate_search_status {
+        let message = match audit.summary.candidate_search_status {
             CandidateSearchStatus::NotPerformed =>
                 "No small post-edit differential variants were detected; guide-site proximity was not assessed.",
             CandidateSearchStatus::PerformedNoCandidates
@@ -537,32 +592,37 @@ fn write_distal_small_variants(
         return Ok(());
     }
 
-    match audit.candidate_search_status {
+    match audit.summary.candidate_search_status {
         CandidateSearchStatus::NotPerformed => writeln!(
             w,
             "{} small post-edit differential variant(s) were detected; guide-site proximity was not assessed.\n",
-            distal_vars.len()
+            audit.summary.unassociated_small_count
         )?,
         CandidateSearchStatus::PerformedNoCandidates => writeln!(
             w,
             "{} small post-edit differential variant(s) were detected; the performed search found no candidate guide sites.\n",
-            distal_vars.len()
+            audit.summary.unassociated_small_count
         )?,
         CandidateSearchStatus::PerformedWithCandidates => writeln!(
             w,
             "{} small post-edit differential variant(s) were detected without nearby predicted guide-homologous sites within the configured window.\n",
-            distal_vars.len()
+            audit.summary.unassociated_small_count
         )?,
     }
 
-    writeln!(
-        w,
-        "| Variant ID | Type | Locus | Gene / Region | Reference | Alternate | Evidence | Priority |"
-    )?;
-    writeln!(
-        w,
-        "| :--- | :---: | :--- | :--- | :---: | :---: | :---: | :---: |"
-    )?;
+    if schema_version.is_v2() {
+        writeln!(w, "| Variant ID | Event ID | Type | Locus | Gene / Region | Reference | Alternate | Evidence | Priority |")?;
+        writeln!(
+            w,
+            "| :--- | :--- | :---: | :--- | :--- | :---: | :---: | :---: | :---: |"
+        )?;
+    } else {
+        writeln!(w, "| Variant ID | Type | Locus | Gene / Region | Reference | Alternate | Evidence | Priority |")?;
+        writeln!(
+            w,
+            "| :--- | :---: | :--- | :--- | :---: | :---: | :---: | :---: |"
+        )?;
+    }
 
     for v in distal_vars {
         let locus = format!(
@@ -594,23 +654,40 @@ fn write_distal_small_variants(
             None => "-".to_string(),
         };
 
-        let (ref_b, alt_b) = crate::tables::variant_alleles(v, refs);
-
-        writeln!(
-            w,
-            "| **{}** | `{}` | {} | {} | `{}` | `{}` | `{}` | {} |",
-            v.variant_id,
-            v.entry.kind.as_str(),
-            locus,
-            gene_str,
-            ref_b,
-            alt_b,
-            v.evidence.format_brief(),
-            v.review_priority.as_str()
-        )?;
+        let display = display_for_variant(audit, v);
+        if schema_version.is_v2() {
+            writeln!(
+                w,
+                "| **{}** | `{}` | `{}` | {} | {} | `{}` | `{}` | `{}` | {} |",
+                v.variant_id,
+                v.event_id
+                    .as_ref()
+                    .map_or("NA", |event_id| event_id.as_str()),
+                v.entry.kind.as_str(),
+                locus,
+                gene_str,
+                display.variant_reference,
+                display.variant_alternate,
+                v.evidence.format_brief(),
+                v.review_priority.as_str()
+            )?;
+        } else {
+            writeln!(
+                w,
+                "| **{}** | `{}` | {} | {} | `{}` | `{}` | `{}` | {} |",
+                v.variant_id,
+                v.entry.kind.as_str(),
+                locus,
+                gene_str,
+                display.variant_reference,
+                display.variant_alternate,
+                v.evidence.format_brief(),
+                v.review_priority.as_str()
+            )?;
+        }
     }
 
-    let interpretation = match audit.candidate_search_status {
+    let interpretation = match audit.summary.candidate_search_status {
         CandidateSearchStatus::NotPerformed =>
             "Guide-site search was not performed, so spatial and sequence association is unknown.",
         CandidateSearchStatus::PerformedNoCandidates =>
@@ -623,6 +700,23 @@ fn write_distal_small_variants(
         "\n> **Interpretation:** {interpretation} Other potential origins include spontaneous culture drift, electroporation/transformation stress, or uncharacterized cellular burden.\n"
     )?;
     Ok(())
+}
+
+fn display_for_variant(
+    audit: &AuditResult,
+    variant: &AnnotatedVariant,
+) -> prokadiff_classify::EventDisplay {
+    variant
+        .event_id
+        .as_ref()
+        .and_then(|event_id| audit.event_display.get(event_id))
+        .cloned()
+        .unwrap_or(prokadiff_classify::EventDisplay {
+            unintended_reference: ".".to_string(),
+            unintended_alternate: ".".to_string(),
+            variant_reference: ".".to_string(),
+            variant_alternate: ".".to_string(),
+        })
 }
 
 fn write_limitations(w: &mut impl Write, audit: &AuditResult) -> std::io::Result<()> {

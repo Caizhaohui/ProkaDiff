@@ -1,0 +1,2 @@
+seq_id	position	end	gd_type	ref	alt	class	editor	pam_profile	offtarget_mismatch	distance_to_site	side2_seq_id	side2_position
+chr	20	20	JC	.	.	structural	cas9				chr	30

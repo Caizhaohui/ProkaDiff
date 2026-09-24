@@ -26,10 +26,8 @@
   - M1 Evidence → Differential Variant 已闭环完成（2026-09-22）：定义了规范化差分事件（`CanonicalEvent`）、确定性内容截断哈希身份（`DV1 EventId`）及其碰撞防护；实现了基于最小费用最大流的确定性容差亲本扣除算法（先最大基数、再最小坐标距离代价、后规范字节序决胜；严格限定 JC 符号重叠相等、MOB duplication_size 相等、DEL 双方均 >2 bp 预条件、±5 bp 边界）；实现了对称且独立的 MOB 组分 JC 吸收；建立了权威 `EvidenceReferences` 和三态 `EvidenceSummary`（仅从真实 GD 证据记录或亲本引用解析，缺失写 `NA`，禁止由变异类型逆向推断）；移除了所有全 N 伪参考，所有坐标与碱基严格校验。全工作区 257 项单元测试及 `qcpu_18i` 上全部 M1 端到端双株 FASTQ 差分与 breseq 对拍作业均已通过。
   - M2 Differential Variant → Intended Verification 已闭环完成（2026-09-23）：逐编辑评估权威引用 M1 的 `EventId`；建立了 `IntendedEventRelationship` 并严格区分 `ExpectedConstituent`、`PartialObservation` 与 `UnexpectedAtLocus`；实现评估先于掩码，只有唯一归属且无异常判定的预期组成事件才移出非预期视图，靶位异常等位基因、额外变异及异常接合点完整保留；实现了基于生物拟合度与确定性 `EventId` 决胜的删除及 cassette 候选选择，消除输入行序依赖；确立了 MC 纯证据诊断契约（无 `EventId`、缺失写 `Unknown/NA`、亲本 MC 自动过滤）；保持了全部既有公开 TSV 表头、列序及 summary 键不变，`edit_outcomes.tsv` 仅在输出边界将 `EventId` 映射为代表数字 GD ID；全工作区单元测试与 M2 专项回归测试全过；`qcpu_18i` 上 Layer 1 `synth_parent_child` FASTQ 差分流水线与 `edit_outcomes.tsv` 闭环验证通过（Job 2784683）。
   - M3 Intended Verification → Mechanistic Association = **COMPLETE (2026-09-24)**：`EventId` 是内部权威突变身份；候选位点只扫描一次；`CandidateSearchStatus` 显式区分未扫描、零候选、有候选但事件无关联；不存在 `SITE_UNKNOWN`、伪造 mismatch/distance/PAM 或位置回退关联；OnTarget 缺失测量输出 `NA`；未解析的 `EventId` 触发 typed error；全部合格关联均保留；空间与序列机制关联不证明 Cas 切割因果。全工作区 `cargo test --workspace` 在 `qcpu_18i` 通过（Job 2791150）；M3 FASTQ/Bowtie2 E2E 通过（Job 2791151）。
-- 下一阶段：M4 (Mechanistic Association → AuditResult 与全部输出) = **ACTIVE**，尚未开始实现。明确结转至 M4：
-  * 公开 EventId / DV1 全面协调与呈现（Harmonization）；
-  * `mutation_offtarget_links` 证据层级列扩展与模式核对（Schema Reconciliation）；
-  * 统领全部输出表（旧版 TSV、summary、新版 TSV、report.md）的单一统一 AuditResult 渲染流水线。
+- M4 Mechanistic Association → AuditResult 与全部输出 = **COMPLETE (2026-09-24)**：以 `DV1 EventId` 作为公开差分事件身份，由完整 `AuditResult` 与共享 `AuditSummary` 生成全部产品；集中管理 V1/V2 模式，V2 默认且相对 V1 仅追加列；M3 闭环修订 `v0.3.0-m3` / `0f79495` 的七个 V1 产品文件与当前 V1 输出逐文件字节比较一致；V2 身份/schema、阶段化发布及回滚恢复、跨输出一致性均通过回归验证。最新 `qcpu_18i` FASTQ/Bowtie2 产品验证 Job 2792159 完成，覆盖默认 V2 与显式 V1 产品生成。
+- 当前活动阶段：M5（BL21 配对样本复核）。M1–M4 契约已冻结；本计划不授权提前开展 M6 及之后阶段。
 - 待证实：`VALIDATION_REGISTRY.tsv` 对 PRJNA1088182 和 PRJNA884016 的完成声明，须与随仓库交付的非 FASTQ 输入、truth、实际 calls、比较结果一致。局部忽略的结果目录不能作为可复核发布证据。
 
 ## 顺序与验收
@@ -42,14 +40,24 @@
 | **M1：Evidence → Differential Variant** | 已完成（2026-09-22） | 交付稳定的差分事件身份（`DV1 EventId`）与规范化前像生成；实现权威 `EvidenceReferences` 溯源（无 `GdKind` 逆向重构，缺失字段置 `NA`）；实现基于最小费用最大流的确定性容差亲本扣除算法（JC 符号重叠相等、MOB duplication_size 相等、DEL 双方均 >2 bp 预条件、±5 bp 容差边界、最大基数优先与字节序决胜）；实现对称独立的 MOB 组分 JC 吸收；严格坐标、跨度与 DNA/IUPAC 碱基校验；纯内存层 0 单元测试 257 项全过；`qcpu_18i` 集群验证通过（Job 2769120 端到端双株差分 FASTQ 流程，Job 2769121 IS/MOB 对拍，Job 2769122 SNP/INS/DEL 差分对拍，Job 2769123 结构 DEL 对拍）。 |
 | **M2：Differential Variant → Intended Verification** | 已完成（2026-09-23） | 逐编辑评估权威引用 M1 的 EventId，保留 Complete/Partial/Missing/UnexpectedStructure 与断点判定；异常靶位事件不因掩码而丢失；支持一事件匹配多声明、cassette 双接头及异常结构判定；edit_outcomes.tsv 正确回指并在输出边界兼容映射；纯内存单元测试与 qcpu_18i 集群端到端验证通过（Job 2784683）。 |
 | **M3：Intended Verification → Mechanistic Association** | **COMPLETE (2026-09-24)** | 内部突变身份权威为 `EventId`；单次候选扫描；搜索状态显式区分；无 `SITE_UNKNOWN` 或伪造 mismatch/distance/PAM；无位置关联回退；OnTarget 缺失测量写 `NA`；未知 EventId 投影为 typed error；保留所有合格关联；关联不等于切割因果。`qcpu_18i` workspace 测试 Job 2791150 与 M3 FASTQ/Bowtie2 E2E Job 2791151 通过。 |
-| **M4：Mechanistic Association → AuditResult 与全部输出** | **ACTIVE (尚未开始实现)** | `AuditResult` 成为旧版 TSV、summary、新版 TSV 和 `report.md` 的唯一产品数据源；一次运行中计数、状态、事件 ID 与关联双向一致。结转项：(1) 公开 EventId/DV1 协调；(2) mutation_offtarget_links 证据层级列与 Schema 协调；(3) 统一 AuditResult 产物渲染流水线。保持现有公开列的兼容契约，增加跨输出一致性测试与可追溯报告夹具。 |
-| **M5：BL21 配对样本复核** | M4 后 | 在 `qcpu_18i` 复核配对差分、靶位异常结构和报告一致性；登记 truth 等级、错误类型及真实作业结果。 |
+| **M4：Mechanistic Association → AuditResult 与全部输出** | **COMPLETE (2026-09-24)** | 公开差分事件身份为 `DV1 EventId`；单一 `AuditResult` 与 `AuditSummary` 提供完整产品状态和共享计数；V2 为默认并仅相对 V1 追加列，V1 与 M3 闭环版本 `v0.3.0-m3` / `0f79495` 的七个产品文件逐字节相同。V2 身份/schema、阶段化发布及回滚恢复、跨输出一致性均通过回归验证。`qcpu_18i` FASTQ/Bowtie2 Job 2792159 的默认 V2 与显式 V1 产品生成通过。冻结的不变量见下节。 |
+| **M5：BL21 配对样本复核** | **ACTIVE** | 在 `qcpu_18i` 复核配对差分、靶位异常结构和报告一致性；登记 truth 等级、错误类型及真实作业结果。 |
 | **M6：PRJNA1088182 队列复核** | M5 后 | 以随仓库交付的 manifest、publication truth 和评估器逐样本验证编辑状态与关联陈述；仅在测量结果完整时更新登记表。 |
 | **M7：PRJNA884016 组装 truth 复核** | M6 后 | 以可解析的组装 truth、ProkaDiff calls 和结构比较结果核对 MOB/JC 及断点误差；不得以组装差异直接替代测序检出结果。 |
 | **M8：REL606 引擎扩展对拍** | M7 后 | 记录与 breseq 的双向 GD 比较、差异解释及同作业 wall/RSS；性能或 parity 声明须满足 [parity](docs/parity.md) 的门禁。 |
 | **M9：报告审阅与发布门禁** | M8 后 | 人工审阅真实报告，核对每个 finding 的事件与证据回指、科学措辞和溯源；汇总 M5–M8 的可复核记录及尚未验证的能力，只发布有证据支持的结论。 |
 
-M0、M1、M2、M3 已闭环通过。M4 标记为 ACTIVE，但其实现尚未开始；M4–M9 后续顺序不代表已完成。批次模式、CAST/IS110、长读长、混群以及未经外部 oracle 验证的评分保持在后续路线图，不进入本轮数据链里程碑。
+M0–M4 已闭环通过，M5 为当前活动里程碑；M6–M9 尚未开始。批次模式、CAST/IS110、长读长、混群以及未经外部 oracle 验证的评分保持在后续路线图，不进入当前 M5 工作范围。
+
+## 冻结的 M4 不变量
+
+- `DV1 EventId` 是公开差分事件的权威身份；`VAR_####` 仅作显示标签。
+- 原始数字 GD ID 仅作来源记录/兼容标识；`mut_<GD ID>` 仅作兼容输出标识。二者均不能替代 EventId 作为关联键。
+- `AuditResult` 是唯一科学与产品聚合；`AuditSummary` 是重复公开计数的共享投影。
+- `AuditResult.associations` 是权威关联集合；`variant_site_links` 仅用于兼容投影。
+- `event_index` 解析每个真实 `DifferentialEvent`，包括正常变异视图中隐藏的 MOB companion JC；仅证据 MC/RA 记录不获得 EventId。
+- Schema V2 是默认；Schema V1 与 M3 遗留产品字节兼容；V2 相对 V1 仅追加已批准字段。
+- 产品发布先写入 staging；普通发布错误通过已验证的回滚与恢复处理。多文件最终发布期间发生硬进程崩溃（包括 SIGKILL）仍属于已接受的文件系统级限制。
 
 ## 每个里程碑启动与结束规则
 

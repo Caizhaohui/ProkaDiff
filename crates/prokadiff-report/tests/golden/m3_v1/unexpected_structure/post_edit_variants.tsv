@@ -1,0 +1,3 @@
+variant_id	seq_id	position	end	gd_type	ref	alt	origin_status	intended_relation	size_class	review_priority	guide_relation	guide_mismatches	pam	dist_to_site	mobile_element	evidence	gene	locus_tag	feature_type	legacy_class
+VAR_0001	chr	10	10	SNP	A	T	INTENDED	EXPECTED	SMALL	INFO	ON_TARGET	NA	NA	NA	NONE	RA=NA;MC=NA;JC=NA	NA	NA	NA	none
+VAR_0002	chr	20	20	JC	none	chr:30	POST_EDIT_DIFF	UNEXPECTED_AT_TARGET	STRUCTURAL	HIGH_ATTENTION	CANDIDATE_OFF_TARGET	1	AGG	3	NONE	RA=NA;MC=NA;JC=NA	NA	NA	NA	structural

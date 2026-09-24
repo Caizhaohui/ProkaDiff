@@ -1,0 +1,2 @@
+mutation_id	site_id	mutation_type	mutation_position	site_start	site_end	distance_to_site	mismatches	pam	cfd_score	association_window
+mut_12	SITE_000001	JC	20	18	22	3	1	AGG	0.5000	50

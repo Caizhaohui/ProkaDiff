@@ -276,13 +276,13 @@ pub struct EvidenceReferences {
       pub site_end: u64,
       pub site_strand: Strand,
       pub distance_to_site: u64,
-      pub mismatches: usize,
+      pub mismatches: u32,
       pub pam: String,
       pub cfd_score: Option<f64>,
       pub hsu_score: Option<f64>,
       pub search_backend: String,
-      pub bulge_type: Option<BulgeType>,
-      pub bulge_size: Option<usize>,
+      pub bulge_type: BulgeType,
+      pub bulge_size: u32,
       pub target_seq: String,
       pub association_window: u64,
   }
@@ -312,3 +312,75 @@ pub struct EvidenceReferences {
 - `project_associations_to_links` 负责将现代 `EventId` 关联投影为兼容旧版 `mut_<id>` 格式的输出；内部数据管道和 `AuditResult` 统一采用 `MutationSiteAssociation`。
 - **M3/M4 证据层级边界（Evidence-Tier Boundary）**：
   `mutation_offtarget_links.tsv` is an M3 compatibility projection and does not independently carry bulge/search-backend evidence. Consumers requiring association evidence tier must join via `site_id` to `offtarget_sites.tsv`. Public link-level evidence-tier columns are deferred to M4.
+
+## M4 public schema versions and identity contract
+
+`--schema-version v2` is the default product schema. `--schema-version v1` is the compatibility schema. The renderer receives one `SchemaVersion` value and writes every product file from one completed `AuditResult`.
+
+### Identity meanings
+
+| Identifier | Meaning | Join rule |
+| --- | --- | --- |
+| `event_id` / `DV1_<32 lowercase hex>` | Authoritative stable identity of one real M1 differential event | Required key for M4 public event joins and association joins |
+| `VAR_####` | Human-readable row label in `post_edit_variants.tsv` and `report.md` | Display only; never join |
+| Raw numeric GD ID | Source-record or representative-record identifier | Compatibility and provenance only |
+| `mut_<GD ID>` | Legacy mutation identifier in `mutation_offtarget_links.tsv` | Compatibility only; never join when `event_id` exists |
+
+MC, RA, and other evidence-only GD records do not receive `EventId`. M4 does not synthesize IDs for them.
+
+`AuditResult.event_index` contains every real `DifferentialEvent`, keyed by `EventId`, including an event omitted from a particular variant view such as a MOB companion JC. An association event ID must resolve through that index. An unresolved event ID or site ID is a typed error.
+
+### Schema v1
+
+V1 preserves the M1-M3 TSV headers, ordering, cell formats, missing-value values, optional `hypothesis` behavior, `summary.txt` keys, and `report.md` presentation and semantics exactly.
+
+```text
+unintended.tsv (hypothesis off)
+seq_id	position	end	gd_type	ref	alt	class	editor	pam_profile	offtarget_mismatch	distance_to_site	side2_seq_id	side2_position
+
+unintended.tsv (hypothesis on)
+seq_id	position	end	gd_type	ref	alt	class	editor	pam_profile	offtarget_mismatch	distance_to_site	side2_seq_id	side2_position	hypothesis
+
+edit_outcomes.tsv
+edit_id	kind	seq_id	expected_start	expected_end	status	matched_event_ids	left_boundary_status	right_boundary_status	expected_size	observed_size	unexpected_events	notes
+
+post_edit_variants.tsv
+variant_id	seq_id	position	end	gd_type	ref	alt	origin_status	intended_relation	size_class	review_priority	guide_relation	guide_mismatches	pam	dist_to_site	mobile_element	evidence	gene	locus_tag	feature_type	legacy_class
+
+offtarget_sites.tsv
+site_id	seq_id	start	end	strand	target_seq	pam	mismatches	bulge_type	bulge_size	search_backend	cfd_score	hsu_score
+
+mutation_offtarget_links.tsv
+mutation_id	site_id	mutation_type	mutation_position	site_start	site_end	distance_to_site	mismatches	pam	cfd_score	association_window
+```
+
+V1 `matched_event_ids` and `unexpected_events` continue to contain representative numeric GD IDs. V1 `mutation_id` continues to contain `mut_<GD ID>`. `NA`, empty cells, `NONE`, and numeric formatting remain unchanged.
+
+### Schema v2
+
+V2 is append-only relative to the V1 headers. Existing columns retain their names, order, formatting, and meanings.
+
+| File | Appended columns, in order |
+| --- | --- |
+| `unintended.tsv` | `event_id`; follows `hypothesis` when that optional column is enabled, otherwise follows `side2_position` |
+| `edit_outcomes.tsv` | `matched_event_ids_dv1`, `unexpected_event_ids_dv1` |
+| `post_edit_variants.tsv` | `event_id` |
+| `mutation_offtarget_links.tsv` | `event_id`, `junction_side`, `search_backend`, `bulge_type`, `bulge_size` |
+
+V2 event fields contain `DV1_*` values for differential-event-backed rows. A record without an event identity writes literal `NA`; no ID is invented. V2 edit DV1 lists retain the legacy `NONE` empty-list convention. `junction_side` is `side_1` or `side_2` for a JC association and `NA` for a non-JC association.
+
+The evidence-tier columns are projections of the authoritative `MutationSiteAssociation`, whose current Rust fields are `event_id`, `site_id`, `junction_side: Option<JunctionSideTag>`, `mismatches: u32`, `pam`, `search_backend`, `bulge_type: BulgeType`, and `bulge_size: u32`. Candidate-site fields originate from the associated `OffTargetSite`; the renderer does not fabricate a distance, mismatch count, PAM, backend, bulge value, or site identity.
+
+### Reporting and migration
+
+V1 `report.md` retains its M1-M3 presentation. V2 `report.md` displays both `VAR_####` and `EventId` for every differential-event-backed finding and lists matched and unexpected EventIds in each intended-edit assessment. `VAR_####` remains a display label.
+
+All product outputs are rendered from a completed `AuditResult`: `summary.txt`, `unintended.tsv`, `edit_outcomes.tsv`, `post_edit_variants.tsv`, `offtarget_sites.tsv`, `mutation_offtarget_links.tsv`, and `report.md`. Reference-derived display values and the shared `AuditSummary` projection (intended-table state, intended status counts, starter/reference count, variant and class counts, association count, and candidate-search status) are resolved while building the aggregate, so rendering requires no external scientific input. `AuditResult.associations` is authoritative. `AuditResult.variant_site_links` is retained only as the V1 compatibility projection.
+
+Consumers that require exact M1-M3 parsing must pass `--schema-version v1`. New consumers should use V2 `event_id` joins and should stop joining on `VAR_####`, numeric GD IDs, or `mut_<GD ID>`.
+
+### M3 V1 compatibility golden
+
+`crates/prokadiff-report/tests/golden/m3_v1/` contains complete V1 product sets emitted by the M3 closure revision `v0.3.0-m3` (`0f79495`). The test renders the corresponding deterministic fixture through the current explicit V1 product path and compares all seven files byte-for-byte, including headers, cells, summary keys and values, and Markdown. The sets cover both a supplied zero-row intended table and an unexpected structural observation assessed as `PARTIAL` by the M2 assessment logic.
+
+No output normalization is applied. The fixture supplies fixed provenance values (`test` version and commit, fixed timestamp, and absent reference/Bowtie2 values), so even provenance output is compared exactly. These values are test inputs, not variable fields filtered from the comparison.

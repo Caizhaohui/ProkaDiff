@@ -1,14 +1,19 @@
 mod markdown;
+mod schema;
 mod tables;
 
 pub use markdown::write_markdown_report;
+pub use schema::SchemaVersion;
 pub use tables::{write_edit_outcomes_tsv, write_post_edit_variants_tsv, write_provenance_tsv};
 
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use prokadiff_classify::{ClassifiedMutation, ClassifyResult, MutationClass, RefContig};
+use prokadiff_classify::{
+    write_offtarget_sites_tsv, AuditResult, ClassifiedMutation, ClassifyResult, EventDisplay,
+    MutationClass, RefContig,
+};
 use prokadiff_gd::{GdEntry, GdKind};
 
 /// Write classified post-subtract mutations. `hypothesis` column omitted when `include_hypothesis` is false.
@@ -51,6 +56,56 @@ pub fn write_unintended_tsv(
     }
     w.flush()?;
     Ok(())
+}
+
+fn write_unintended_from_audit(
+    path: impl AsRef<Path>,
+    audit: &AuditResult,
+    schema_version: SchemaVersion,
+) -> std::io::Result<()> {
+    let mut w = BufWriter::new(File::create(path)?);
+    write!(
+        w,
+        "seq_id\tposition\tend\tgd_type\tref\talt\tclass\teditor\tpam_profile\tofftarget_mismatch\tdistance_to_site\tside2_seq_id\tside2_position"
+    )?;
+    if audit.hypothesis_enabled {
+        write!(w, "\thypothesis")?;
+    }
+    if schema_version.is_v2() {
+        write!(w, "\tevent_id")?;
+    }
+    writeln!(w)?;
+    for row in &audit.unintended {
+        let (seq_id, pos, end) = coords(&row.entry);
+        let display = event_display(audit, row.event_id.as_ref())?;
+        let (side2_id, side2_pos) = side2(&row.entry);
+        write!(
+            w,
+            "{seq_id}\t{pos}\t{end}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{side2_id}\t{side2_pos}",
+            row.entry.kind.as_str(),
+            display.unintended_reference,
+            display.unintended_alternate,
+            row.class.as_str(),
+            audit.sample.editor,
+            row.pam_profile.as_deref().unwrap_or(""),
+            opt_u32(row.offtarget_mismatch),
+            opt_u64(row.distance_to_site),
+        )?;
+        if audit.hypothesis_enabled {
+            write!(w, "\t{}", row.hypothesis.as_deref().unwrap_or(""))?;
+        }
+        if schema_version.is_v2() {
+            write!(
+                w,
+                "\t{}",
+                row.event_id
+                    .as_ref()
+                    .map_or("NA", |event_id| event_id.as_str())
+            )?;
+        }
+        writeln!(w)?;
+    }
+    w.flush()
 }
 
 /// Write the run summary.  Includes:
@@ -108,6 +163,474 @@ bulge_validation_status\texperimental\n",
     );
     std::fs::write(path, text)?;
     Ok(())
+}
+
+fn write_summary_from_audit(path: impl AsRef<Path>, audit: &AuditResult) -> std::io::Result<()> {
+    let summary = &audit.summary;
+    let display =
+        |value: Option<usize>| value.map_or_else(|| "NA".to_string(), |value| value.to_string());
+    let declared = display(summary.intended_declared);
+    let observed = display(summary.intended_events_observed);
+    let status = summary
+        .intended_status
+        .map_or("NA", |status| status.as_str());
+    let missing = display(summary.intended_missing);
+    let edits_complete = display(summary.intended_edits_complete);
+    let edits_partial = display(summary.intended_edits_partial);
+    let edits_missing = display(summary.intended_edits_missing);
+    let events = display(summary.intended_events_observed);
+    let text = format!(
+        "editor\t{}\n\
+# -- Intended edit summary (FIX-015) --\n\
+intended_provided\t{}\n\
+intended_edits_declared\t{declared}\n\
+intended_edits_complete\t{edits_complete}\n\
+intended_edits_partial\t{edits_partial}\n\
+intended_edits_missing\t{edits_missing}\n\
+intended_events_observed\t{events}\n\
+# -- Deprecated fields (backward compatibility) --\n\
+intended_declared\t{declared}\n\
+intended_observed\t{observed}\n\
+intended_status\t{status}\n\
+intended_missing\t{missing}\n\
+# -- Mutation class counts --\n\
+structural\t{}\n\
+near_homolog\t{}\n\
+scattered_snv\t{}\n\
+starter_vs_ref_mutations\t{}\n\
+# -- FIX-018 validation status --\n\
+offtarget_search_validation_status\tvalidated_via_self_test\n\
+cfd_validation_status\tdisabled\n\
+hsu_validation_status\texperimental\n\
+bulge_validation_status\texperimental\n",
+        audit.sample.editor,
+        if summary.intended_provided {
+            "yes"
+        } else {
+            "no"
+        },
+        summary.structural_count,
+        summary.near_homolog_count,
+        summary.scattered_snv_count,
+        summary.starter_vs_reference,
+    );
+    std::fs::write(path, text)
+}
+
+const PRODUCT_OUTPUT_NAMES: [&str; 8] = [
+    "unintended.tsv",
+    "summary.txt",
+    "offtarget_sites.tsv",
+    "mutation_offtarget_links.tsv",
+    "report.md",
+    "edit_outcomes.tsv",
+    "post_edit_variants.tsv",
+    "provenance.tsv",
+];
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProductOutputError {
+    #[error("product output I/O failed at {}: {source}", path.display())]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "product publication failed at {}; rollback failed at {}; backup retained at {}; staging retained at {}: {source}",
+        publish_path.display(),
+        recovery_path.display(),
+        backup_path.display(),
+        staging_path.display(),
+    )]
+    Rollback {
+        publish_path: PathBuf,
+        recovery_path: PathBuf,
+        backup_path: PathBuf,
+        staging_path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "product publication cleanup failed while {operation} at {}; backup retained at {}; staging retained at {}: {source}",
+        path.display(),
+        backup_path.display(),
+        staging_path.display(),
+    )]
+    Cleanup {
+        operation: &'static str,
+        path: PathBuf,
+        backup_path: PathBuf,
+        staging_path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicationOperation {
+    Publish,
+    Restore,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicationFault {
+    PublishAt(usize),
+    PublishAtThenRestoreAt { publish: usize, restore: usize },
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static PUBLICATION_FAULT: std::cell::Cell<Option<PublicationFault>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+#[cfg(test)]
+fn set_publication_fault(fault: Option<PublicationFault>) {
+    PUBLICATION_FAULT.with(|configured| configured.set(fault));
+}
+
+fn inject_publication_failure(
+    _operation: PublicationOperation,
+    _index: usize,
+    _path: &Path,
+) -> std::io::Result<()> {
+    #[cfg(test)]
+    {
+        let matches = PUBLICATION_FAULT.with(|configured| match configured.get() {
+            Some(PublicationFault::PublishAt(index)) => {
+                _operation == PublicationOperation::Publish && _index == index
+            }
+            Some(PublicationFault::PublishAtThenRestoreAt { publish, restore }) => {
+                (_operation == PublicationOperation::Publish && _index == publish)
+                    || (_operation == PublicationOperation::Restore && _index == restore)
+            }
+            None => false,
+        });
+        if matches {
+            return Err(std::io::Error::other(format!(
+                "injected {:?} failure at {}",
+                _operation,
+                _path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn output_io(path: impl Into<PathBuf>, source: std::io::Error) -> ProductOutputError {
+    ProductOutputError::Io {
+        path: path.into(),
+        source,
+    }
+}
+
+fn rollback_error(
+    publish_path: &Path,
+    recovery_path: impl Into<PathBuf>,
+    backup_path: &Path,
+    staging_path: &Path,
+    source: std::io::Error,
+) -> ProductOutputError {
+    ProductOutputError::Rollback {
+        publish_path: publish_path.to_path_buf(),
+        recovery_path: recovery_path.into(),
+        backup_path: backup_path.to_path_buf(),
+        staging_path: staging_path.to_path_buf(),
+        source,
+    }
+}
+
+fn cleanup_error(
+    operation: &'static str,
+    path: impl Into<PathBuf>,
+    backup_path: &Path,
+    staging_path: &Path,
+    source: std::io::Error,
+) -> ProductOutputError {
+    ProductOutputError::Cleanup {
+        operation,
+        path: path.into(),
+        backup_path: backup_path.to_path_buf(),
+        staging_path: staging_path.to_path_buf(),
+        source,
+    }
+}
+
+fn restore_previous_product_set(
+    outdir: &Path,
+    staging: &Path,
+    backup: &Path,
+    backed_up: &[&str],
+    published: &[&str],
+    publish_path: &Path,
+) -> Result<(), ProductOutputError> {
+    for name in published.iter().rev() {
+        let path = outdir.join(name);
+        if let Err(source) = fs::remove_file(&path) {
+            return Err(rollback_error(publish_path, path, backup, staging, source));
+        }
+    }
+
+    for (index, name) in backed_up.iter().enumerate() {
+        let source_path = backup.join(name);
+        let destination = outdir.join(name);
+        if let Err(source) =
+            inject_publication_failure(PublicationOperation::Restore, index, &destination)
+        {
+            return Err(rollback_error(
+                publish_path,
+                destination,
+                backup,
+                staging,
+                source,
+            ));
+        }
+        if let Err(source) = fs::copy(&source_path, &destination) {
+            return Err(rollback_error(
+                publish_path,
+                destination,
+                backup,
+                staging,
+                source,
+            ));
+        }
+    }
+
+    for name in backed_up {
+        let source_path = backup.join(name);
+        let destination = outdir.join(name);
+        let source_size = match fs::metadata(&source_path) {
+            Ok(metadata) => metadata.len(),
+            Err(source) => {
+                return Err(rollback_error(
+                    publish_path,
+                    source_path,
+                    backup,
+                    staging,
+                    source,
+                ));
+            }
+        };
+        let destination_size = match fs::metadata(&destination) {
+            Ok(metadata) if metadata.is_file() => metadata.len(),
+            Ok(_) => {
+                return Err(rollback_error(
+                    publish_path,
+                    destination,
+                    backup,
+                    staging,
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "restored product output is not a regular file",
+                    ),
+                ));
+            }
+            Err(source) => {
+                return Err(rollback_error(
+                    publish_path,
+                    destination,
+                    backup,
+                    staging,
+                    source,
+                ));
+            }
+        };
+        if source_size != destination_size {
+            return Err(rollback_error(
+                publish_path,
+                destination,
+                backup,
+                staging,
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "restored product output size does not match backup",
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn write_product_outputs(
+    audit: &AuditResult,
+    schema_version: SchemaVersion,
+    outdir: impl AsRef<Path>,
+) -> Result<(), ProductOutputError> {
+    let outdir = outdir.as_ref();
+    fs::create_dir_all(outdir).map_err(|source| output_io(outdir, source))?;
+    let staging = outdir.join(format!(
+        ".prokadiff-product-stage-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::create_dir(&staging).map_err(|source| output_io(&staging, source))?;
+    write_product_set(&staging, audit, schema_version)
+        .map_err(|source| output_io(&staging, source))?;
+    if let Some(path) = PRODUCT_OUTPUT_NAMES
+        .iter()
+        .map(|name| outdir.join(name))
+        .find(|path| path.is_dir())
+    {
+        return Err(output_io(
+            path.clone(),
+            std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("product output path is a directory: {}", path.display()),
+            ),
+        ));
+    }
+    let backup = outdir.join(format!(
+        ".prokadiff-product-backup-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::create_dir(&backup).map_err(|source| output_io(&backup, source))?;
+    let mut backed_up = Vec::new();
+    for name in PRODUCT_OUTPUT_NAMES {
+        let destination = outdir.join(name);
+        if destination.exists() {
+            if let Err(error) = fs::rename(&destination, backup.join(name)) {
+                restore_previous_product_set(
+                    outdir,
+                    &staging,
+                    &backup,
+                    &backed_up,
+                    &[],
+                    &destination,
+                )?;
+                if let Err(source) = fs::remove_dir_all(&staging) {
+                    return Err(cleanup_error(
+                        "removing staging after backup rollback",
+                        &staging,
+                        &backup,
+                        &staging,
+                        source,
+                    ));
+                }
+                if let Err(source) = fs::remove_dir_all(&backup) {
+                    return Err(cleanup_error(
+                        "removing backup after backup rollback",
+                        &backup,
+                        &backup,
+                        &staging,
+                        source,
+                    ));
+                }
+                return Err(output_io(destination, error));
+            }
+            backed_up.push(name);
+        }
+    }
+    let mut published = Vec::new();
+    for (index, name) in PRODUCT_OUTPUT_NAMES.iter().enumerate() {
+        let destination = outdir.join(name);
+        let publish =
+            inject_publication_failure(PublicationOperation::Publish, index, &destination)
+                .and_then(|()| fs::rename(staging.join(name), &destination));
+        if let Err(error) = publish {
+            restore_previous_product_set(
+                outdir,
+                &staging,
+                &backup,
+                &backed_up,
+                &published,
+                &destination,
+            )?;
+            if let Err(source) = fs::remove_dir_all(&staging) {
+                return Err(cleanup_error(
+                    "removing staging after publication rollback",
+                    &staging,
+                    &backup,
+                    &staging,
+                    source,
+                ));
+            }
+            if let Err(source) = fs::remove_dir_all(&backup) {
+                return Err(cleanup_error(
+                    "removing backup after verified publication rollback",
+                    &backup,
+                    &backup,
+                    &staging,
+                    source,
+                ));
+            }
+            return Err(output_io(destination, error));
+        }
+        published.push(name);
+    }
+    if let Err(source) = fs::remove_dir(&staging) {
+        return Err(cleanup_error(
+            "removing empty staging after publication",
+            &staging,
+            &backup,
+            &staging,
+            source,
+        ));
+    }
+    if let Err(source) = fs::remove_dir_all(&backup) {
+        return Err(cleanup_error(
+            "removing backup after publication",
+            &backup,
+            &backup,
+            &staging,
+            source,
+        ));
+    }
+    Ok(())
+}
+
+fn write_product_set(
+    outdir: &Path,
+    audit: &AuditResult,
+    schema_version: SchemaVersion,
+) -> std::io::Result<()> {
+    write_unintended_from_audit(outdir.join("unintended.tsv"), audit, schema_version)?;
+    write_summary_from_audit(outdir.join("summary.txt"), audit)?;
+    write_offtarget_sites_tsv(&audit.guide_sites, outdir.join("offtarget_sites.tsv"))?;
+    tables::write_mutation_offtarget_links_from_audit(
+        outdir.join("mutation_offtarget_links.tsv"),
+        audit,
+        schema_version,
+    )?;
+    write_markdown_report(outdir.join("report.md"), audit, schema_version)?;
+    tables::write_edit_outcomes_from_audit(
+        outdir.join("edit_outcomes.tsv"),
+        audit,
+        schema_version,
+    )?;
+    tables::write_post_edit_variants_from_audit(
+        outdir.join("post_edit_variants.tsv"),
+        audit,
+        schema_version,
+    )?;
+    write_provenance_tsv(outdir.join("provenance.tsv"), &audit.provenance)
+}
+
+pub(crate) fn event_display<'a>(
+    audit: &'a AuditResult,
+    event_id: Option<&prokadiff_classify::EventId>,
+) -> std::io::Result<&'a EventDisplay> {
+    let event_id = event_id.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "missing EventId for product row",
+        )
+    })?;
+    audit.event_display.get(event_id).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("missing event display for {event_id}"),
+        )
+    })
 }
 
 /// Returns (complete, partial, missing, events_observed) for edit-level summary.
@@ -315,8 +838,12 @@ fn side2(e: &GdEntry) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prokadiff_classify::{ClassifiedMutation, MutationClass, RefContig};
+    use prokadiff_classify::{
+        build_complete_audit_result, AnalysisProvenance, CandidateSearchStatus, ClassifiedMutation,
+        MutationClass, RefContig, SampleMetadata,
+    };
     use prokadiff_gd::GdEntry;
+    use std::collections::BTreeMap;
 
     const TSV_HEAD_NO_HYP: &str = "seq_id\tposition\tend\tgd_type\tref\talt\tclass\teditor\tpam_profile\tofftarget_mismatch\tdistance_to_site\tside2_seq_id\tside2_position";
     const TSV_HEAD_WITH_HYP: &str = "seq_id\tposition\tend\tgd_type\tref\talt\tclass\teditor\tpam_profile\tofftarget_mismatch\tdistance_to_site\tside2_seq_id\tside2_position\thypothesis";
@@ -379,6 +906,95 @@ mod tests {
             .split('\t')
             .map(str::to_string)
             .collect()
+    }
+
+    fn publication_audit(editor: &str) -> AuditResult {
+        build_complete_audit_result(
+            SampleMetadata {
+                starter_names: vec!["starter.fq".into()],
+                edited_names: vec!["edited.fq".into()],
+                reference_names: vec!["reference.fa".into()],
+                editor: editor.into(),
+                spacer: None,
+                pam: None,
+                threads: 1,
+            },
+            false,
+            Vec::new(),
+            Vec::new(),
+            0,
+            false,
+            &[],
+            &[],
+            &[],
+            &[],
+            CandidateSearchStatus::NotPerformed,
+            AnalysisProvenance {
+                prokadiff_version: "test".into(),
+                git_commit: "test".into(),
+                reference_sha256: None,
+                bowtie2_version: None,
+                offtarget_search_status: "NOT_REQUESTED".into(),
+                cfd_scoring_status: "DISABLED".into(),
+                hsu_scoring_status: "DISABLED".into(),
+                bulge_search_status: "EXACT_UNGAPPED".into(),
+                run_timestamp: "2026-09-24T00:00:00Z".into(),
+            },
+            &[],
+            &[],
+        )
+        .expect("valid empty audit aggregate")
+    }
+
+    fn publication_scratch(name: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "prokadiff-publication-{name}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).expect("create publication scratch directory");
+        dir
+    }
+
+    fn product_bytes(outdir: &Path) -> BTreeMap<&'static str, Vec<u8>> {
+        PRODUCT_OUTPUT_NAMES
+            .iter()
+            .map(|name| {
+                (
+                    *name,
+                    std::fs::read(outdir.join(name)).expect("read complete product output"),
+                )
+            })
+            .collect()
+    }
+
+    fn backup_paths(outdir: &Path) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(outdir)
+            .expect("read publication directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".prokadiff-product-backup-"))
+            })
+            .collect()
+    }
+
+    struct PublicationFaultGuard;
+
+    impl Drop for PublicationFaultGuard {
+        fn drop(&mut self) {
+            set_publication_fault(None);
+        }
+    }
+
+    fn inject_fault(fault: PublicationFault) -> PublicationFaultGuard {
+        set_publication_fault(Some(fault));
+        PublicationFaultGuard
     }
 
     #[test]
@@ -571,5 +1187,57 @@ mod tests {
         assert_eq!(kv(&text, "intended_observed"), "0");
         assert_eq!(kv(&text, "intended_status"), "NA");
         assert_eq!(kv(&text, "intended_missing"), "NA");
+    }
+
+    #[test]
+    fn publish_failure_restores_the_previous_complete_product_set() {
+        let path = publication_scratch("publish-rollback");
+        let old = publication_audit("old-sentinel");
+        let replacement = publication_audit("new-sentinel");
+        write_product_outputs(&old, SchemaVersion::V2, &path).expect("publish old product set");
+        let expected = product_bytes(&path);
+
+        let fault = inject_fault(PublicationFault::PublishAt(1));
+        let result = write_product_outputs(&replacement, SchemaVersion::V2, &path);
+        drop(fault);
+
+        assert!(matches!(result, Err(ProductOutputError::Io { .. })));
+        assert_eq!(product_bytes(&path), expected);
+        assert!(backup_paths(&path).is_empty());
+        let visible = product_bytes(&path);
+        assert!(visible
+            .values()
+            .all(|contents| !String::from_utf8_lossy(contents).contains("new-sentinel")));
+    }
+
+    #[test]
+    fn restore_failure_retains_the_complete_backup_for_manual_recovery() {
+        let path = publication_scratch("restore-rollback");
+        let old = publication_audit("old-sentinel");
+        let replacement = publication_audit("new-sentinel");
+        write_product_outputs(&old, SchemaVersion::V2, &path).expect("publish old product set");
+        let expected = product_bytes(&path);
+
+        let fault = inject_fault(PublicationFault::PublishAtThenRestoreAt {
+            publish: 1,
+            restore: 0,
+        });
+        let result = write_product_outputs(&replacement, SchemaVersion::V2, &path);
+        drop(fault);
+
+        let backup_path = match result {
+            Err(ProductOutputError::Rollback { backup_path, .. }) => backup_path,
+            other => panic!("expected typed rollback error, got {other:?}"),
+        };
+        assert!(backup_path.is_dir());
+        assert_eq!(product_bytes(&backup_path), expected);
+        for name in PRODUCT_OUTPUT_NAMES {
+            let path = path.join(name);
+            assert!(
+                !path.exists()
+                    || !String::from_utf8_lossy(&std::fs::read(path).expect("read visible output"))
+                        .contains("new-sentinel")
+            );
+        }
     }
 }

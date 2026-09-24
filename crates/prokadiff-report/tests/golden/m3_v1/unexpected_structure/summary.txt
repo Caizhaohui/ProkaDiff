@@ -1,0 +1,23 @@
+editor	cas9
+# -- Intended edit summary (FIX-015) --
+intended_provided	yes
+intended_edits_declared	1
+intended_edits_complete	0
+intended_edits_partial	0
+intended_edits_missing	0
+intended_events_observed	1
+# -- Deprecated fields (backward compatibility) --
+intended_declared	1
+intended_observed	1
+intended_status	partial
+intended_missing	0
+# -- Mutation class counts --
+structural	1
+near_homolog	0
+scattered_snv	0
+starter_vs_ref_mutations	7
+# -- FIX-018 validation status --
+offtarget_search_validation_status	validated_via_self_test
+cfd_validation_status	disabled
+hsu_validation_status	experimental
+bulge_validation_status	experimental

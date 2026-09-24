@@ -8,18 +8,13 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use prokadiff_classify::{
-    classify, parse_intended_path, project_associations_to_links, ClassifyOptions, EditorKind,
-    RefContig, DEFAULT_MAX_MISMATCHES,
+    classify, parse_intended_path, ClassifyOptions, EditorKind, RefContig, DEFAULT_MAX_MISMATCHES,
 };
 use prokadiff_evidence::align::FastqInput;
 use prokadiff_evidence::engine::{run_sample, EngineOptions};
 use prokadiff_evidence::fasta::{read_reference, read_references, write_combined_fasta};
 use prokadiff_gd::GenomeDiff;
-use prokadiff_offtarget::{write_mutation_offtarget_links_tsv, write_offtarget_sites_tsv};
-use prokadiff_report::{
-    write_edit_outcomes_tsv, write_markdown_report, write_post_edit_variants_tsv,
-    write_provenance_tsv, write_summary, write_unintended_tsv,
-};
+use prokadiff_report::{write_product_outputs, ProductOutputError};
 
 use cli::{
     validate_evidence, validate_product, Cli, CliError, Commands, Editor, EvidenceArgs, ProductJob,
@@ -63,6 +58,7 @@ enum RunError {
     Intended(prokadiff_classify::IntendedError),
     Differential(prokadiff_classify::DifferentialError),
     AssociationProjection(prokadiff_classify::AssociationProjectionError),
+    ProductOutput(ProductOutputError),
     Io(std::io::Error),
 }
 
@@ -102,6 +98,12 @@ impl From<prokadiff_classify::AssociationProjectionError> for RunError {
     }
 }
 
+impl From<ProductOutputError> for RunError {
+    fn from(e: ProductOutputError) -> Self {
+        Self::ProductOutput(e)
+    }
+}
+
 impl From<std::io::Error> for RunError {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e)
@@ -117,6 +119,7 @@ impl std::fmt::Display for RunError {
             Self::Intended(e) => write!(f, "{e}"),
             Self::Differential(e) => write!(f, "{e}"),
             Self::AssociationProjection(e) => write!(f, "{e}"),
+            Self::ProductOutput(e) => write!(f, "{e}"),
             Self::Io(e) => write!(f, "{e}"),
         }
     }
@@ -239,33 +242,6 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
         },
     )?;
 
-    let tsv = job.outdir.join("unintended.tsv");
-    let summary = job.outdir.join("summary.txt");
-    write_unintended_tsv(
-        &tsv,
-        &classified.unintended,
-        editor_kind.as_str(),
-        job.hypothesis,
-        &refs,
-    )?;
-    write_summary(
-        &summary,
-        &classified,
-        job.intended.is_some(),
-        editor_kind.as_str(),
-    )?;
-
-    let offtarget_tsv = job.outdir.join("offtarget_sites.tsv");
-    let links_tsv = job.outdir.join("mutation_offtarget_links.tsv");
-
-    let offtarget_sites = classified.candidate_search.sites.clone();
-    let offtarget_links =
-        project_associations_to_links(&classified.associations, &classified.differential_events)?;
-
-    write_offtarget_sites_tsv(&offtarget_sites, &offtarget_tsv)?;
-    write_mutation_offtarget_links_tsv(&offtarget_links, &links_tsv)?;
-
-    // Build unified AuditResult and export modern audit deliverables (Phases C, D, E)
     let sample_meta = prokadiff_classify::SampleMetadata {
         starter_names: job
             .starter
@@ -366,51 +342,31 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
         })
         .collect();
 
-    let audit_result = prokadiff_classify::build_audit_result(
+    let audit_result = prokadiff_classify::build_complete_audit_result(
         sample_meta,
+        job.intended.is_some(),
         classified
             .intended_edit_assessments
             .clone()
             .unwrap_or_default(),
+        classified.intended_event_ids.clone(),
+        classified.starter_vs_ref,
+        job.hypothesis,
         &classified.unintended,
-        &classified.intended_event_ids,
         &classified.differential_events,
-        &offtarget_sites,
+        &classified.candidate_search.sites,
         &classified.associations,
         classified.candidate_search.status,
         provenance,
         &features,
+        &refs,
     )?;
 
-    let report_md = job.outdir.join("report.md");
-    let edit_outcomes_tsv = job.outdir.join("edit_outcomes.tsv");
-    let post_edit_variants_tsv = job.outdir.join("post_edit_variants.tsv");
-    let provenance_tsv = job.outdir.join("provenance.tsv");
-
-    write_markdown_report(&report_md, &audit_result, &refs)?;
-    let legacy_event_ids: Vec<_> = classified
-        .differential_events
-        .iter()
-        .map(|event| (event.event_id.clone(), event.representative.id))
-        .collect();
-    write_edit_outcomes_tsv(
-        &edit_outcomes_tsv,
-        &audit_result.intended_edits,
-        &legacy_event_ids,
-    )?;
-    write_post_edit_variants_tsv(&post_edit_variants_tsv, &audit_result.variants, &refs)?;
-    write_provenance_tsv(&provenance_tsv, &audit_result.provenance)?;
+    write_product_outputs(&audit_result, job.schema_version, &job.outdir)?;
 
     info!("wrote {}", starter_out.display());
     info!("wrote {}", edited_out.display());
-    info!("wrote {}", tsv.display());
-    info!("wrote {}", summary.display());
-    info!("wrote {}", offtarget_tsv.display());
-    info!("wrote {}", links_tsv.display());
-    info!("wrote {}", report_md.display());
-    info!("wrote {}", edit_outcomes_tsv.display());
-    info!("wrote {}", post_edit_variants_tsv.display());
-    info!("wrote {}", provenance_tsv.display());
+    info!("wrote product reports under {}", job.outdir.display());
     Ok(())
 }
 

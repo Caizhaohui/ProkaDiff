@@ -138,4 +138,31 @@ print("synth_parent_child OK: historical subtracted, intended masked, extra SNP 
 print(f"unintended_rows={len(rows)}")
 PY
 
+echo "running explicit schema v1 product generation on qcpu_18i..."
+"${PROKDIFF}" \
+  --starter "${GEN}/starter_R1.fastq" --starter "${GEN}/starter_R2.fastq" \
+  --edited "${GEN}/edited_R1.fastq" --edited "${GEN}/edited_R2.fastq" \
+  --ref "${GEN}/ref.fa" \
+  --editor dsb \
+  --intended "${GEN}/intended.tsv" \
+  --threads "${THREADS}" \
+  --schema-version v1 \
+  --outdir "${JOBOUT}/prokadiff_v1" \
+  | tee "${JOBOUT}/prokadiff_v1.stdout"
+
+python3 - "${JOBOUT}/prokadiff_v1" <<'PY'
+import sys
+from pathlib import Path
+
+outdir = Path(sys.argv[1])
+unintended = (outdir / "unintended.tsv").read_text().splitlines()[0]
+post = (outdir / "post_edit_variants.tsv").read_text().splitlines()[0]
+report = (outdir / "report.md").read_text()
+if unintended.endswith("\tevent_id") or post.endswith("\tevent_id"):
+    raise SystemExit("FAIL: schema v1 contains a v2 EventId column")
+if "DV1_" in report:
+    raise SystemExit("FAIL: schema v1 report contains a v2 EventId presentation")
+print("M4 schema v1 assertion passed: legacy TSV and report presentation confirmed")
+PY
+
 echo "done ${JOBOUT}"

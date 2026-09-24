@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand};
+use prokadiff_report::SchemaVersion;
 
 pub const STARTER_MANDATORY: &str =
     "starter-strain WGS is mandatory; provide both --starter and --edited. \
@@ -55,6 +56,8 @@ pub struct Cli {
     /// Deprecated legacy flag: omit hypothesis (hypothesis is now disabled by default).
     #[arg(long = "no-hypothesis", hide = true, default_value_t = false)]
     pub no_hypothesis: bool,
+    #[arg(long, default_value = "v2")]
+    pub schema_version: SchemaVersion,
     /// Directory where diff outputs (unintended.tsv, summary.txt, .gd) will be written.
     #[arg(long)]
     pub outdir: Option<PathBuf>,
@@ -250,6 +253,7 @@ pub struct ProductJob {
     pub keep_bam: bool,
     pub intended: Option<PathBuf>,
     pub hypothesis: bool,
+    pub schema_version: SchemaVersion,
     pub offtarget_association_window: u64,
     pub max_dna_bulge: u32,
     pub max_rna_bulge: u32,
@@ -335,6 +339,7 @@ pub fn validate_product(cli: &Cli) -> Result<ProductJob, CliError> {
         keep_bam: cli.keep_bam,
         intended: cli.intended.clone(),
         hypothesis: cli.experimental_hypothesis_annotation && !cli.no_hypothesis,
+        schema_version: cli.schema_version,
         offtarget_association_window: cli.offtarget_association_window,
         max_dna_bulge: cli.max_dna_bulge,
         max_rna_bulge: cli.max_rna_bulge,
@@ -416,6 +421,15 @@ mod tests {
         let err = validate_product(&cli).unwrap_err();
         assert!(matches!(err, CliError::StarterMandatory));
         assert!(err.to_string().contains("starter-strain WGS is mandatory"));
+    }
+
+    #[test]
+    fn schema_version_defaults_to_v2_and_accepts_v1() {
+        let default_cli = Cli::try_parse_from(["prokadiff"]).expect("schema version has a default");
+        assert_eq!(default_cli.schema_version, SchemaVersion::V2);
+        let legacy_cli = Cli::try_parse_from(["prokadiff", "--schema-version", "v1"])
+            .expect("v1 schema version parses");
+        assert_eq!(legacy_cli.schema_version, SchemaVersion::V1);
     }
 
     #[test]
