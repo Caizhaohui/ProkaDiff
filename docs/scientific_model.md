@@ -78,6 +78,7 @@ ProkaDiff 并不是一个先入为主的“CRISPR 脱靶预测器”（CRISPR of
   1. `NotPerformed`：未执行扫描（如 `--editor dsb` 或未提供 spacer）；
   2. `PerformedNoCandidates`：已全基因组扫描，但未发现符合错配/凸起阈值的位点；
   3. `PerformedWithCandidates`：已全基因组扫描，检出一个或多个候选靶位。
+  此状态必须传至 `AuditResult` 和报告；未扫描时不可写作“未发现候选位点”，有候选但某事件无关联时也不可写作全局零候选。
 - **证据分层（Evidence Tiers）：**
   候选靶点保留其底层比对机制元数据（`search_backend`、`bulge_type`、`bulge_size`），明确区分：
   - **Exact Match**：无序列凸起（BulgeType = None），仅含错配；
@@ -90,6 +91,7 @@ ProkaDiff 并不是一个先入为主的“CRISPR 脱靶预测器”（CRISPR of
   - `primary_association` 仅作为读时确定性全序（最小距离、最少错配、位点 ID）投影，绝不丢弃备选候选位点。
 - **彻底废除 `SITE_UNKNOWN` 与伪造数据：**
   未关联到候选靶位的突变，其关联记录数严格为 0，严禁生成伪造的 `SITE_UNKNOWN` 或 `distance=0 / mismatch=0` 虚假记录。
+  `ON_TARGET` 仅表示与预期编辑声明的关系；若无实际候选位点测量，公开表中的向导错配和位点距离必须为 `NA`。关联输出若无法按 `EventId` 找到真实差分事件，必须报错，不能回退为伪造 ID。
 - **MC 证据唯一定位：**
   覆盖度缺失（MC）属于非差分事件的只读证据，绝不参与向导依赖位点关联，绝不生成机制关联记录。
 

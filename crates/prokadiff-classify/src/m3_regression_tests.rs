@@ -3,7 +3,8 @@ use prokadiff_offtarget::{BulgeType, OffTargetSite, Strand};
 
 use crate::association::{
     associate_events_to_sites, canonical_sort_sites, linear_associate_events_to_sites,
-    primary_association, project_associations_to_links, CandidateSearchStatus,
+    primary_association, project_associations_to_links, AssociationProjectionError,
+    CandidateSearchStatus,
 };
 use crate::audit::{build_audit_result, AnalysisProvenance, GuideRelation, SampleMetadata};
 use crate::classify::{classify, ClassifyOptions, MutationClass};
@@ -108,9 +109,11 @@ fn test_no_site_unknown_anywhere_in_emitted_output() {
         &[event],
         &[],
         &[], // no associations
+        CandidateSearchStatus::PerformedNoCandidates,
         sample_provenance(),
         &[],
-    );
+    )
+    .expect("valid audit associations");
 
     assert_eq!(audit.variants.len(), 1);
     assert_eq!(audit.variants[0].guide_relation, GuideRelation::None);
@@ -259,7 +262,8 @@ fn test_jc_breakpoint_multiple_qualifying_sites_produces_more_than_two_rows() {
         "JC with 2 qualifying sites per breakpoint must yield 4 rows"
     );
 
-    let links = project_associations_to_links(&assocs, &[event]);
+    let links = project_associations_to_links(&assocs, &[event])
+        .expect("all associations resolve to events");
     assert_eq!(
         links.len(),
         4,
@@ -562,9 +566,11 @@ fn test_positional_association_fallback_removed_two_unrelated_events_same_coordi
         &[ev1],
         &[site],
         &assocs,
+        CandidateSearchStatus::PerformedWithCandidates,
         sample_provenance(),
         &[],
-    );
+    )
+    .expect("valid audit associations");
 
     assert_eq!(audit.variants.len(), 2);
     // Variant 1 with real EventId gets the association
@@ -850,4 +856,17 @@ fn test_primary_association_final_tie_deterministic_jc() {
     let p_d_c = primary_association(&pair_d_c).unwrap();
     assert_eq!(p_c_d.site_id, "SITE_000001");
     assert_eq!(p_d_c.site_id, "SITE_000001");
+}
+
+#[test]
+fn test_projection_rejects_unknown_event_id() {
+    let event = make_event(GdEntry::snp(41, "chr1", 100, "C"));
+    let site = mock_site("SITE_000001", "chr1", 90, 95, "CGG", 1);
+    let associations = associate_events_to_sites(std::slice::from_ref(&event), &[site], 50);
+    assert_eq!(associations.len(), 1);
+
+    assert_eq!(
+        project_associations_to_links(&associations, &[]),
+        Err(AssociationProjectionError::UnknownEventId(event.event_id))
+    );
 }

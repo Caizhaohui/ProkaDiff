@@ -147,9 +147,9 @@ pub fn write_post_edit_variants_tsv(
             }
             prokadiff_classify::GuideRelation::OnTarget => (
                 "ON_TARGET",
-                "0".to_string(),
                 "NA".to_string(),
-                "0".to_string(),
+                "NA".to_string(),
+                "NA".to_string(),
             ),
             prokadiff_classify::GuideRelation::CandidateOffTarget {
                 spacer_mismatches,

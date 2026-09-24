@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use prokadiff_gd::{GdEntry, GdKind};
 use prokadiff_offtarget::{MutationOffTargetLink, OffTargetSite};
 
-use crate::association::{primary_association, MutationSiteAssociation};
+use crate::association::{
+    primary_association, AssociationProjectionError, CandidateSearchStatus, MutationSiteAssociation,
+};
 use crate::classify::{ClassifiedMutation, MutationClass};
 use crate::differential::{DifferentialEvent, EventId, EvidenceReferences};
 use crate::intended::{IntendedEditAssessment, IntendedEventRole};
@@ -306,6 +308,7 @@ pub struct AuditResult {
     pub guide_sites: Vec<OffTargetSite>,
     pub variant_site_links: Vec<MutationOffTargetLink>,
     pub associations: Vec<MutationSiteAssociation>,
+    pub candidate_search_status: CandidateSearchStatus,
     pub provenance: AnalysisProvenance,
 }
 
@@ -319,9 +322,10 @@ pub fn build_audit_result(
     differential_events: &[DifferentialEvent],
     guide_sites: &[OffTargetSite],
     associations: &[MutationSiteAssociation],
+    candidate_search_status: CandidateSearchStatus,
     provenance: AnalysisProvenance,
     features: &[AnnotatedFeature],
-) -> AuditResult {
+) -> Result<AuditResult, AssociationProjectionError> {
     let mut variants = Vec::new();
     let mut id_counter = 1usize;
 
@@ -473,17 +477,18 @@ pub fn build_audit_result(
     }
 
     let variant_site_links =
-        crate::association::project_associations_to_links(associations, differential_events);
+        crate::association::project_associations_to_links(associations, differential_events)?;
 
-    AuditResult {
+    Ok(AuditResult {
         sample,
         intended_edits: intended_assessments,
         variants,
         guide_sites: guide_sites.to_vec(),
         variant_site_links,
         associations: associations.to_vec(),
+        candidate_search_status,
         provenance,
-    }
+    })
 }
 
 fn classify_size(kind: &GdKind, entry: &GdEntry) -> SizeClass {
@@ -783,9 +788,11 @@ mod tests {
             &[differential_event],
             &[],
             &[],
+            CandidateSearchStatus::NotPerformed,
             prov,
             &[],
-        );
+        )
+        .expect("valid audit associations");
 
         assert_eq!(audit.variants.len(), 2);
         assert_eq!(audit.variants[0].origin_status, OriginStatus::Intended);
@@ -822,9 +829,22 @@ mod tests {
             run_timestamp: "2026-09-16T12:00:00Z".into(),
         };
 
-        let event_id = EventId::parse(&format!("DV1_{:032x}", 10)).expect("valid test event id");
+        let entry = GdEntry::snp(10, "chr", 125, "C");
+        let refs = [crate::RefContig {
+            name: "chr".into(),
+            seq: vec![b'A'; 500],
+        }];
+        let canonical = crate::CanonicalEvent::from_gd_entry(&entry, &refs).expect("valid SNP");
+        let (event_id, _) = canonical.compute_event_id();
+        let event = DifferentialEvent {
+            event_id: event_id.clone(),
+            canonical,
+            representative: entry.clone(),
+            merged_source_ids: vec![10],
+            evidence: EvidenceReferences::default(),
+        };
         let unintended_cm = ClassifiedMutation {
-            entry: GdEntry::snp(10, "chr", 125, "C"),
+            entry,
             class: MutationClass::NearHomolog,
             pam_profile: Some("CGG".into()),
             offtarget_mismatch: Some(1),
@@ -860,12 +880,14 @@ mod tests {
             vec![],
             &[unintended_cm],
             &[],
-            &[],
+            &[event],
             &[],
             &[real_assoc],
+            CandidateSearchStatus::PerformedWithCandidates,
             prov,
             &[],
-        );
+        )
+        .expect("valid audit associations");
 
         assert_eq!(audit.variants.len(), 1);
         match &audit.variants[0].guide_relation {

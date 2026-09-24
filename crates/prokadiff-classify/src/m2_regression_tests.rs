@@ -396,6 +396,7 @@ fn event_id_and_evidence_reach_audit_without_offtarget_rewrite() {
         &result.differential_events,
         &[],
         &[],
+        crate::CandidateSearchStatus::NotPerformed,
         AnalysisProvenance {
             prokadiff_version: "test".into(),
             git_commit: "test".into(),
@@ -408,7 +409,8 @@ fn event_id_and_evidence_reach_audit_without_offtarget_rewrite() {
             run_timestamp: "test".into(),
         },
         &[],
-    );
+    )
+    .expect("valid audit associations");
     assert_eq!(audit.intended_edits[0].matched_event_ids, vec![event_id]);
     assert_eq!(audit.variants[0].origin_status, OriginStatus::Intended);
     assert_eq!(audit.variants[0].evidence.ra, Some(true));

@@ -37,6 +37,12 @@ pub struct CandidateSearchOutcome {
     pub sites: Vec<OffTargetSite>,
 }
 
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum AssociationProjectionError {
+    #[error("association references unknown differential event {0}")]
+    UnknownEventId(EventId),
+}
+
 impl Default for CandidateSearchOutcome {
     fn default() -> Self {
         Self {
@@ -406,7 +412,7 @@ pub fn associate_events_to_sites(
 pub fn project_associations_to_links(
     associations: &[MutationSiteAssociation],
     events: &[DifferentialEvent],
-) -> Vec<MutationOffTargetLink> {
+) -> Result<Vec<MutationOffTargetLink>, AssociationProjectionError> {
     associations
         .iter()
         .map(|assoc| {
@@ -414,8 +420,10 @@ pub fn project_associations_to_links(
                 .iter()
                 .find(|e| e.event_id == assoc.event_id)
                 .map(|e| format!("mut_{}", e.representative.id))
-                .unwrap_or_else(|| assoc.event_id.as_str().to_string());
-            MutationOffTargetLink {
+                .ok_or_else(|| {
+                    AssociationProjectionError::UnknownEventId(assoc.event_id.clone())
+                })?;
+            Ok(MutationOffTargetLink {
                 mutation_id: mut_id,
                 site_id: assoc.site_id.clone(),
                 mutation_type: assoc.mutation_type.clone(),
@@ -427,7 +435,7 @@ pub fn project_associations_to_links(
                 pam: assoc.pam.clone(),
                 cfd_score: assoc.cfd_score,
                 association_window: assoc.association_window,
-            }
+            })
         })
         .collect()
 }

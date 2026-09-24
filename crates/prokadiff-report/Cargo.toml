@@ -12,3 +12,7 @@ readme.workspace = true
 [dependencies]
 prokadiff-gd = { workspace = true }
 prokadiff-classify = { workspace = true }
+
+[dev-dependencies]
+# Report state regression fixture needs a real candidate-site value.
+prokadiff-offtarget = { workspace = true }

@@ -3,8 +3,8 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use prokadiff_classify::{
-    AnnotatedVariant, AuditResult, GuideRelation, IntendedEditStatus, OriginStatus, RefContig,
-    ReviewPriority, SizeClass,
+    AnnotatedVariant, AuditResult, CandidateSearchStatus, GuideRelation, IntendedEditStatus,
+    OriginStatus, RefContig, ReviewPriority, SizeClass,
 };
 use prokadiff_gd::GdKind;
 
@@ -151,7 +151,12 @@ fn write_executive_summary(w: &mut impl Write, audit: &AuditResult) -> std::io::
         "- **Candidate guide-dependent off-target events:** {}",
         n_candidate_ot
     )?;
-    writeln!(w, "- **Distal / collateral small variants:** {}\n", n_small)?;
+    let small_label = match audit.candidate_search_status {
+        CandidateSearchStatus::NotPerformed => "Small variants with unassessed guide proximity",
+        CandidateSearchStatus::PerformedNoCandidates
+        | CandidateSearchStatus::PerformedWithCandidates => "Distal / collateral small variants",
+    };
+    writeln!(w, "- **{small_label}:** {n_small}\n")?;
 
     if n_total == 0 {
         writeln!(
@@ -319,7 +324,7 @@ fn write_differential_summary(w: &mut impl Write, audit: &AuditResult) -> std::i
     )?;
     writeln!(
         w,
-        "| **REVIEW** | **{}** | Distal point mutations, small indels, or non-target coding variants |",
+        "| **REVIEW** | **{}** | Small point mutations, indels, or coding variants requiring review |",
         rev_count
     )?;
     writeln!(
@@ -433,10 +438,15 @@ fn write_candidate_offtarget_events(
         .collect();
 
     if ot_vars.is_empty() {
-        writeln!(
-            w,
-            "No candidate guide-dependent off-target events were identified within the configured search window.\n"
-        )?;
+        let message = match audit.candidate_search_status {
+            CandidateSearchStatus::NotPerformed =>
+                "Candidate guide-site search was not performed; no off-target association can be assessed.",
+            CandidateSearchStatus::PerformedNoCandidates =>
+                "Candidate guide-site search was performed and found no candidate sites under the configured parameters.",
+            CandidateSearchStatus::PerformedWithCandidates =>
+                "Candidate guide sites were found, but no post-edit differential variant was associated within the configured window.",
+        };
+        writeln!(w, "{message}\n")?;
         return Ok(());
     }
 
@@ -498,7 +508,12 @@ fn write_distal_small_variants(
     audit: &AuditResult,
     refs: &[RefContig],
 ) -> std::io::Result<()> {
-    writeln!(w, "## 7. Distal Small Variants\n")?;
+    let section_title = match audit.candidate_search_status {
+        CandidateSearchStatus::NotPerformed => "Small Variants With Unassessed Guide Proximity",
+        CandidateSearchStatus::PerformedNoCandidates
+        | CandidateSearchStatus::PerformedWithCandidates => "Distal Small Variants",
+    };
+    writeln!(w, "## 7. {section_title}\n")?;
 
     let distal_vars: Vec<&AnnotatedVariant> = audit
         .variants
@@ -511,15 +526,34 @@ fn write_distal_small_variants(
         .collect();
 
     if distal_vars.is_empty() {
-        writeln!(w, "No distal small variants were detected.\n")?;
+        let message = match audit.candidate_search_status {
+            CandidateSearchStatus::NotPerformed =>
+                "No small post-edit differential variants were detected; guide-site proximity was not assessed.",
+            CandidateSearchStatus::PerformedNoCandidates
+            | CandidateSearchStatus::PerformedWithCandidates =>
+                "No distal small variants were detected.",
+        };
+        writeln!(w, "{message}\n")?;
         return Ok(());
     }
 
-    writeln!(
-        w,
-        "{} small post-edit differential variant(s) were detected without nearby predicted guide-homologous sites.\n",
-        distal_vars.len()
-    )?;
+    match audit.candidate_search_status {
+        CandidateSearchStatus::NotPerformed => writeln!(
+            w,
+            "{} small post-edit differential variant(s) were detected; guide-site proximity was not assessed.\n",
+            distal_vars.len()
+        )?,
+        CandidateSearchStatus::PerformedNoCandidates => writeln!(
+            w,
+            "{} small post-edit differential variant(s) were detected; the performed search found no candidate guide sites.\n",
+            distal_vars.len()
+        )?,
+        CandidateSearchStatus::PerformedWithCandidates => writeln!(
+            w,
+            "{} small post-edit differential variant(s) were detected without nearby predicted guide-homologous sites within the configured window.\n",
+            distal_vars.len()
+        )?,
+    }
 
     writeln!(
         w,
@@ -576,9 +610,17 @@ fn write_distal_small_variants(
         )?;
     }
 
+    let interpretation = match audit.candidate_search_status {
+        CandidateSearchStatus::NotPerformed =>
+            "Guide-site search was not performed, so spatial and sequence association is unknown.",
+        CandidateSearchStatus::PerformedNoCandidates =>
+            "No candidate guide sites met the configured search parameters; guide-dependent mechanisms cannot be excluded.",
+        CandidateSearchStatus::PerformedWithCandidates =>
+            "These variants had no candidate guide site within the configured association window.",
+    };
     writeln!(
         w,
-        "\n> **Interpretation:** Distal variants lack sequence and spatial association with the declared editing system. Potential origins include spontaneous culture drift, electroporation/transformation stress, or uncharacterized cellular burden.\n"
+        "\n> **Interpretation:** {interpretation} Other potential origins include spontaneous culture drift, electroporation/transformation stress, or uncharacterized cellular burden.\n"
     )?;
     Ok(())
 }

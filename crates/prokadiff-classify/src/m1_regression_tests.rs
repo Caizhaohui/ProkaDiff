@@ -133,6 +133,7 @@ fn ra_mc_and_jc_evidence_reaches_audit_variants() {
         &classified.differential_events,
         &[],
         &[],
+        crate::CandidateSearchStatus::NotPerformed,
         AnalysisProvenance {
             prokadiff_version: "test".into(),
             git_commit: "test".into(),
@@ -145,7 +146,8 @@ fn ra_mc_and_jc_evidence_reaches_audit_variants() {
             run_timestamp: "2026-09-22T00:00:00Z".into(),
         },
         &[],
-    );
+    )
+    .expect("valid audit associations");
 
     // Then audit/report evidence summaries come from DifferentialEvent evidence.
     let snp_audit = audit

@@ -62,6 +62,7 @@ enum RunError {
     Gd(prokadiff_gd::GdError),
     Intended(prokadiff_classify::IntendedError),
     Differential(prokadiff_classify::DifferentialError),
+    AssociationProjection(prokadiff_classify::AssociationProjectionError),
     Io(std::io::Error),
 }
 
@@ -95,6 +96,12 @@ impl From<prokadiff_classify::DifferentialError> for RunError {
     }
 }
 
+impl From<prokadiff_classify::AssociationProjectionError> for RunError {
+    fn from(e: prokadiff_classify::AssociationProjectionError) -> Self {
+        Self::AssociationProjection(e)
+    }
+}
+
 impl From<std::io::Error> for RunError {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e)
@@ -109,6 +116,7 @@ impl std::fmt::Display for RunError {
             Self::Gd(e) => write!(f, "{e}"),
             Self::Intended(e) => write!(f, "{e}"),
             Self::Differential(e) => write!(f, "{e}"),
+            Self::AssociationProjection(e) => write!(f, "{e}"),
             Self::Io(e) => write!(f, "{e}"),
         }
     }
@@ -252,7 +260,7 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
 
     let offtarget_sites = classified.candidate_search.sites.clone();
     let offtarget_links =
-        project_associations_to_links(&classified.associations, &classified.differential_events);
+        project_associations_to_links(&classified.associations, &classified.differential_events)?;
 
     write_offtarget_sites_tsv(&offtarget_sites, &offtarget_tsv)?;
     write_mutation_offtarget_links_tsv(&offtarget_links, &links_tsv)?;
@@ -369,9 +377,10 @@ fn run_product(job: ProductJob) -> Result<(), RunError> {
         &classified.differential_events,
         &offtarget_sites,
         &classified.associations,
+        classified.candidate_search.status,
         provenance,
         &features,
-    );
+    )?;
 
     let report_md = job.outdir.join("report.md");
     let edit_outcomes_tsv = job.outdir.join("edit_outcomes.tsv");

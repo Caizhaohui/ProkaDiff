@@ -29,8 +29,8 @@ pub use differential::{
 pub use association::{
     associate_events_to_sites, canonical_sort_associations, canonical_sort_sites,
     linear_associate_events_to_sites, primary_association, project_associations_to_links,
-    CandidateSearchOutcome, CandidateSearchStatus, MutationSiteAssociation, DEFAULT_MAX_MISMATCHES,
-    DEFAULT_NEAR_DISTANCE,
+    AssociationProjectionError, CandidateSearchOutcome, CandidateSearchStatus,
+    MutationSiteAssociation, DEFAULT_MAX_MISMATCHES, DEFAULT_NEAR_DISTANCE,
 };
 pub use audit::{
     build_audit_result, classify_is_family, find_gene_annotation, AnalysisProvenance,

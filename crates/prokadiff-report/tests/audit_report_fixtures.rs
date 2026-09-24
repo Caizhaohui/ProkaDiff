@@ -1,11 +1,12 @@
 use prokadiff_classify::{
     write_mutation_offtarget_links_tsv, write_offtarget_sites_tsv, AnalysisProvenance,
-    AnnotatedVariant, AuditResult, BoundaryAssessment, ClassifiedMutation, EventId,
-    EvidenceObservation, EvidenceSummary, GeneAnnotation, GuideRelation, IntendedEditAssessment,
-    IntendedEditStatus, IntendedRelation, MobileElementAnnotation, MutationClass, OriginStatus,
-    RefContig, ReviewPriority, SampleMetadata, SizeClass,
+    AnnotatedVariant, AuditResult, BoundaryAssessment, CandidateSearchStatus, ClassifiedMutation,
+    EventId, EvidenceObservation, EvidenceSummary, GeneAnnotation, GuideRelation,
+    IntendedEditAssessment, IntendedEditStatus, IntendedRelation, MobileElementAnnotation,
+    MutationClass, OriginStatus, RefContig, ReviewPriority, SampleMetadata, SizeClass,
 };
 use prokadiff_gd::GdEntry;
+use prokadiff_offtarget::{BulgeType, OffTargetSite, Strand};
 use prokadiff_report::{
     write_edit_outcomes_tsv, write_markdown_report, write_post_edit_variants_tsv,
     write_provenance_tsv, write_unintended_tsv,
@@ -112,6 +113,7 @@ fn test_fixture_1_clean_edit() {
         guide_sites: vec![],
         variant_site_links: vec![],
         associations: vec![],
+        candidate_search_status: CandidateSearchStatus::NotPerformed,
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -174,6 +176,7 @@ fn test_fixture_2_partial_cassette() {
         guide_sites: vec![],
         variant_site_links: vec![],
         associations: vec![],
+        candidate_search_status: CandidateSearchStatus::NotPerformed,
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -225,6 +228,7 @@ fn test_fixture_3_mobile_element_insertion() {
         guide_sites: vec![],
         variant_site_links: vec![],
         associations: vec![],
+        candidate_search_status: CandidateSearchStatus::NotPerformed,
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -275,6 +279,7 @@ fn test_fixture_4_candidate_offtarget() {
         guide_sites: vec![],
         variant_site_links: vec![],
         associations: vec![],
+        candidate_search_status: CandidateSearchStatus::PerformedWithCandidates,
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -301,6 +306,7 @@ fn test_fixture_5_unvalidated_cfd_gate() {
         guide_sites: vec![],
         variant_site_links: vec![],
         associations: vec![],
+        candidate_search_status: CandidateSearchStatus::NotPerformed,
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -362,6 +368,115 @@ fn test_post_edit_variants_and_provenance_tsv() {
 }
 
 #[test]
+fn test_on_target_without_site_has_no_mechanistic_measurements() {
+    let path = std::env::temp_dir().join("prokadiff_on_target_unmeasured.tsv");
+    let variant = AnnotatedVariant {
+        variant_id: "VAR_0001".into(),
+        entry: GdEntry::snp(1, "NC_000913.3", 3, "G"),
+        origin_status: OriginStatus::Intended,
+        size_class: SizeClass::Small,
+        intended_relation: IntendedRelation::Expected,
+        guide_relation: GuideRelation::OnTarget,
+        mobile_element_relation: None,
+        repeat_relation: None,
+        gene_annotation: None,
+        evidence: EvidenceSummary::unknown(),
+        review_priority: ReviewPriority::Info,
+        legacy_class: None,
+    };
+
+    write_post_edit_variants_tsv(&path, &[variant], &mock_refs()).unwrap();
+    let content = std::fs::read_to_string(&path).unwrap();
+    let row = content.lines().nth(1).expect("one variant row");
+    let fields: Vec<&str> = row.split('\t').collect();
+    assert_eq!(fields[11], "ON_TARGET");
+    assert_eq!(fields[12], "NA");
+    assert_eq!(fields[13], "NA");
+    assert_eq!(fields[14], "NA");
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn test_report_distinguishes_candidate_search_states() {
+    let path = std::env::temp_dir().join("prokadiff_search_states_report.md");
+    let variant = AnnotatedVariant {
+        variant_id: "VAR_0001".into(),
+        entry: GdEntry::snp(1, "NC_000913.3", 3, "G"),
+        origin_status: OriginStatus::PostEditDifferential,
+        size_class: SizeClass::Small,
+        intended_relation: IntendedRelation::None,
+        guide_relation: GuideRelation::None,
+        mobile_element_relation: None,
+        repeat_relation: None,
+        gene_annotation: None,
+        evidence: EvidenceSummary::unknown(),
+        review_priority: ReviewPriority::Review,
+        legacy_class: Some(MutationClass::ScatteredSnv),
+    };
+    let site = OffTargetSite {
+        site_id: "SITE_000001".into(),
+        seq_id: "NC_000913.3".into(),
+        start: 100,
+        end: 110,
+        strand: Strand::Plus,
+        guide: "ACGT".into(),
+        target_seq: "ACGTAGG".into(),
+        pam: "AGG".into(),
+        mismatches: 0,
+        bulge_type: BulgeType::None,
+        bulge_size: 0,
+        search_backend: "rust_exact".into(),
+        cfd_score: None,
+        hsu_score: None,
+    };
+    let mut audit = AuditResult {
+        sample: mock_sample(),
+        intended_edits: vec![],
+        variants: vec![variant],
+        guide_sites: vec![],
+        variant_site_links: vec![],
+        associations: vec![],
+        candidate_search_status: CandidateSearchStatus::NotPerformed,
+        provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
+    };
+
+    let cases = [
+        (
+            CandidateSearchStatus::NotPerformed,
+            "Candidate guide-site search was not performed",
+            "guide-site proximity was not assessed",
+            "spatial and sequence association is unknown",
+        ),
+        (
+            CandidateSearchStatus::PerformedNoCandidates,
+            "search was performed and found no candidate sites",
+            "the performed search found no candidate guide sites",
+            "guide-dependent mechanisms cannot be excluded",
+        ),
+        (
+            CandidateSearchStatus::PerformedWithCandidates,
+            "Candidate guide sites were found, but no post-edit differential variant was associated",
+            "without nearby predicted guide-homologous sites within the configured window",
+            "no candidate guide site within the configured association window",
+        ),
+    ];
+    for (status, section_text, distal_text, interpretation_text) in cases {
+        audit.candidate_search_status = status;
+        audit.guide_sites = if status == CandidateSearchStatus::PerformedWithCandidates {
+            vec![site.clone()]
+        } else {
+            vec![]
+        };
+        write_markdown_report(&path, &audit, &mock_refs()).unwrap();
+        let report = std::fs::read_to_string(&path).unwrap();
+        assert!(report.contains(section_text));
+        assert!(report.contains(distal_text));
+        assert!(report.contains(interpretation_text));
+    }
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn test_gene_annotation_rendering_in_report_and_tsv() {
     let tmp_report = std::env::temp_dir().join("test_gene_report.md");
     let tmp_tsv = std::env::temp_dir().join("test_gene_post_edit.tsv");
@@ -400,6 +515,7 @@ fn test_gene_annotation_rendering_in_report_and_tsv() {
         guide_sites: vec![],
         variant_site_links: vec![],
         associations: vec![],
+        candidate_search_status: CandidateSearchStatus::NotPerformed,
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -467,6 +583,7 @@ fn test_zero_candidate_fixture_renders_no_site_unknown_and_no_fabricated_rows() 
         guide_sites: vec![],
         variant_site_links: vec![],
         associations: vec![],
+        candidate_search_status: CandidateSearchStatus::PerformedNoCandidates,
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
     };
 
@@ -531,9 +648,8 @@ fn test_zero_candidate_fixture_renders_no_site_unknown_and_no_fabricated_rows() 
         "distance_to_site must be empty, not 0"
     );
 
-    // report.md explicitly states no candidate off-target events were identified
     assert!(report_content.contains(
-        "No candidate guide-dependent off-target events were identified within the configured search window."
+        "Candidate guide-site search was performed and found no candidate sites under the configured parameters."
     ));
     assert!(!report_content.contains("| VAR_0001 |"));
 
