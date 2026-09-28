@@ -468,7 +468,7 @@ pub fn align_to_bam(
     Ok(())
 }
 
-pub(crate) fn sam_to_sorted_bam(sam_path: &Path, bam_path: &Path) -> Result<()> {
+pub fn sam_to_sorted_bam(sam_path: &Path, bam_path: &Path) -> Result<()> {
     let mut reader = File::open(sam_path)
         .map(BufReader::new)
         .map(sam::io::Reader::new)?;

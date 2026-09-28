@@ -15,10 +15,14 @@ pub mod mc;
 pub mod normalize;
 pub mod pileup;
 pub mod ra;
+pub mod repeat_ambiguous;
 pub mod split_seed;
 
 pub use align::FastqInput;
-pub use engine::{call_from_aligned, run_sample, EngineOptions};
+pub use engine::{
+    call_from_aligned, call_from_aligned_extra, call_from_aligned_with_diagnostics,
+    call_from_aligned_with_extra_and_diagnostics, run_sample, EngineOptions,
+};
 pub use error::EvidenceError;
 pub use fasta::{
     parse_genbank_features, parse_genbank_repeats, read_reference, read_references,
@@ -30,3 +34,4 @@ pub use ra::{
     call_consensus, call_consensus_with_metrics, BaseObs, ConsensusCall, PileupColumn, RaMetrics,
     RaOptions, Strand,
 };
+pub use repeat_ambiguous::{RepeatAmbiguousDiagnostics, RepeatAmbiguousState};

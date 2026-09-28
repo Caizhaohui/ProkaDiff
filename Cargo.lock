@@ -527,6 +527,7 @@ name = "prokadiff"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "noodles",
  "prokadiff-classify",
  "prokadiff-evidence",
  "prokadiff-gd",

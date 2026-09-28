@@ -12,6 +12,7 @@ use crate::error::Result;
 use crate::fasta::FastaRecord;
 use crate::jc::JunctionSupport;
 use crate::pileup::{SplitCandidate, SplitOrigin};
+use crate::repeat_ambiguous::RepeatAmbiguousSeed;
 
 /// Two split candidates whose side1 AND side2 both land within this many bp
 /// are clustered into one junction before `accept_junction`.
@@ -91,6 +92,12 @@ pub(crate) struct AcceptedJc {
     pub(crate) support: JunctionSupport,
     pub(crate) ids: HashSet<(usize, SplitOrigin)>,
     pub(crate) has_cigar: bool,
+}
+
+#[derive(Default)]
+pub(crate) struct SecondPassResult {
+    pub(crate) splits: Vec<SplitCandidate>,
+    pub(crate) repeat_seeds: Vec<RepeatAmbiguousSeed>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -351,7 +358,7 @@ pub(crate) fn second_pass_splits(
     contig_results: &[crate::engine::ContigPileup],
     opts: &EngineOptions,
     work: &Path,
-) -> Result<Vec<SplitCandidate>> {
+) -> Result<SecondPassResult> {
     use crate::fasta::write_records;
     use crate::jc_seq::{junction_construct, rank_and_cap, CandidateJunction, JC_MIN_COVER_BASES};
 
@@ -363,28 +370,31 @@ pub(crate) fn second_pass_splits(
         .unwrap_or(36)
         .max(28);
     let mut all_cands = seed_candidates_from_pileup(contig_results);
+    let mut repeat_seeds = Vec::new();
 
     let contig_names: Vec<String> = fasta.iter().map(|r| r.name.clone()).collect();
-    for (sam_name, default_mate) in [
-        ("stage2_r1.sam", 1),
-        ("stage2_r2.sam", 2),
-        ("stage2_pe.sam", 0),
-        ("stage2_se.sam", 0),
-        ("stage2.sam", 0),
+    for sam_name in [
+        "stage2_r1.sam",
+        "stage2_r2.sam",
+        "stage2_pe.sam",
+        "stage2_se.sam",
+        "stage2.sam",
     ] {
         let sam_path = work.join(sam_name);
         if sam_path.is_file() {
-            if let Ok(split_cands) = crate::split_seed::extract_candidate_junctions_from_sam(
-                &sam_path,
-                &contig_names,
-                default_mate,
-            ) {
+            if let Ok(split_result) =
+                crate::split_seed::extract_candidate_junctions_with_repeat_evidence_from_sam(
+                    &sam_path,
+                    &contig_names,
+                )
+            {
                 debug!(
                     "prokadiff: extracted {} split-read candidate junctions from {}",
-                    split_cands.len(),
+                    split_result.candidates.len(),
                     sam_name
                 );
-                all_cands.extend(split_cands);
+                all_cands.extend(split_result.candidates);
+                repeat_seeds.extend(split_result.repeat_seeds);
             }
         }
     }
@@ -433,7 +443,10 @@ pub(crate) fn second_pass_splits(
     let cands = rank_and_cap(all_cands, ref_len, flank);
     if cands.is_empty() {
         info!("prokadiff: second-pass skipped (no seed junctions)");
-        return Ok(Vec::new());
+        return Ok(SecondPassResult {
+            splits: Vec::new(),
+            repeat_seeds,
+        });
     }
     let mut recs = Vec::new();
     let mut kept: Vec<(CandidateJunction, usize)> = Vec::new();
@@ -449,7 +462,10 @@ pub(crate) fn second_pass_splits(
         kept.push((cand.clone(), construct.breakpoint()));
     }
     if recs.is_empty() {
-        return Ok(Vec::new());
+        return Ok(SecondPassResult {
+            splits: Vec::new(),
+            repeat_seeds,
+        });
     }
     let jc_dir = work.join("jc");
     std::fs::create_dir_all(&jc_dir)?;
@@ -478,7 +494,10 @@ pub(crate) fn second_pass_splits(
         )?;
         debug!("prokadiff: second-pass {nkeep} FASTQ records after clip/unmapped filter");
         if nkeep == 0 {
-            return Ok(Vec::new());
+            return Ok(SecondPassResult {
+                splits: Vec::new(),
+                repeat_seeds,
+            });
         }
         filtered_owner = filtered;
         &filtered_owner
@@ -502,7 +521,10 @@ pub(crate) fn second_pass_splits(
         stats.not_spanning,
         stats.worse_than_primary
     );
-    Ok(extra)
+    Ok(SecondPassResult {
+        splits: extra,
+        repeat_seeds,
+    })
 }
 
 pub(crate) fn normalize_jc_coords(

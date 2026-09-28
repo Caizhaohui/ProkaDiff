@@ -42,6 +42,7 @@ fn ra_calls_from_in_memory_pileup_without_bam() {
                 len: alt.len(),
             }],
             mapq: UNIQUE_MAPQ,
+            molecule_id: 0,
         };
         apply_read(
             &read,
@@ -87,6 +88,7 @@ fn covering_reads(
                 len,
             }],
             mapq,
+            molecule_id: 0,
         });
     }
     out
@@ -221,6 +223,7 @@ fn both_strand_long_deletion_emits_jc() {
                 },
             ],
             mapq: UNIQUE_MAPQ,
+            molecule_id: 0,
         });
     }
     let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
@@ -265,6 +268,7 @@ fn softclip_onto_repeat_copy_emits_jc() {
                 },
             ],
             mapq: UNIQUE_MAPQ,
+            molecule_id: 0,
         });
     }
     let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
@@ -321,6 +325,7 @@ fn same_reads_placed_on_two_copies_fold_to_one_jc() {
                     },
                 ],
                 mapq: UNIQUE_MAPQ,
+                molecule_id: 0,
             });
         }
     }
@@ -383,6 +388,7 @@ fn few_bp_strand_split_junctions_cluster_into_one_jc() {
                 },
             ],
             mapq: UNIQUE_MAPQ,
+            molecule_id: 0,
         });
         // Minus reads: match ref 583..602 (1-based) -> side1 = 602.
         reads.push(AlignedRead {
@@ -401,6 +407,7 @@ fn few_bp_strand_split_junctions_cluster_into_one_jc() {
                 },
             ],
             mapq: UNIQUE_MAPQ,
+            molecule_id: 0,
         });
     }
     let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
@@ -454,6 +461,7 @@ fn junctions_beyond_cluster_tolerance_do_not_merge() {
                         },
                     ],
                     mapq: UNIQUE_MAPQ,
+                    molecule_id: 0,
                 });
             }
         }
@@ -505,6 +513,7 @@ fn softclip_read(
             .map(|&(kind, len)| CigarOp { kind, len })
             .collect(),
         mapq: UNIQUE_MAPQ,
+        molecule_id: 0,
     }
 }
 
@@ -777,6 +786,7 @@ fn jc_supported_cigar_gap_promotes_short_del() {
                 },
             ],
             mapq: UNIQUE_MAPQ,
+            molecule_id: 0,
         });
     }
     let gd = call_from_aligned(&fasta_chr(&seq), &reads, &opts_single_thread());
@@ -815,6 +825,7 @@ fn short_clip_is_seed_reads() -> (Vec<u8>, Vec<AlignedRead>) {
                 },
             ],
             mapq: UNIQUE_MAPQ,
+            molecule_id: 0,
         });
     }
     (seq, reads)

@@ -8,8 +8,11 @@ use crate::fasta::FastaRecord;
 use crate::jc::SubAlignment;
 use crate::jc_seq::{MIN_CLIP_FOR_PLACE, MIN_CLIP_FOR_SEED};
 use crate::ra::{BaseObs, PileupColumn, Strand};
+use crate::repeat_ambiguous::{
+    RepeatAmbiguousSeed, RepeatCopyPlacement, RepeatEvidenceSource, MAX_RETAINED_REPEAT_PLACEMENTS,
+};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CigarKind {
     Match,
     Ins,
@@ -19,7 +22,7 @@ pub enum CigarKind {
     Skip,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CigarOp {
     pub kind: CigarKind,
     pub len: usize,
@@ -34,6 +37,7 @@ pub struct AlignedRead {
     pub seq: Vec<u8>,
     pub cigar: Vec<CigarOp>,
     pub mapq: u8,
+    pub molecule_id: u64,
 }
 
 pub const UNIQUE_MAPQ: u8 = 10;
@@ -93,6 +97,9 @@ pub struct SoftclipHint {
     /// `place_softclip` searches both strands.
     pub clip_seq: Vec<u8>,
     pub aligned_q_len: usize,
+    pub molecule_id: u64,
+    pub effective_mapq: u8,
+    pub alignment_score: Option<i32>,
 }
 
 /// Increment per-base depth for every CIGAR match (any MAPQ). Used to tell
@@ -167,6 +174,7 @@ pub fn apply_read(
     }
     add_match_depth(read, total_depth);
     if read.mapq < UNIQUE_MAPQ {
+        record_low_mapq_softclips(read, clips);
         return;
     }
     let strand = if read.minus {
@@ -290,6 +298,9 @@ pub fn apply_read(
                             clip_is_left: false,
                             clip_seq: clip,
                             aligned_q_len: last_match_qend,
+                            molecule_id: read.molecule_id,
+                            effective_mapq: read.mapq,
+                            alignment_score: None,
                         });
                     }
                 }
@@ -315,6 +326,9 @@ pub fn apply_read(
                 clip_is_left: true,
                 clip_seq: clip,
                 aligned_q_len,
+                molecule_id: read.molecule_id,
+                effective_mapq: read.mapq,
+                alignment_score: None,
             });
         }
     }
@@ -406,6 +420,68 @@ pub fn apply_read(
         let norm_r = (norm_pos_1 as usize).saturating_sub(1);
         if norm_r < columns.len() {
             columns[norm_r].insertions.push((norm_oligo, strand));
+        }
+    }
+}
+
+fn record_low_mapq_softclips(read: &AlignedRead, clips: &mut Vec<SoftclipHint>) {
+    let mut ref_pos = read.ref_start_0 as usize;
+    let mut qpos = 0usize;
+    let mut first_match = None;
+    let mut last_match = None;
+    let mut last_match_qend = 0usize;
+    let mut pending_left = None;
+    for op in &read.cigar {
+        match op.kind {
+            CigarKind::Match => {
+                if first_match.is_none() {
+                    first_match = Some(ref_pos);
+                }
+                last_match = Some(ref_pos.saturating_add(op.len.saturating_sub(1)));
+                last_match_qend = qpos.saturating_add(op.len);
+                ref_pos = ref_pos.saturating_add(op.len);
+                qpos = qpos.saturating_add(op.len);
+            }
+            CigarKind::Del | CigarKind::Skip => ref_pos = ref_pos.saturating_add(op.len),
+            CigarKind::Ins => qpos = qpos.saturating_add(op.len),
+            CigarKind::SoftClip => {
+                if op.len >= MIN_CLIP_FOR_SEED && qpos.saturating_add(op.len) <= read.seq.len() {
+                    let clip = read.seq[qpos..qpos + op.len].to_ascii_uppercase();
+                    if last_match.is_none() {
+                        pending_left = Some(clip);
+                    } else if let Some(pos) = last_match {
+                        clips.push(SoftclipHint {
+                            contig_idx: read.contig_idx,
+                            minus: read.minus,
+                            aligned_pos_1: pos as u64 + 1,
+                            clip_is_left: false,
+                            clip_seq: clip,
+                            aligned_q_len: last_match_qend,
+                            molecule_id: read.molecule_id,
+                            effective_mapq: read.mapq,
+                            alignment_score: None,
+                        });
+                    }
+                }
+                qpos = qpos.saturating_add(op.len);
+            }
+            CigarKind::HardClip => {}
+        }
+    }
+    if let (Some(clip), Some(first_match)) = (pending_left, first_match) {
+        let aligned_q_len = last_match_qend.saturating_sub(clip.len());
+        if aligned_q_len >= MIN_CLIP_FOR_SEED {
+            clips.push(SoftclipHint {
+                contig_idx: read.contig_idx,
+                minus: read.minus,
+                aligned_pos_1: first_match as u64 + 1,
+                clip_is_left: true,
+                clip_seq: clip,
+                aligned_q_len,
+                molecule_id: read.molecule_id,
+                effective_mapq: read.mapq,
+                alignment_score: None,
+            });
         }
     }
 }
@@ -555,7 +631,21 @@ pub struct PlaceIndex {
     seeds: Vec<(u64, u32, u32)>,
 }
 
-pub const MAX_CLIP_HITS: usize = 20;
+pub const MAX_CONCRETE_CLIP_PLACEMENTS: usize = 20;
+pub const MAX_CLIP_HITS: usize = MAX_CONCRETE_CLIP_PLACEMENTS;
+
+#[derive(Clone, Debug)]
+struct PlacementSearch {
+    hits: Vec<(usize, usize, bool)>,
+    placement_count: usize,
+    placement_set_complete: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SoftclipPlacementResult {
+    pub splits: Vec<SplitCandidate>,
+    pub repeat_seeds: Vec<RepeatAmbiguousSeed>,
+}
 
 impl PlaceIndex {
     pub fn from_fasta(fasta: &[FastaRecord]) -> Self {
@@ -606,30 +696,65 @@ impl PlaceIndex {
     /// Exact hits of `needle_upper` on either strand, as
     /// `(contig, 0-based start, matched_reverse_complement)`.
     pub fn search(&self, needle_upper: &[u8]) -> Vec<(usize, usize, bool)> {
+        self.search_with_multiplicity(needle_upper).hits
+    }
+
+    fn search_with_multiplicity(&self, needle_upper: &[u8]) -> PlacementSearch {
         if needle_upper.len() < MIN_CLIP_FOR_PLACE {
-            return Vec::new();
+            return PlacementSearch {
+                hits: Vec::new(),
+                placement_count: 0,
+                placement_set_complete: true,
+            };
         }
         let rc = rc_dna(needle_upper);
         let mut hits = Vec::new();
-        self.collect(needle_upper, false, &mut hits);
-        self.collect(&rc, true, &mut hits);
-        if hits.len() > MAX_CLIP_HITS {
-            // Highly repetitive across genome (e.g. simple sequence / high copy);
-            // skip to avoid combinatorial explosion.
-            return Vec::new();
-        }
-        // Per contig: forward hits ascending, then RC hits ascending.
+        let mut placement_count = 0usize;
+        let mut placement_set_complete = true;
+        self.collect(
+            needle_upper,
+            false,
+            &mut hits,
+            &mut placement_count,
+            &mut placement_set_complete,
+        );
+        self.collect(
+            &rc,
+            true,
+            &mut hits,
+            &mut placement_count,
+            &mut placement_set_complete,
+        );
         hits.sort_unstable_by_key(|&(ci, pos, is_rc)| (ci, is_rc, pos));
-        hits
+        PlacementSearch {
+            hits,
+            placement_count,
+            placement_set_complete,
+        }
     }
 
-    fn collect(&self, needle: &[u8], is_rc: bool, out: &mut Vec<(usize, usize, bool)>) {
+    fn collect(
+        &self,
+        needle: &[u8],
+        is_rc: bool,
+        out: &mut Vec<(usize, usize, bool)>,
+        placement_count: &mut usize,
+        placement_set_complete: &mut bool,
+    ) {
+        let mut add_hit = |hit| {
+            *placement_count = placement_count.saturating_add(1);
+            if out.len() < MAX_RETAINED_REPEAT_PLACEMENTS {
+                out.push(hit);
+            } else {
+                *placement_set_complete = false;
+            }
+        };
         let Some(key) = pack_seed(needle) else {
             // Seed holds a non-ACGT base, so it is absent from the index.
             // Rare; scan so results stay identical to a full search.
             for (ci, hay) in self.hays.iter().enumerate() {
                 for h in find_exact(hay, needle) {
-                    out.push((ci, h, is_rc));
+                    add_hit((ci, h, is_rc));
                 }
             }
             return;
@@ -639,7 +764,7 @@ impl PlaceIndex {
             let (ci, pos) = (ci as usize, pos as usize);
             let hay = &self.hays[ci];
             if hay.len() - pos >= needle.len() && &hay[pos..pos + needle.len()] == needle {
-                out.push((ci, pos, is_rc));
+                add_hit((ci, pos, is_rc));
             }
         }
     }
@@ -718,6 +843,71 @@ fn hits_to_splits(
     out
 }
 
+fn repeat_seed_from_placement(
+    hint: &SoftclipHint,
+    key: &[u8],
+    placement: &PlacementSearch,
+) -> RepeatAmbiguousSeed {
+    let observed_placements: Vec<RepeatCopyPlacement> = placement
+        .hits
+        .iter()
+        .map(|&(contig_idx, hit_0, is_rc)| RepeatCopyPlacement {
+            contig_idx,
+            position_1: if hint.clip_is_left == is_rc {
+                hit_0 as u64 + 1
+            } else {
+                hit_0 as u64 + key.len() as u64
+            },
+            minus: hint.clip_is_left ^ is_rc,
+        })
+        .collect();
+    let eligible_copies: Vec<RepeatCopyPlacement> = placement
+        .hits
+        .iter()
+        .filter(|&&(contig_idx, hit_0, _)| !is_continuation(hint, contig_idx, hit_0, key.len()))
+        .map(|&(contig_idx, hit_0, is_rc)| RepeatCopyPlacement {
+            contig_idx,
+            position_1: if hint.clip_is_left == is_rc {
+                hit_0 as u64 + 1
+            } else {
+                hit_0 as u64 + key.len() as u64
+            },
+            minus: hint.clip_is_left ^ is_rc,
+        })
+        .collect();
+    let placement_set_complete = placement.placement_set_complete;
+    let resource_complete =
+        placement_set_complete && placement.placement_count <= MAX_RETAINED_REPEAT_PLACEMENTS;
+    RepeatAmbiguousSeed {
+        source: RepeatEvidenceSource::PrimaryClip,
+        anchor_contig_idx: hint.contig_idx,
+        anchor_position_1: hint.aligned_pos_1,
+        anchor_minus: !hint.clip_is_left,
+        observed_placements,
+        eligible_copies,
+        placement_count: placement.placement_count,
+        placement_family: key.to_vec(),
+        placement_sequence: key.to_vec(),
+        placement_set_complete,
+        resource_complete,
+        resolution_complete: false,
+        overlap: 0,
+        molecule_id: hint.molecule_id,
+        molecule_minus: hint.minus,
+        clip_length: key.len(),
+        aligned_length: hint.aligned_q_len,
+        effective_mapq: hint.effective_mapq,
+        alignment_score: hint.alignment_score,
+        pair_geometry: "PRIMARY_SOFTCLIP",
+        unique_anchor_qualified: hint.effective_mapq >= UNIQUE_MAPQ,
+        copy_resolved: false,
+        resolution_molecule_id: None,
+        reciprocal_evidence: false,
+        rejection_reason: None,
+        resource_limit_reason: None,
+    }
+}
+
 /// Place softclips onto the reference (exact match, both strands).
 ///
 /// Clips shorter than [`MIN_CLIP_FOR_PLACE`] are not searched (recorded
@@ -726,6 +916,13 @@ pub fn place_softclips_with_index(
     clips: &[SoftclipHint],
     index: &PlaceIndex,
 ) -> Vec<SplitCandidate> {
+    place_softclips_with_repeat_evidence(clips, index).splits
+}
+
+pub fn place_softclips_with_repeat_evidence(
+    clips: &[SoftclipHint],
+    index: &PlaceIndex,
+) -> SoftclipPlacementResult {
     let mut keys: Vec<Vec<u8>> = Vec::new();
     let mut seen: HashMap<Vec<u8>, ()> = HashMap::new();
     for hint in clips {
@@ -738,24 +935,35 @@ pub fn place_softclips_with_index(
         }
     }
     keys.sort();
-    let searched: HashMap<Vec<u8>, Vec<(usize, usize, bool)>> = keys
+    let searched: HashMap<Vec<u8>, PlacementSearch> = keys
         .into_par_iter()
         .map(|k| {
-            let hits = index.search(&k);
-            (k, hits)
+            let placement = index.search_with_multiplicity(&k);
+            (k, placement)
         })
         .collect();
-    let mut out = Vec::new();
+    let mut result = SoftclipPlacementResult::default();
     for (hint_id, hint) in clips.iter().enumerate() {
         if hint.clip_seq.len() < MIN_CLIP_FOR_PLACE || hint.aligned_q_len < MIN_CLIP_FOR_SEED {
             continue;
         }
         let key = clip_key(&hint.clip_seq);
-        if let Some(hits) = searched.get(&key) {
-            out.extend(hits_to_splits(hint, hint_id, key.len(), hits));
+        if let Some(placement) = searched.get(&key) {
+            if hint.effective_mapq >= UNIQUE_MAPQ
+                && placement.placement_count <= MAX_CONCRETE_CLIP_PLACEMENTS
+                && placement.placement_set_complete
+            {
+                result
+                    .splits
+                    .extend(hits_to_splits(hint, hint_id, key.len(), &placement.hits));
+            } else {
+                result
+                    .repeat_seeds
+                    .push(repeat_seed_from_placement(hint, &key, placement));
+            }
         }
     }
-    out
+    result
 }
 
 /// Place softclips for multiple contigs in a single batch against a pre-built reference index.
@@ -767,6 +975,16 @@ pub fn place_softclips_batch_with_index(
     contig_clips: &[Vec<SoftclipHint>],
     index: &PlaceIndex,
 ) -> Vec<Vec<SplitCandidate>> {
+    place_softclips_batch_with_repeat_evidence(contig_clips, index)
+        .into_iter()
+        .map(|result| result.splits)
+        .collect()
+}
+
+pub fn place_softclips_batch_with_repeat_evidence(
+    contig_clips: &[Vec<SoftclipHint>],
+    index: &PlaceIndex,
+) -> Vec<SoftclipPlacementResult> {
     let mut keys: Vec<Vec<u8>> = Vec::new();
     let mut seen: HashMap<Vec<u8>, ()> = HashMap::new();
     for clips in contig_clips {
@@ -781,18 +999,18 @@ pub fn place_softclips_batch_with_index(
         }
     }
     keys.sort();
-    let searched: HashMap<Vec<u8>, Vec<(usize, usize, bool)>> = keys
+    let searched: HashMap<Vec<u8>, PlacementSearch> = keys
         .into_par_iter()
         .map(|k| {
-            let hits = index.search(&k);
-            (k, hits)
+            let placement = index.search_with_multiplicity(&k);
+            (k, placement)
         })
         .collect();
 
     contig_clips
         .iter()
         .map(|clips| {
-            let mut out = Vec::new();
+            let mut result = SoftclipPlacementResult::default();
             for (hint_id, hint) in clips.iter().enumerate() {
                 if hint.clip_seq.len() < MIN_CLIP_FOR_PLACE
                     || hint.aligned_q_len < MIN_CLIP_FOR_SEED
@@ -800,11 +1018,25 @@ pub fn place_softclips_batch_with_index(
                     continue;
                 }
                 let key = clip_key(&hint.clip_seq);
-                if let Some(hits) = searched.get(&key) {
-                    out.extend(hits_to_splits(hint, hint_id, key.len(), hits));
+                if let Some(placement) = searched.get(&key) {
+                    if hint.effective_mapq >= UNIQUE_MAPQ
+                        && placement.placement_count <= MAX_CONCRETE_CLIP_PLACEMENTS
+                        && placement.placement_set_complete
+                    {
+                        result.splits.extend(hits_to_splits(
+                            hint,
+                            hint_id,
+                            key.len(),
+                            &placement.hits,
+                        ));
+                    } else {
+                        result
+                            .repeat_seeds
+                            .push(repeat_seed_from_placement(hint, &key, placement));
+                    }
                 }
             }
-            out
+            result
         })
         .collect()
 }
@@ -860,6 +1092,7 @@ mod tests {
                 len: seq.len(),
             }],
             mapq: 40,
+            molecule_id: 0,
         }
     }
 
@@ -916,6 +1149,7 @@ mod tests {
                 },
             ],
             mapq: 40,
+            molecule_id: 0,
         };
         apply_read(
             &read,
@@ -958,6 +1192,7 @@ mod tests {
                 },
             ],
             mapq: 40,
+            molecule_id: 0,
         };
         let mut columns = cols(&ref_seq);
         let mut depth = vec![0u32; 160];
@@ -1012,6 +1247,7 @@ mod tests {
                 },
             ],
             mapq: 40,
+            molecule_id: 0,
         };
         let mut columns = cols(&ref_seq);
         let mut clips = Vec::new();
@@ -1068,6 +1304,7 @@ mod tests {
                 },
             ],
             mapq: 40,
+            molecule_id: 0,
         };
         let mut columns = cols(&ref_seq);
         let mut clips = Vec::new();
@@ -1114,6 +1351,7 @@ mod tests {
                 },
             ],
             mapq: 40,
+            molecule_id: 0,
         };
         (ref_seq, read)
     }
@@ -1195,10 +1433,8 @@ mod tests {
     }
 
     #[test]
-    fn highly_repetitive_clip_is_skipped() {
-        // A 12 bp clip that matches > MAX_CLIP_HITS (20) times across the reference
-        // must be skipped to protect against combinatorial explosion.
-        let motif = *b"ACGTACGTACGT";
+    fn highly_repetitive_clip_is_preserved_as_repeat_family_evidence() {
+        let motif = *b"ACGTACGTACGA";
         let mut ref_seq = vec![b'A'; 500];
         for i in 0..25 {
             ref_seq[i * 15..i * 15 + 12].copy_from_slice(&motif);
@@ -1214,13 +1450,150 @@ mod tests {
             clip_is_left: false,
             clip_seq: motif.to_vec(),
             aligned_q_len: 12,
+            molecule_id: 1,
+            effective_mapq: 40,
+            alignment_score: None,
         };
-        let placed = place_softclip(&hint, &fasta, 0);
-        assert!(
-            placed.is_empty(),
-            "clip matching >20 times must be skipped, got {} hits",
-            placed.len()
+        let index = PlaceIndex::from_fasta(&fasta);
+        let result = place_softclips_with_repeat_evidence(std::slice::from_ref(&hint), &index);
+        assert!(result.splits.is_empty());
+        assert_eq!(result.repeat_seeds.len(), 1);
+        assert!(result.repeat_seeds[0].placement_count > MAX_CONCRETE_CLIP_PLACEMENTS);
+        assert!(result.repeat_seeds[0].placement_set_complete);
+    }
+
+    #[test]
+    fn concrete_limit_is_not_a_repeat_family_limit() {
+        let motif = *b"ACGTACGTACGA";
+        for copies in [1usize, 2, 20] {
+            let mut ref_seq = vec![b'A'; copies * 20 + 100];
+            for i in 0..copies {
+                ref_seq[i * 20..i * 20 + motif.len()].copy_from_slice(&motif);
+            }
+            let fasta = [FastaRecord {
+                name: "chr".into(),
+                seq: ref_seq,
+            }];
+            let hint = SoftclipHint {
+                contig_idx: 0,
+                minus: false,
+                aligned_pos_1: 90,
+                clip_is_left: false,
+                clip_seq: motif.to_vec(),
+                aligned_q_len: 20,
+                molecule_id: copies as u64,
+                effective_mapq: 40,
+                alignment_score: Some(20),
+            };
+            let result = place_softclips_with_repeat_evidence(
+                std::slice::from_ref(&hint),
+                &PlaceIndex::from_fasta(&fasta),
+            );
+            assert!(result.repeat_seeds.is_empty());
+            assert!(!result.splits.is_empty());
+        }
+    }
+
+    #[test]
+    fn twenty_copy_boundary_remains_concrete_and_twenty_one_is_family_evidence() {
+        let motif = *b"ACGTACGTACGA";
+        for (copies, expect_concrete) in [(20usize, true), (21, false)] {
+            let mut ref_seq = vec![b'A'; copies * 20 + 100];
+            for index in 0..copies {
+                ref_seq[index * 20..index * 20 + motif.len()].copy_from_slice(&motif);
+            }
+            let fasta = [FastaRecord {
+                name: "chr".into(),
+                seq: ref_seq,
+            }];
+            let hint = SoftclipHint {
+                contig_idx: 0,
+                minus: false,
+                aligned_pos_1: 90,
+                clip_is_left: false,
+                clip_seq: motif.to_vec(),
+                aligned_q_len: 20,
+                molecule_id: copies as u64,
+                effective_mapq: UNIQUE_MAPQ,
+                alignment_score: Some(20),
+            };
+            let result = place_softclips_with_repeat_evidence(
+                std::slice::from_ref(&hint),
+                &PlaceIndex::from_fasta(&fasta),
+            );
+            assert_eq!(!result.splits.is_empty(), expect_concrete);
+            assert_eq!(result.repeat_seeds.is_empty(), expect_concrete);
+        }
+    }
+
+    #[test]
+    fn low_mapq_clips_are_repeat_evidence_never_concrete_candidates() {
+        let motif = *b"ACGTACGTACGA";
+        for copies in [1usize, 2, 20, 21] {
+            let mut ref_seq = vec![b'T'; copies * 20 + 100];
+            for index in 0..copies {
+                ref_seq[index * 20..index * 20 + motif.len()].copy_from_slice(&motif);
+            }
+            let fasta = [FastaRecord {
+                name: "chr".into(),
+                seq: ref_seq,
+            }];
+            let hint = SoftclipHint {
+                contig_idx: 0,
+                minus: false,
+                aligned_pos_1: 90,
+                clip_is_left: false,
+                clip_seq: motif.to_vec(),
+                aligned_q_len: 20,
+                molecule_id: copies as u64,
+                effective_mapq: UNIQUE_MAPQ - 1,
+                alignment_score: Some(20),
+            };
+            let result = place_softclips_with_repeat_evidence(
+                std::slice::from_ref(&hint),
+                &PlaceIndex::from_fasta(&fasta),
+            );
+            assert!(
+                result.splits.is_empty(),
+                "low-MAPQ {copies}-copy clip emitted a split"
+            );
+            assert_eq!(result.repeat_seeds.len(), 1);
+            assert!(!result.repeat_seeds[0].unique_anchor_qualified);
+            assert_eq!(result.repeat_seeds[0].placement_count, copies);
+        }
+    }
+
+    #[test]
+    fn repeat_family_resource_limit_preserves_observation_without_concrete_splits() {
+        let motif = *b"ACGTACGTACGA";
+        let copies = MAX_RETAINED_REPEAT_PLACEMENTS + 1;
+        let mut ref_seq = vec![b'A'; copies * 15 + 100];
+        for i in 0..copies {
+            ref_seq[i * 15..i * 15 + motif.len()].copy_from_slice(&motif);
+        }
+        let fasta = [FastaRecord {
+            name: "chr".into(),
+            seq: ref_seq,
+        }];
+        let hint = SoftclipHint {
+            contig_idx: 0,
+            minus: false,
+            aligned_pos_1: 70,
+            clip_is_left: false,
+            clip_seq: motif.to_vec(),
+            aligned_q_len: 20,
+            molecule_id: 1,
+            effective_mapq: 40,
+            alignment_score: None,
+        };
+        let result = place_softclips_with_repeat_evidence(
+            std::slice::from_ref(&hint),
+            &PlaceIndex::from_fasta(&fasta),
         );
+        assert!(result.splits.is_empty());
+        assert_eq!(result.repeat_seeds.len(), 1);
+        assert!(!result.repeat_seeds[0].placement_set_complete);
+        assert!(result.repeat_seeds[0].placement_count > MAX_RETAINED_REPEAT_PLACEMENTS);
     }
 
     #[test]
@@ -1313,6 +1686,7 @@ mod tests {
                 },
             ],
             mapq: 40,
+            molecule_id: 1,
         };
         // Read 2: 1I after ref index 7 (5th T)
         let r2 = AlignedRead {
@@ -1335,6 +1709,7 @@ mod tests {
                 },
             ],
             mapq: 40,
+            molecule_id: 2,
         };
         // Read 3: 1I after ref index 9 (7th T, already 3' end)
         let r3 = AlignedRead {
@@ -1357,6 +1732,7 @@ mod tests {
                 },
             ],
             mapq: 40,
+            molecule_id: 3,
         };
 
         for r in [&r1, &r2, &r3] {
@@ -1407,6 +1783,7 @@ mod tests {
                 }, // TTTTTTTC (7 T's + C)
             ],
             mapq: 40,
+            molecule_id: 0,
         };
 
         apply_read(

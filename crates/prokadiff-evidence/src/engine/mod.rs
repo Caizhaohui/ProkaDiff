@@ -1,6 +1,6 @@
 //! Single-sample consensus engine: Bowtie2 → BAM (noodles) → RA / MC / JC → Genome Diff.
 
-pub(crate) mod bam_io;
+pub mod bam_io;
 pub(crate) mod emit;
 pub(crate) mod jc_cluster;
 #[cfg(test)]
@@ -17,9 +17,10 @@ use crate::error::Result;
 use crate::fasta::{read_reference, FastaRecord, RepeatRegion};
 use crate::mc::MC_DEL_MIN_LEN;
 use crate::pileup::{
-    apply_read, place_softclips_batch_with_index, AlignedRead, PlaceIndex, SplitCandidate,
+    apply_read, place_softclips_batch_with_repeat_evidence, AlignedRead, PlaceIndex, SplitCandidate,
 };
 use crate::ra::{PileupColumn, RaOptions};
+use crate::repeat_ambiguous::{RepeatAmbiguousDiagnostics, RepeatAmbiguousSeed};
 
 use bam_io::{read_aligned_bam, read_primary_bam};
 use emit::emit_from_pileup;
@@ -65,6 +66,11 @@ pub struct ContigPileup {
     pub unique_depth: Vec<u32>,
     pub total_depth: Vec<u32>,
     pub splits: Vec<SplitCandidate>,
+}
+
+pub(crate) struct PileupResult {
+    pub(crate) contigs: Vec<ContigPileup>,
+    pub(crate) repeat_seeds: Vec<RepeatAmbiguousSeed>,
 }
 
 /// Align `reads` to `ref_fa` and write a Genome Diff to `outdir/output.gd`.
@@ -125,12 +131,25 @@ pub fn run_sample(
         crate::jc_seq::MIN_CLIP_FOR_PLACE
     );
     let primary_data = read_primary_bam(&bam_path, &fasta)?;
-    let contig_results = pileup_contigs(&fasta, &primary_data.aligned, opts);
+    let pileup = pileup_contigs_with_repeat(&fasta, &primary_data.aligned, opts);
     info!("prokadiff: candidate-junction second pass");
-    let extra = second_pass_splits(&fasta, reads, &primary_data, &contig_results, opts, &work)?;
-    let gd = emit_from_pileup(&fasta, contig_results, opts, &extra);
+    let extra = second_pass_splits(&fasta, reads, &primary_data, &pileup.contigs, opts, &work)?;
+    let gd = emit_from_pileup(&fasta, pileup.contigs, opts, &extra.splits);
     let gd_path = outdir.join("output.gd");
     gd.write_path(&gd_path)?;
+    let mut repeat_seeds = pileup.repeat_seeds;
+    repeat_seeds.extend(extra.repeat_seeds);
+    let diagnostics = RepeatAmbiguousDiagnostics::from_seeds(&fasta, repeat_seeds);
+    let sample_identity = reads
+        .files
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    diagnostics.write_tsv(
+        &outdir.join("repeat_ambiguous_junctions.tsv"),
+        &sample_identity,
+    )?;
     if !opts.keep_bam {
         let _ = std::fs::remove_file(&bam_path);
         let _ = std::fs::remove_dir_all(&work);
@@ -156,6 +175,32 @@ pub fn call_from_aligned(
     call_from_aligned_extra(fasta, aligned, opts, &[])
 }
 
+/// Like `call_from_aligned`, but also returns repeat-ambiguous diagnostics.
+pub fn call_from_aligned_with_diagnostics(
+    fasta: &[FastaRecord],
+    aligned: &[AlignedRead],
+    opts: &EngineOptions,
+) -> (GenomeDiff, RepeatAmbiguousDiagnostics) {
+    call_from_aligned_with_extra_and_diagnostics(fasta, aligned, opts, &[], Vec::new())
+}
+
+/// Like `call_from_aligned_extra`, but accepts both extra split candidates and
+/// extra repeat seeds, returning GenomeDiff alongside complete repeat-ambiguous diagnostics.
+pub fn call_from_aligned_with_extra_and_diagnostics(
+    fasta: &[FastaRecord],
+    aligned: &[AlignedRead],
+    opts: &EngineOptions,
+    extra_splits: &[SplitCandidate],
+    extra_repeat_seeds: Vec<RepeatAmbiguousSeed>,
+) -> (GenomeDiff, RepeatAmbiguousDiagnostics) {
+    let pileup = pileup_contigs_with_repeat(fasta, aligned, opts);
+    let mut repeat_seeds = pileup.repeat_seeds;
+    repeat_seeds.extend(extra_repeat_seeds);
+    let diagnostics = RepeatAmbiguousDiagnostics::from_seeds(fasta, repeat_seeds);
+    let gd = emit_from_pileup(fasta, pileup.contigs, opts, extra_splits);
+    (gd, diagnostics)
+}
+
 /// Like `call_from_aligned`, then merge extra split candidates (second-pass
 /// junction hits) before clustering and `accept_junction`.
 pub fn call_from_aligned_extra(
@@ -164,8 +209,8 @@ pub fn call_from_aligned_extra(
     opts: &EngineOptions,
     extra_splits: &[SplitCandidate],
 ) -> GenomeDiff {
-    let contig_results = pileup_contigs(fasta, aligned, opts);
-    emit_from_pileup(fasta, contig_results, opts, extra_splits)
+    let pileup = pileup_contigs(fasta, aligned, opts);
+    emit_from_pileup(fasta, pileup, opts, extra_splits)
 }
 
 pub(crate) fn pileup_contigs(
@@ -173,6 +218,14 @@ pub(crate) fn pileup_contigs(
     aligned: &[AlignedRead],
     opts: &EngineOptions,
 ) -> Vec<ContigPileup> {
+    pileup_contigs_with_repeat(fasta, aligned, opts).contigs
+}
+
+fn pileup_contigs_with_repeat(
+    fasta: &[FastaRecord],
+    aligned: &[AlignedRead],
+    opts: &EngineOptions,
+) -> PileupResult {
     let pool = if opts.threads > 1 {
         rayon::ThreadPoolBuilder::new()
             .num_threads(opts.threads)
@@ -225,15 +278,20 @@ pub(crate) fn pileup_contigs(
             .unzip();
 
         let has_any_clips = all_clips.iter().any(|c| !c.is_empty());
+        let mut repeat_seeds = Vec::new();
         if has_any_clips {
             let place_index = PlaceIndex::from_fasta(fasta);
-            let placed_splits = place_softclips_batch_with_index(&all_clips, &place_index);
-            for (cp, placed) in results.iter_mut().zip(placed_splits) {
-                cp.splits.extend(placed);
+            let placed = place_softclips_batch_with_repeat_evidence(&all_clips, &place_index);
+            for (cp, outcome) in results.iter_mut().zip(placed) {
+                cp.splits.extend(outcome.splits);
+                repeat_seeds.extend(outcome.repeat_seeds);
             }
         }
 
-        results
+        PileupResult {
+            contigs: results,
+            repeat_seeds,
+        }
     };
     match &pool {
         Some(p) => p.install(call_contigs),

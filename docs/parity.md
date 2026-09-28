@@ -128,6 +128,50 @@ unique-mapping 深度 0 在重复区 / IS 拷贝上也会出现（低 MAPQ 读�
 
 ## 产品层（双样本）
 
+## M5-SR1 repeat-ambiguous junction diagnostics
+
+The single-sample engine preserves high-copy exact clip and Stage 2 mosaic
+families in `repeat_ambiguous_junctions.tsv` beside an evidence run's
+`output.gd`.
+
+### Diagnostic artifact semantics
+
+`repeat_ambiguous_junctions.tsv` is documented strictly as:
+- additive diagnostic artifact
+- evidence-only
+- not a GD mutation product
+- no EventId
+- no DifferentialEvent
+- no association semantics
+
+`CANDIDATE`, `SUPPORTED_AMBIGUOUS`, `RESOLVED`, and `RESOURCE_LIMIT` are
+separate states. A family with more than one feasible reference copy is
+evidence-only even when its molecule-deduplicated support meets JC support
+thresholds. It receives no JC, DEL, MOB, EventId, DifferentialEvent, or site
+association. The original concrete construction limit of 20 applies only to
+concrete copy-specific candidates; it never discards the family observation.
+
+An exact JC remains subject to the existing acceptance rules and requires one
+feasible copy after independent copy-discriminating evidence. Coverage,
+clustering, strand balance, oracle output, and curated interpretation may
+corroborate an observation but do not choose a repeat copy. If preserving the
+complete placement set would exceed the diagnostic retention bound, the record
+is `RESOURCE_LIMIT`, retains the placement count and query family, and cannot
+become an exact call.
+
+### Canonical mate precedence
+
+Read pairing and molecule identity derivation follows strict precedence across both primary BAM and Stage-2 SAM parsers:
+1. `FIRST_SEGMENT` / `LAST_SEGMENT` flags
+2. `/1` or `/2` QNAME suffix
+3. `UNKNOWN` mate fallback
+
+Caller-specific context or file roles never invent mate 1 or 2 when flags and suffixes are absent.
+
+### Computational bounds
+
+`MAX_STAGE2_FAMILY_GEOMETRIES = 5000` is established as a computational safety bound pending empirical benchmarking. It prevents unbounded combinatorial pairing of mosaic sub-alignments during Stage 2 analysis. It is explicitly a safety ceiling and is NOT claimed to be proven adequate for real repeat-rich genomes.
+
 breseq 本身不做「出发株 vs 编辑株」差分。产品层金标准：
 
 ```text

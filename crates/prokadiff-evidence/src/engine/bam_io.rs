@@ -13,6 +13,7 @@ use crate::fasta::FastaRecord;
 use crate::jc::SubAlignment;
 use crate::jc_seq::{spans_breakpoint, JC_MIN_COVER_BASES};
 use crate::pileup::{AlignedRead, CigarKind, CigarOp, SplitCandidate, SplitOrigin};
+use crate::repeat_ambiguous::canonical_molecule_identity;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum Mate {
@@ -22,24 +23,11 @@ pub(crate) enum Mate {
 }
 
 impl Mate {
-    pub(crate) fn from_flags_and_name(
-        flags: &noodles::sam::alignment::record::Flags,
-        name: &str,
-    ) -> Self {
-        if flags.is_segmented() {
-            if flags.is_first_segment() {
-                Mate::First
-            } else if flags.is_last_segment() {
-                Mate::Last
-            } else {
-                Mate::Single
-            }
-        } else if name.ends_with("/1") {
-            Mate::First
-        } else if name.ends_with("/2") {
-            Mate::Last
-        } else {
-            Mate::Single
+    pub(crate) const fn from_code(code: u8) -> Self {
+        match code {
+            1 => Self::First,
+            2 => Self::Last,
+            _ => Self::Single,
         }
     }
 }
@@ -115,18 +103,18 @@ impl From<HashMap<String, i32>> for PrimaryScores {
     }
 }
 
-pub(crate) struct PrimaryBamData {
-    pub(crate) aligned: Vec<AlignedRead>,
+pub struct PrimaryBamData {
+    pub aligned: Vec<AlignedRead>,
     pub(crate) second_pass_keep: HashSet<String>,
     pub(crate) second_pass_seen: HashSet<String>,
     pub(crate) primary_scores: PrimaryScores,
 }
 
-pub(crate) fn read_aligned_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result<Vec<AlignedRead>> {
+pub fn read_aligned_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result<Vec<AlignedRead>> {
     Ok(read_primary_bam(bam_path, fasta)?.aligned)
 }
 
-pub(crate) fn read_primary_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result<PrimaryBamData> {
+pub fn read_primary_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result<PrimaryBamData> {
     let name_to_idx: HashMap<&str, usize> = fasta
         .iter()
         .enumerate()
@@ -185,11 +173,13 @@ pub(crate) fn read_primary_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result
             continue;
         }
 
-        if let Some(ref q) = norm_name {
+        let (norm_qname, mate_code, molecule_id) =
+            canonical_molecule_identity(&name, Some(&rec.flags()));
+        let mate = Mate::from_code(mate_code);
+        if norm_name.is_some() {
             let (m, i, d, _) = cigar_counts(&cigar);
             let score = crate::jc_seq::cigar_match_indel_score(m, i, d);
-            let mate = Mate::from_flags_and_name(&rec.flags(), &name);
-            primary_scores.record_primary(q, mate, score);
+            primary_scores.record_primary(&norm_qname, mate, score);
         }
 
         let Some(Ok(rid)) = rec.reference_sequence_id() else {
@@ -238,6 +228,7 @@ pub(crate) fn read_primary_bam(bam_path: &Path, fasta: &[FastaRecord]) -> Result
             seq,
             cigar,
             mapq,
+            molecule_id,
         });
     }
     Ok(PrimaryBamData {
@@ -313,16 +304,6 @@ pub(crate) struct SecondPassReject {
     pub(crate) kept: usize,
 }
 
-/// Hash of a read name and mate identity, used as second-pass supporting-read identity.
-pub(crate) fn qname_id(qname: &str, mate: Mate) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    qname.hash(&mut hasher);
-    mate.hash(&mut hasher);
-    hasher.finish()
-}
-
 /// Promote spanning second-pass alignments to `SplitCandidate`s.
 pub(crate) fn parse_junction_bam(
     bam_path: &Path,
@@ -378,9 +359,10 @@ pub(crate) fn parse_junction_bam(
         }
         let jc_score = crate::jc_seq::cigar_match_indel_score(n_match, n_ins, n_del);
         let qname = rec.name().map(|n| n.to_string()).unwrap_or_default();
-        let mate = Mate::from_flags_and_name(&rec.flags(), &qname);
-        let norm_qname = crate::align::normalize_qname(&qname);
-        if let Some(rs) = ref_scores.get_score(norm_qname, mate) {
+        let (norm_qname, mate_code, molecule_id) =
+            canonical_molecule_identity(&qname, Some(&rec.flags()));
+        let mate = Mate::from_code(mate_code);
+        if let Some(rs) = ref_scores.get_score(&norm_qname, mate) {
             if jc_score < rs {
                 stats.worse_than_primary += 1;
                 continue;
@@ -406,7 +388,7 @@ pub(crate) fn parse_junction_bam(
             side1_pos_1: cand.side1_pos_1,
             side2_pos_1: cand.side2_pos_1,
             overlap: cand.overlap,
-            origin: SplitOrigin::SecondPass(qname_id(&qname, mate)),
+            origin: SplitOrigin::SecondPass(molecule_id),
         });
     }
     Ok((extra, stats))
