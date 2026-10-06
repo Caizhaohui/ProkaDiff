@@ -1,180 +1,105 @@
 #!/usr/bin/env python3
-"""
-benchmark/real_world/scripts/compare_intended_edits.py
-Evaluates intended edit outcome classifications against ground truth.
-Monitors the critical release gate: false_complete == 0.
-"""
-
-import sys
-import json
 import argparse
-import os
+import csv
+import sys
+from pathlib import Path
+from typing import Final
+
+from validation_context import peer_complete_has_differential_support
 
 
-def parse_audit_json(audit_path):
-    """Parses audit.json or intended edit TSV (edit_outcomes.tsv) produced by ProkaDiff."""
-    if not os.path.exists(audit_path):
-        raise FileNotFoundError(f"Audit file not found: {audit_path}")
-
-    if audit_path.endswith(".tsv"):
-        results = []
-        with open(audit_path, "r", encoding="utf-8") as f:
-            headers = None
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                parts = line.split("\t")
-                if headers is None:
-                    headers = parts
-                    continue
-                row = dict(zip(headers, parts))
-                results.append({
-                    "seq_id": row.get("seq_id", ""),
-                    "start": int(row.get("expected_start", 0)) if row.get("expected_start", "0").isdigit() else 0,
-                    "end": int(row.get("expected_end", 0)) if row.get("expected_end", "0").isdigit() else 0,
-                    "status": row.get("status", ""),
-                    "evidence": row.get("unexpected_events", ""),
-                })
-        return results
-
-    with open(audit_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    # In ProkaDiff audit.json:
-    # "intended_edits": [
-    #    {
-    #       "edit": { "seq_id": ..., "start": ..., "end": ... },
-    #       "status": "Complete" | "Partial" | "Missing" | "UnexpectedStructure",
-    #       "observed_pos": ...
-    #    }
-    # ]
-    results = []
-    for item in data.get("intended_edits", []):
-        status = item.get("status")
-        # Normalize status string
-        if isinstance(status, dict):
-            status_name = list(status.keys())[0]
-        else:
-            status_name = str(status)
-        results.append({
-            "seq_id": item.get("edit", {}).get("seq_id", ""),
-            "start": item.get("edit", {}).get("start", 0),
-            "end": item.get("edit", {}).get("end", 0),
-            "status": status_name,
-            "evidence": item.get("evidence", ""),
-        })
-    return results
+STATUSES: Final = {"COMPLETE", "PARTIAL", "MISSING", "UNEXPECTED_STRUCTURE"}
 
 
-def parse_curated_truth(truth_path):
-    """
-    Parses truth TSV file.
-    Expected columns: truth_id, seq_id, start, end, expected_status
-    or if bl21_curated_truth.tsv: sample_id or truth_id with notes indicating expected outcome.
-    """
-    records = []
-    with open(truth_path, "r", encoding="utf-8") as f:
-        headers = None
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split("\t")
-            if headers is None:
-                headers = [h.strip() for h in parts]
-                continue
-            row = dict(zip(headers, parts))
-            records.append(row)
-    return records
+class ProductError(Exception):
+    pass
 
 
-def evaluate_outcomes(observed_edits, expected_status):
-    """
-    Compares observed edit status vs expected status.
-    Returns status counts and checks for false_complete.
-    """
+def read_edit_outcomes(path: Path) -> list[dict[str, str]]:
+    if not path.is_file():
+        raise ProductError(f"edit_outcomes.tsv not found: {path}")
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        required = {"edit_id", "seq_id", "expected_start", "expected_end", "status"}
+        if reader.fieldnames is None or not required.issubset(reader.fieldnames):
+            raise ProductError("edit_outcomes.tsv lacks required M4 columns")
+        rows = [dict(row) for row in reader]
+    for row in rows:
+        row["status"] = row["status"].upper()
+        if row["status"] not in STATUSES:
+            raise ProductError(f"unknown intended edit status {row['status']!r} for {row['edit_id']}")
+    if not rows:
+        raise ProductError("edit_outcomes.tsv has no intended edit rows")
+    return rows
+
+
+def evaluate_outcomes(rows: list[dict[str, str]], expected: str) -> dict[str, int]:
     metrics = {
-        "complete_true_positive": 0,
-        "partial_true_positive": 0,
-        "missing_true_positive": 0,
-        "unexpected_structure_true_positive": 0,
+        "complete": 0,
+        "partial": 0,
+        "missing": 0,
+        "unexpected_structure": 0,
         "false_complete": 0,
-        "false_partial": 0,
-        "false_missing": 0,
-        "total_evaluated": len(observed_edits),
+        "status_mismatch": 0,
+        "total_evaluated": len(rows),
     }
-
-    for edit in observed_edits:
-        obs = edit["status"].upper()
-        exp = expected_status.upper()
-
-        if exp in ("COMPLETE", "PASS"):
-            if obs in ("COMPLETE", "PASS"):
-                metrics["complete_true_positive"] += 1
-            elif obs in ("PARTIAL",):
-                metrics["false_partial"] += 1
-            else:
-                metrics["false_missing"] += 1
-        elif exp in ("UNEXPECTED_STRUCTURE", "UNEXPECTEDSTRUCTURE", "ABERRANT", "DELETION"):
-            if obs in ("UNEXPECTEDSTRUCTURE", "UNEXPECTED_STRUCTURE", "ABERRANT"):
-                metrics["unexpected_structure_true_positive"] += 1
-            elif obs in ("COMPLETE", "PASS"):
-                metrics["false_complete"] += 1
-            else:
-                # Other non-complete status
-                pass
-        elif exp in ("PARTIAL",):
-            if obs in ("PARTIAL",):
-                metrics["partial_true_positive"] += 1
-            elif obs in ("COMPLETE", "PASS"):
-                metrics["false_complete"] += 1
-            else:
-                metrics["false_missing"] += 1
-        elif exp in ("MISSING",):
-            if obs in ("MISSING",):
-                metrics["missing_true_positive"] += 1
-            elif obs in ("COMPLETE", "PASS"):
-                metrics["false_complete"] += 1
-            else:
-                pass
-
+    for row in rows:
+        observed = row["status"]
+        metrics[observed.lower()] += 1
+        if observed != expected:
+            metrics["status_mismatch"] += 1
+        if expected != "COMPLETE" and observed == "COMPLETE":
+            metrics["false_complete"] += 1
     return metrics
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Evaluate intended edit classification against truth")
-    parser.add_argument("--audit-json", required=True, help="ProkaDiff audit.json file")
-    parser.add_argument("--expected-status", required=True, help="Expected status (COMPLETE, PARTIAL, MISSING, UNEXPECTED_STRUCTURE)")
-    parser.add_argument("--tsv", action="store_true", help="Output tab-separated format")
+def evaluate_peer_outcomes(rows: list[dict[str, str]]) -> dict[str, int]:
+    metrics = evaluate_outcomes(rows, rows[0]["status"])
+    metrics["status_mismatch"] = 0
+    metrics["false_complete"] = sum(
+        row["status"] == "COMPLETE" and not peer_complete_has_differential_support(row)
+        for row in rows
+    )
+    return metrics
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Check M4 intended-edit rows. Peer comparisons do not preset a status.")
+    parser.add_argument("--edit-outcomes", required=True, type=Path, help="Current product edit_outcomes.tsv")
+    parser.add_argument("--expected-status", choices=sorted(STATUSES))
+    parser.add_argument("--comparison-role", choices=("REFERENCE_ONLY", "MATCHED_PARENT", "PEER_COMPARATOR"))
+    parser.add_argument("--tsv", action="store_true")
     args = parser.parse_args()
-
-    edits = parse_audit_json(args.audit_json)
-    metrics = evaluate_outcomes(edits, args.expected_status)
-
-    is_gate_passed = (metrics["false_complete"] == 0)
-
+    try:
+        rows = read_edit_outcomes(args.edit_outcomes)
+    except (ProductError, OSError) as error:
+        print(f"intended-edit validation failed: {error}", file=sys.stderr)
+        return 2
+    if args.comparison_role == "PEER_COMPARATOR":
+        if args.expected_status:
+            parser.error("PEER_COMPARATOR decides status from differential evidence and does not accept a preset status")
+        try:
+            metrics = evaluate_peer_outcomes(rows)
+        except ValueError as error:
+            print(f"intended-edit validation failed: {error}", file=sys.stderr)
+            return 2
+        gate_passed = metrics["false_complete"] == 0 and metrics["status_mismatch"] == 0
+    elif args.expected_status:
+        metrics = evaluate_outcomes(rows, args.expected_status)
+        gate_passed = metrics["false_complete"] == 0 and metrics["status_mismatch"] == 0
+    else:
+        parser.error("--expected-status is required unless --comparison-role PEER_COMPARATOR")
     if args.tsv:
         print("metric\tvalue")
-        for k, v in metrics.items():
-            print(f"{k}\t{v}")
-        print(f"gate_passed\t{str(is_gate_passed).lower()}")
+        for key, value in metrics.items():
+            print(f"{key}\t{value}")
+        print(f"gate_passed\t{str(gate_passed).lower()}")
     else:
-        print("=== Intended Edit Outcome Evaluation ===")
-        print(f"Total Edits Evaluated:               {metrics['total_evaluated']}")
-        print(f"Complete True Positive:              {metrics['complete_true_positive']}")
-        print(f"Unexpected Structure True Positive:  {metrics['unexpected_structure_true_positive']}")
-        print(f"Partial True Positive:               {metrics['partial_true_positive']}")
-        print(f"Missing True Positive:               {metrics['missing_true_positive']}")
-        print(f"False Complete (CRITICAL GATE):       {metrics['false_complete']}")
-        print(f"False Partial:                       {metrics['false_partial']}")
-        print(f"False Missing:                       {metrics['false_missing']}")
-        print("---------------------------------------")
-        print(f"Release Gate (false_complete == 0):   {'PASSED' if is_gate_passed else 'FAILED'}")
-
-    if not is_gate_passed:
-        sys.exit(1)
+        for key, value in metrics.items():
+            print(f"{key}\t{value}")
+        print(f"gate_passed\t{str(gate_passed).lower()}")
+    return 0 if gate_passed else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

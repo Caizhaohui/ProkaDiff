@@ -1,173 +1,126 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=prokadiff_bl21
+#SBATCH --job-name=prokadiff_bl21_m5
 #SBATCH --partition=qcpu_18i
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=48G
-#SBATCH --time=04:00:00
+#SBATCH --time=08:00:00
 #SBATCH --output=benchmark/real_world/results/bl21_user/slurm_%j.log
 #SBATCH --error=benchmark/real_world/results/bl21_user/slurm_%j.err
 
 set -euo pipefail
-
-# Ensure environment
 export PATH="/hpcfs/fhome/caizhh/.conda/envs/prokadiff/bin:$PATH"
 export RUST_BACKTRACE=1
 
 REPO_DIR="/hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff"
-cd "$REPO_DIR"
-
-PROKADIFF="$REPO_DIR/target/release/prokadiff"
 BL21_DATA="/hpcfs/fhome/caizhh/19_BL21_edited"
-REF="$BL21_DATA/BL21/ncbi_dataset/data/GCF_013167015.1/genomic.gbff"
+MANIFEST="$REPO_DIR/benchmark/real_world/manifests/bl21_user.tsv"
 INTENDED="$REPO_DIR/benchmark/real_world/truth/bl21_intended.tsv"
-
-B21_3_R1="$BL21_DATA/TCN202608300034/00.CleanData/B21_3_1/B21_3_1_1.clean.fq.gz"
-B21_3_R2="$BL21_DATA/TCN202608300034/00.CleanData/B21_3_1/B21_3_1_2.clean.fq.gz"
-
-B21_4_R1="$BL21_DATA/TCN202608300034/00.CleanData/B21_4_1/B21_4_1_1.clean.fq.gz"
-B21_4_R2="$BL21_DATA/TCN202608300034/00.CleanData/B21_4_1/B21_4_1_2.clean.fq.gz"
-
-B21_2_R1="$BL21_DATA/TCN202608300034/00.CleanData/B21_2_1/B21_2_1_1.clean.fq.gz"
-B21_2_R2="$BL21_DATA/TCN202608300034/00.CleanData/B21_2_1/B21_2_1_2.clean.fq.gz"
-
-ORACLE_B21_3="$BL21_DATA/analysis_bl21_cas9_wgs/results/sv/B21_3_1/augmented_full/breseq/output/output.gd"
-ORACLE_B21_4="$BL21_DATA/analysis_bl21_cas9_wgs/results/sv/B21_4_1/augmented_full/breseq/output/output.gd"
-ORACLE_B21_2="$BL21_DATA/analysis_bl21_cas9_wgs/results/sv/B21_2_1/augmented_full/breseq/output/output.gd"
-
+PROKADIFF="$REPO_DIR/target/release/prokadiff"
 OUT_BASE="$REPO_DIR/benchmark/real_world/results/bl21_user"
-mkdir -p "$OUT_BASE"
+REF="$BL21_DATA/BL21/ncbi_dataset/data/GCF_013167015.1/genomic.gbff"
 
-echo "=== Starting ProkaDiff BL21 Real-World Validation ==="
+cd "$REPO_DIR"
+mkdir -p "$OUT_BASE"
+# shellcheck source=attempt_peer_guides.sh
+source "$REPO_DIR/benchmark/real_world/scripts/attempt_peer_guides.sh"
+python3 "$REPO_DIR/benchmark/real_world/scripts/validate_bl21_registry.py" --data-root "$BL21_DATA"
+test -x "$PROKADIFF"
+
+manifest_value() {
+    local sample="$1" name="$2"
+    awk -F '\t' -v sample="$sample" -v name="$name" 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == name) column = i } NR > 1 && $3 == sample { if (!column) exit 2; print $column; found = 1 } END { if (!found) exit 1 }' "$MANIFEST"
+}
+
 echo "Node: $(hostname)"
 echo "Date: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 echo "ProkaDiff Commit: $(git rev-parse HEAD)"
 echo "Bowtie2: $(bowtie2 --version | head -n 1)"
 echo "Breseq Oracle: $(breseq --version | head -n 1)"
 
-# -------------------------------------------------------------
-# 1. Single-sample Evidence Engine on B21_3_1
-# -------------------------------------------------------------
-echo "--> [1/4] Running ProkaDiff Evidence Engine on B21_3_1..."
-DIR_B21_3="$OUT_BASE/B21_3_1_evidence"
-mkdir -p "$DIR_B21_3"
+for sample in B21_2_1 B21_3_1 B21_4_1; do
+    r1="$(manifest_value "$sample" r1)"
+    r2="$(manifest_value "$sample" r2)"
+    evidence_dir="$OUT_BASE/${sample}_evidence"
+    mkdir -p "$evidence_dir"
+    /usr/bin/time -v -o "$evidence_dir/telemetry.txt" \
+        "$PROKADIFF" evidence --ref "$REF" --fastq "$r1" "$r2" \
+        --threads 16 --outdir "$evidence_dir"
+    if ! python3 "$REPO_DIR/benchmark/real_world/scripts/validate_bl21_products.py" \
+        --diagnostic-sidecar "$evidence_dir/repeat_ambiguous_junctions.tsv" \
+        > "$evidence_dir/diagnostic_sidecar.txt"; then
+        echo "repeat-ambiguous sidecar for $sample is missing or is not diagnostic-only" >&2
+        run_status=1
+    fi
 
-/usr/bin/time -v -o "$DIR_B21_3/telemetry.txt" \
-    "$PROKADIFF" evidence \
-        --ref "$REF" \
-        --fastq "$B21_3_R1" "$B21_3_R2" \
-        --threads 16 \
-        --outdir "$DIR_B21_3"
+    oracle="$BL21_DATA/analysis_bl21_cas9_wgs/results/sv/$sample/augmented_full/breseq/output/output.gd"
+    residual_dir="$evidence_dir/oracle_residuals"
+    bash "$REPO_DIR/benchmark/real_world/scripts/preserve_gdtools_residuals.sh" "$evidence_dir/output.gd" "$oracle" "$residual_dir" prokadiff_vs_breseq
+    python3 "$REPO_DIR/benchmark/real_world/scripts/review_target_locus.py" \
+        --sample "$sample" --target-id edit_1 --seq-id NZ_CP053602.1 \
+        --start 334876 --end 335735 --prokadiff-gd "$evidence_dir/output.gd" \
+        --breseq-gd "$oracle" \
+        --curated-truth "$REPO_DIR/benchmark/real_world/truth/bl21_curated_truth.tsv" \
+        --output "$evidence_dir/target_locus_review.tsv"
+    python3 "$REPO_DIR/benchmark/real_world/scripts/compare_variant_calls.py" \
+        --test-gd "$evidence_dir/output.gd" --truth-gd "$oracle" --tsv \
+        > "$evidence_dir/variant_metrics.tsv"
+done
 
-echo "B21_3_1 evidence complete."
+for sample in B21_2_1 B21_3_1 B21_4_1; do
+    starter="$(manifest_value "$sample" starter_id)"
+    starter_r1="$(manifest_value "$starter" r1)"
+    starter_r2="$(manifest_value "$starter" r2)"
+    edited_r1="$(manifest_value "$sample" r1)"
+    edited_r2="$(manifest_value "$sample" r2)"
+    run_peer_guide() {
+        local guide_id="$1" spacer product_dir failed=0
+        case "$guide_id" in
+            BL21_G1) spacer="$(manifest_value "$sample" spacer_1)" ;;
+            BL21_G2) spacer="$(manifest_value "$sample" spacer_2)" ;;
+            *) echo "unknown guide $guide_id" >&2; return 1 ;;
+        esac
+        product_dir="$OUT_BASE/${sample}_vs_${starter}/${guide_id}"
+        mkdir -p "$(dirname "$product_dir")"
+        if ! /usr/bin/time -v -o "$OUT_BASE/${sample}_vs_${starter}/${guide_id}.telemetry.txt" \
+            "$PROKADIFF" \
+            --starter "$starter_r1" "$starter_r2" \
+            --edited "$edited_r1" "$edited_r2" \
+            --ref "$REF" --intended "$INTENDED" --editor cas9 \
+            --spacer "$spacer" --pam NGG --schema-version v2 \
+            --threads 16 --outdir "$product_dir"; then
+            return 1
+        fi
 
-# -------------------------------------------------------------
-# 2. Single-sample Evidence Engine on B21_4_1
-# -------------------------------------------------------------
-echo "--> [2/4] Running ProkaDiff Evidence Engine on B21_4_1..."
-DIR_B21_4="$OUT_BASE/B21_4_1_evidence"
-mkdir -p "$DIR_B21_4"
+        residual_dir="$product_dir/oracle_residuals"
+        sample_oracle="$BL21_DATA/analysis_bl21_cas9_wgs/results/sv/$sample/augmented_full/breseq/output/output.gd"
+        starter_oracle="$BL21_DATA/analysis_bl21_cas9_wgs/results/sv/$starter/augmented_full/breseq/output/output.gd"
+        bash "$REPO_DIR/benchmark/real_world/scripts/preserve_gdtools_residuals.sh" "$product_dir/edited.gd" "$product_dir/starter.gd" "$residual_dir" prokadiff_pair || failed=1
+        bash "$REPO_DIR/benchmark/real_world/scripts/preserve_gdtools_residuals.sh" "$sample_oracle" "$starter_oracle" "$residual_dir" breseq_pair || failed=1
+        if [[ -f "$residual_dir/prokadiff_pair_A_minus_B.gd" && -f "$residual_dir/breseq_pair_A_minus_B.gd" ]]; then
+            bash "$REPO_DIR/benchmark/real_world/scripts/preserve_gdtools_residuals.sh" "$residual_dir/prokadiff_pair_A_minus_B.gd" "$residual_dir/breseq_pair_A_minus_B.gd" "$residual_dir" pair_parity || failed=1
+        fi
 
-/usr/bin/time -v -o "$DIR_B21_4/telemetry.txt" \
-    "$PROKADIFF" evidence \
-        --ref "$REF" \
-        --fastq "$B21_4_R1" "$B21_4_R2" \
-        --threads 16 \
-        --outdir "$DIR_B21_4"
+        if ! python3 "$REPO_DIR/benchmark/real_world/scripts/compare_intended_edits.py" \
+            --edit-outcomes "$product_dir/edit_outcomes.tsv" --comparison-role PEER_COMPARATOR --tsv \
+            > "$product_dir/intended_metrics.tsv"; then failed=1; fi
+        if ! python3 "$REPO_DIR/benchmark/real_world/scripts/validate_reports.py" \
+            --strict "$product_dir/report.md" > "$product_dir/report_validation.txt"; then failed=1; fi
+        if ! python3 "$REPO_DIR/benchmark/real_world/scripts/validate_bl21_products.py" \
+            --products "$product_dir" --sample "$sample" --guide-id "$guide_id" \
+            --comparison-role PEER_COMPARATOR --target-review "$OUT_BASE/${sample}_evidence/target_locus_review.tsv" \
+            --diagnostic-sidecar "$OUT_BASE/${sample}_evidence/repeat_ambiguous_junctions.tsv" \
+            > "$product_dir/product_validation.tsv"; then failed=1; fi
+        return "$failed"
+    }
+    attempt_peer_guides run_peer_guide
+    if [[ "$GUIDE_FAILURES" -ne 0 ]]; then
+        run_status=1
+    fi
+done
 
-echo "B21_4_1 evidence complete."
-
-# -------------------------------------------------------------
-# 2b. Single-sample Evidence Engine on B21_2_1 (P1-4: previously PLANNED,
-#     never executed -- see VALIDATION_REGISTRY.tsv)
-# -------------------------------------------------------------
-echo "--> [2b/4] Running ProkaDiff Evidence Engine on B21_2_1..."
-DIR_B21_2="$OUT_BASE/B21_2_1_evidence"
-mkdir -p "$DIR_B21_2"
-
-/usr/bin/time -v -o "$DIR_B21_2/telemetry.txt" \
-    "$PROKADIFF" evidence \
-        --ref "$REF" \
-        --fastq "$B21_2_R1" "$B21_2_R2" \
-        --threads 16 \
-        --outdir "$DIR_B21_2"
-
-echo "B21_2_1 evidence complete."
-
-# -------------------------------------------------------------
-# 3. Dual-strain Differential Audit: B21_3_1 (edited) vs B21_4_1 (starter)
-# -------------------------------------------------------------
-echo "--> [3/4] Running ProkaDiff Differential Audit (B21_3_1 edited vs B21_4_1 starter)..."
-DIR_DIFF="$OUT_BASE/B21_3_1_diff"
-mkdir -p "$DIR_DIFF"
-
-/usr/bin/time -v -o "$DIR_DIFF/telemetry.txt" \
-    "$PROKADIFF" \
-        --starter "$B21_4_R1" "$B21_4_R2" \
-        --edited "$B21_3_R1" "$B21_3_R2" \
-        --ref "$REF" \
-        --intended "$INTENDED" \
-        --editor cas9 \
-        --spacer "ATTTCGCTGGTGGTCAGATG" \
-        --pam "NGG" \
-        --threads 16 \
-        --outdir "$DIR_DIFF"
-
-echo "Differential audit complete."
-
-# -------------------------------------------------------------
-# 4. Evaluations & Release Gate Checks
-# -------------------------------------------------------------
-echo "--> [4/4] Running evaluation scripts..."
-
-# Variant comparison vs breseq oracle
-python3 "$REPO_DIR/benchmark/real_world/scripts/compare_variant_calls.py" \
-    --test-gd "$DIR_B21_3/output.gd" \
-    --truth-gd "$ORACLE_B21_3" \
-    --tsv > "$DIR_B21_3/variant_metrics.tsv"
-
-python3 "$REPO_DIR/benchmark/real_world/scripts/compare_variant_calls.py" \
-    --test-gd "$DIR_B21_4/output.gd" \
-    --truth-gd "$ORACLE_B21_4" \
-    --tsv > "$DIR_B21_4/variant_metrics.tsv"
-
-python3 "$REPO_DIR/benchmark/real_world/scripts/compare_variant_calls.py" \
-    --test-gd "$DIR_B21_2/output.gd" \
-    --truth-gd "$ORACLE_B21_2" \
-    --tsv > "$DIR_B21_2/variant_metrics.tsv"
-
-# Intended edit evaluation & false_complete gate check
-python3 "$REPO_DIR/benchmark/real_world/scripts/compare_intended_edits.py" \
-    --audit-json "$DIR_DIFF/audit.json" \
-    --expected-status UNEXPECTED_STRUCTURE \
-    --tsv > "$DIR_DIFF/intended_metrics.tsv"
-
-# Human report validation
-python3 "$REPO_DIR/benchmark/real_world/scripts/validate_reports.py" \
-    "$DIR_DIFF/report.md" > "$DIR_DIFF/report_validation.txt"
-
-# Extract telemetry stats
-python3 -c "
-import sys, re
-def parse_time(fpath):
-    wall = 0.0
-    rss = 0.0
-    with open(fpath) as f:
-        for line in f:
-            if 'Elapsed (wall clock) time' in line:
-                m = re.search(r'(\d+):(\d+\.?\d*)', line)
-                if m:
-                    wall = int(m.group(1)) * 60 + float(m.group(2))
-            elif 'Maximum resident set size' in line:
-                m = re.search(r'(\d+)', line)
-                if m:
-                    rss = float(m.group(1)) / 1024.0 # MB
-    return wall, rss
-
-wall, rss = parse_time('$DIR_DIFF/telemetry.txt')
-with open('$DIR_DIFF/summary_metrics.tsv', 'w') as out:
-    out.write(f'median_runtime_sec\t{wall:.1f}\n')
-    out.write(f'median_rss_mb\t{rss:.1f}\n')
-"
-
-echo "=== All Steps Completed Successfully ==="
+if [[ ${run_status:-0} -ne 0 ]]; then
+    echo "BL21 validation failed for at least one comparison; all guide attempts completed." >&2
+    exit 1
+fi
+echo "BL21 validation matrix completed: 3 PEER_COMPARATOR pairs x 2 independent guides."
