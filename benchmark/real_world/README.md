@@ -48,6 +48,12 @@ versioned inputs:
 The PRJNA1088182 publication table and the PRJNA884016 assembly files are validation
 inputs. They are not measured ProkaDiff results. Their registry rows remain `PENDING`
 until the queue-only validation milestones write and preserve a comparison record.
+M6-P0 is **FROZEN FOR TIER A**. M6 remains **ACTIVE**. M6-P1 has **NOT STARTED**.
+Tier B is **NOT_EVALUABLE**. The frozen contract is
+[`M6_VALIDATION_CONTRACT.md`](M6_VALIDATION_CONTRACT.md); the inventory is
+[`M6_P0_INVENTORY.md`](M6_P0_INVENTORY.md). Cohort `execution_reference` must
+match `manifests/prjna1088182_relationships.tsv`. MG1655 executes on
+`NC_000913.3`. BW25113 executes on `CP009273.1`.
 Generated `results/` directories and raw FASTQ/BAM remain local and ignored.
 
 ## BL21 M5 validation inputs and products

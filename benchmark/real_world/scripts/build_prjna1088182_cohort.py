@@ -285,7 +285,14 @@ for group, sample_names in TARGET_SELECTIONS.items():
 
         r1_path = f"data/prjna1088182/{run_id}_1.fastq.gz"
         r2_path = f"data/prjna1088182/{run_id}_2.fastq.gz"
-        ref_path = "data/references/MG1655.gbk"
+        # Execution accessions are frozen in M6_VALIDATION_CONTRACT.md.
+        # Do not point BW25113 libraries at the MG1655 chromosome.
+        if group == "Cas9":
+            publication_reference = "U00096.3"
+            execution_reference = "NC_000913.3"
+        else:
+            publication_reference = "CP009273.1"
+            execution_reference = "CP009273.1"
 
         mut_list = meta.get("mutations", [])
         notes = f"{group} cohort ({s_name}): {meta.get('name', '')}"
@@ -300,7 +307,9 @@ for group, sample_names in TARGET_SELECTIONS.items():
             "starter_id": starter_id,
             "r1": r1_path,
             "r2": r2_path,
-            "reference": ref_path,
+            "publication_reference": publication_reference,
+            "execution_reference": execution_reference,
+            "reference": execution_reference,
             "intended_tsv": ".",
             "editor": editor,
             "spacer": spacer,
@@ -346,7 +355,8 @@ for group, sample_names in TARGET_SELECTIONS.items():
 manifest_tsv = MANIFEST_DIR / "prjna1088182_cohort.tsv"
 fieldnames = [
     "dataset_id", "sample_id", "sample_name", "group", "starter_id",
-    "r1", "r2", "reference", "intended_tsv", "editor", "spacer", "pam",
+    "r1", "r2", "publication_reference", "execution_reference", "reference",
+    "intended_tsv", "editor", "spacer", "pam",
     "truth_source", "sample_type", "notes"
 ]
 with open(manifest_tsv, "w", encoding="utf-8", newline="") as f:

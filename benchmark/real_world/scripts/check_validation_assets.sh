@@ -13,6 +13,8 @@ require_file() {
 
 require_file benchmark/real_world/VALIDATION_REGISTRY.tsv
 require_file benchmark/real_world/manifests/prjna1088182_cohort.tsv
+require_file benchmark/real_world/manifests/prjna1088182_relationships.tsv
+require_file benchmark/real_world/manifests/prjna1088182_truth_coordinate_audit.tsv
 require_file benchmark/real_world/manifests/prjna1088182_sra_runinfo.csv
 require_file benchmark/real_world/truth/prjna1088182_publication_truth.tsv
 require_file benchmark/real_world/manifests/prjna884016.tsv
@@ -42,9 +44,11 @@ while IFS= read -r asset; do
         printf 'validation asset is ignored: %s\n' "$asset" >&2
         exit 1
     fi
-    git ls-files --error-unmatch "$asset" >/dev/null
+    git ls-files --error-unmatch "$asset" >/dev/null || exit 1
 done <<'ASSETS'
 benchmark/real_world/manifests/prjna1088182_cohort.tsv
+benchmark/real_world/manifests/prjna1088182_relationships.tsv
+benchmark/real_world/manifests/prjna1088182_truth_coordinate_audit.tsv
 benchmark/real_world/manifests/prjna1088182_sra_runinfo.csv
 benchmark/real_world/truth/prjna1088182_publication_truth.tsv
 benchmark/real_world/manifests/prjna884016_sra_runinfo.csv
@@ -53,5 +57,7 @@ benchmark/real_world/truth/prjna884016/mob_truth.tsv
 benchmark/real_world/truth/prjna884016/jc_truth.tsv
 benchmark/real_world/truth/prjna884016/SY22A1_vs_SY221.rdiff
 ASSETS
+
+python3 benchmark/real_world/scripts/m6_reference_policy.py --check
 
 printf 'validation asset checks passed\n'
