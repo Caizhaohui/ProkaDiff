@@ -34,6 +34,12 @@ def test_mg1655_request_for_bw25113_reference_fails_closed():
         require_execution_reference(mg["run_long"], BW25113_EXECUTION, rows)
 
 
+def test_unauthorized_run_is_rejected():
+    from m6_reference_policy import assert_authorized_smoke_run
+    with pytest.raises(ReferencePolicyError, match="not one of the four"):
+        assert_authorized_smoke_run("SRR28349176")
+
+
 def test_smoke_runs_are_independent_mg1655_units():
     rows = read_tsv(RELATIONSHIPS)
     for run_id in ("SRR28349244", "SRR28357593", "SRR28349243", "SRR28357592"):

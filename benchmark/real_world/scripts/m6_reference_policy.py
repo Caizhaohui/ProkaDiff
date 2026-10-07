@@ -30,6 +30,13 @@ SMOKE_RUNS = {
 }
 
 
+def assert_authorized_smoke_run(run_id: str) -> str:
+    sample = SMOKE_RUNS.get(run_id)
+    if sample is None:
+        raise ReferencePolicyError(f"{run_id} is not one of the four M6-P1a smoke runs")
+    return sample
+
+
 class ReferencePolicyError(Exception):
     pass
 
