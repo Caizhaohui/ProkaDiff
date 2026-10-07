@@ -52,6 +52,13 @@ Generated `results/` directories and raw FASTQ/BAM remain local and ignored.
 
 ## BL21 M5 validation inputs and products
 
+M5 (BL21 real-data validation) is **COMPLETE**. The authoritative closure
+record is [`M5_CLOSEOUT.md`](M5_CLOSEOUT.md). Single-sample
+source-separated reconciliation remains in
+[`M5_BL21_P1_RECONCILIATION.md`](M5_BL21_P1_RECONCILIATION.md). Generated
+`results/` stay local and gitignored; the closeout summarizes observed
+job identities and product validation, not versioned FASTQ/BAM payloads.
+
 `manifests/bl21_user.tsv` is versioned as `BL21_INPUTS_V2`. Each row explicitly
 declares `comparison_role=PEER_COMPARATOR` and
 `biological_parent_verified=false`; `starter_id` identifies the computational

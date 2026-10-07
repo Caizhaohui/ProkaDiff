@@ -1,6 +1,6 @@
 # ProkaDiff 开发计划
 
-> 当前执行顺序，更新于 2026-09-18。一次只执行一个里程碑；每个里程碑同时交付实现、测试、文档，并按 [AGENTS.md](AGENTS.md) 的计算节点规则验证。本文是根目录的执行入口；阶段字母只在各自历史任务书内有效。
+> 当前执行顺序，更新于 2026-10-07。一次只执行一个里程碑；每个里程碑同时交付实现、测试、文档，并按 [AGENTS.md](AGENTS.md) 的计算节点规则验证。本文是根目录的执行入口；阶段字母只在各自历史任务书内有效。
 
 ## 目标与边界
 
@@ -27,10 +27,11 @@
   - M2 Differential Variant → Intended Verification 已闭环完成（2026-09-23）：逐编辑评估权威引用 M1 的 `EventId`；建立了 `IntendedEventRelationship` 并严格区分 `ExpectedConstituent`、`PartialObservation` 与 `UnexpectedAtLocus`；实现评估先于掩码，只有唯一归属且无异常判定的预期组成事件才移出非预期视图，靶位异常等位基因、额外变异及异常接合点完整保留；实现了基于生物拟合度与确定性 `EventId` 决胜的删除及 cassette 候选选择，消除输入行序依赖；确立了 MC 纯证据诊断契约（无 `EventId`、缺失写 `Unknown/NA`、亲本 MC 自动过滤）；保持了全部既有公开 TSV 表头、列序及 summary 键不变，`edit_outcomes.tsv` 仅在输出边界将 `EventId` 映射为代表数字 GD ID；全工作区单元测试与 M2 专项回归测试全过；`qcpu_18i` 上 Layer 1 `synth_parent_child` FASTQ 差分流水线与 `edit_outcomes.tsv` 闭环验证通过（Job 2784683）。
   - M3 Intended Verification → Mechanistic Association = **COMPLETE (2026-09-24)**：`EventId` 是内部权威突变身份；候选位点只扫描一次；`CandidateSearchStatus` 显式区分未扫描、零候选、有候选但事件无关联；不存在 `SITE_UNKNOWN`、伪造 mismatch/distance/PAM 或位置回退关联；OnTarget 缺失测量输出 `NA`；未解析的 `EventId` 触发 typed error；全部合格关联均保留；空间与序列机制关联不证明 Cas 切割因果。全工作区 `cargo test --workspace` 在 `qcpu_18i` 通过（Job 2791150）；M3 FASTQ/Bowtie2 E2E 通过（Job 2791151）。
 - M4 Mechanistic Association → AuditResult 与全部输出 = **COMPLETE (2026-09-24)**：以 `DV1 EventId` 作为公开差分事件身份，由完整 `AuditResult` 与共享 `AuditSummary` 生成全部产品；集中管理 V1/V2 模式，V2 默认且相对 V1 仅追加列；M3 闭环修订 `v0.3.0-m3` / `0f79495` 的七个 V1 产品文件与当前 V1 输出逐文件字节比较一致；V2 身份/schema、阶段化发布及回滚恢复、跨输出一致性均通过回归验证。最新 `qcpu_18i` FASTQ/Bowtie2 产品验证 Job 2792159 完成，覆盖默认 V2 与显式 V1 产品生成。
-- M5-SR1 Repeat-Ambiguous Junction Recovery = **COMPLETE (2026-09-28)**，提交 `f30f93be5439d2f8eb32f79719fe8482713fcf5a`。高拷贝重复接头证据保留为仅诊断记录，不直接生成 JC、DEL、MOB、EventId、DifferentialEvent 或关联。验收证据：合成 `qcpu_18i` Job 2815876 通过（20/21 拷贝边界、未解析高拷贝证据保留、RESOURCE_LIMIT 失败关闭、重排输入确定性）；焦点样本 B21_3_1 对 GCF_013167015.1 的 Job 2815888 通过（lacZ 锚点 331955/− 保留为 SUPPORTED_AMBIGUOUS，可行拷贝仍为多个，`exact_breakpoint_supported=false`，未制造精确 JC/DEL）。本地 `cargo fmt`、`clippy -D warnings`、`cargo test --workspace` 通过，M1–M4 公开语义未改。`MAX_STAGE2_FAMILY_GEOMETRIES=5000` 仍只是待实测的计算安全上限。M5 整体未完成。
-- M5-BL21-P1 单样本参考相对复核 = **COMPLETE (2026-09-28)**。三个异常克隆各自相对参考 `GCF_013167015.1` 运行，不是 MATCHED_PARENT，也不是 PEER_COMPARATOR。证据提交 `f30f93be5439d2f8eb32f79719fe8482713fcf5a`；执行溯源提交 `dc977ce7d90954ef1185feb4ddfa6700d99dd34a`。作业：B21_3_1 Job 2815888，B21_4_1 Job 2816157，B21_2_1 Job 2816170。三克隆都有覆盖 lacZ 的 MC、SR1 保留的 SUPPORTED_AMBIGUOUS 重复家族证据、多个可行拷贝、`exact_breakpoint_supported=false`，且没有由重复诊断生成的精确 JC/DEL、EventId 或 RESOURCE_LIMIT。对照、主张边界、与 breseq 的表示差异，以及尚未启动的配对矩阵验收规则见 [M5_BL21_P1_RECONCILIATION.md](benchmark/real_world/M5_BL21_P1_RECONCILIATION.md)。`MAX_STAGE2_FAMILY_GEOMETRIES=5000` 在这三份数据中没有触发，仍不能外推为对重复丰富细菌基因组普遍足够。M5 整体未完成，M6 未开始。
-- 当前活动：M5 仍为 ACTIVE。下一步若启动 PEER_COMPARATOR 矩阵，只检验克隆间差分、预期编辑评估、EventId 与 M4 产品一致性，不检验“各克隆是否具有 lacZ 异常”。该矩阵的验收规则已写入上述对照文档，本次不提交作业。
-- 待证实：`VALIDATION_REGISTRY.tsv` 对 PRJNA1088182 和 PRJNA884016 的完成声明，须与随仓库交付的非 FASTQ 输入、truth、实际 calls、比较结果一致。局部忽略的结果目录不能作为可复核发布证据。
+- M5-SR1 Repeat-Ambiguous Junction Recovery = **COMPLETE (2026-09-28)**，冻结提交 `f30f93be5439d2f8eb32f79719fe8482713fcf5a`。科学结论：ProkaDiff 保留高拷贝重复相关接头证据；在拷贝身份未独立解析时，不发出拷贝特异结构调用。诊断旁路不直接生成 JC、DEL、MOB、EventId、DifferentialEvent 或关联。验收：合成 Job 2815876 与焦点 B21_3_1 Job 2815888 通过。**溯源限定**：这两份作业不是 `f30f93b` 的干净检出；日志 HEAD 为 `08d41edd7f6ce7f6d287fb19cebdedd4e3bcb09c`，工作树含当时未提交的 SR1 实现；2815876 保存的 `git diff HEAD` SHA256 为 `e6111f92e94cb6c5986d37a2dff07256db4a4f49f08bae223472b1dee10701e7`。`f30f93b` 随后冻结已验证实现，不能写成这两份作业直接跑了干净的 `f30f93b`。
+- M5-BL21-P1 单样本参考相对复核 = **COMPLETE (2026-09-28)**。三个异常克隆各自相对参考 `GCF_013167015.1` 运行，不是 MATCHED_PARENT，也不是 PEER_COMPARATOR。作业：B21_3_1 Job 2815888，B21_4_1 Job 2816157，B21_2_1 Job 2816170。科学结论：三克隆均有覆盖 lacZ 的参考相对结构异常；ProkaDiff 保留重复相关接头证据，但未将重复家族解析到单一拷贝；三份均为 `exact_breakpoint_supported=false`。2816157 与 2816170 明确记录 `SR1_COMMIT=f30f93b`。对照与来源分离见 [M5_BL21_P1_RECONCILIATION.md](benchmark/real_world/M5_BL21_P1_RECONCILIATION.md)。`MAX_STAGE2_FAMILY_GEOMETRIES=5000` 在这三份 BL21 数据中未触发；支持表述仅为“当前上限在所测 BL21 数据集中未触发”，不能外推为对重复丰富细菌基因组普遍足够。
+- M5 PEER_COMPARATOR 矩阵 = **COMPLETE (2026-10-06 执行 / 2026-10-07 收口)**。验证提交 `b558371a85367bcbb1b97a63647aff3d663f2bd7`。作业：2888235（B21_3_1 vs B21_4_1，G1+G2）、2888236（B21_4_1 vs B21_3_1，G1+G2）、2888237（B21_2_1 vs B21_3_1，G1+G2）；三份均 `COMPLETED` / `0:0`；六个 guide 格子产品验证 PASS。六格均为 M2=`MISSING`、预期相关差分事件 0、DV1 matched/unexpected 列表空、`false_complete=0`、`gate_passed=true`、搜索已执行（G1：1 候选含 0-mismatch；G2：2 候选含 0 与 4 mismatch）、关联数 0、七个 M4 产品一致。方向差分事件数：3→4 为 32，4→3 为 44，2→3 为 54；方向不对称可接受。权威收口记录：[M5_CLOSEOUT.md](benchmark/real_world/M5_CLOSEOUT.md)。
+- M5 整体 = **COMPLETE (2026-10-07)**。M6 未开始；M5 不再阻塞启动 M6，但本次收口不启动 M6。
+- 待证实（M6+）：`VALIDATION_REGISTRY.tsv` 对 PRJNA1088182 和 PRJNA884016 的完成声明，须与随仓库交付的非 FASTQ 输入、truth、实际 calls、比较结果一致。局部忽略的结果目录不能作为可复核发布证据。
 
 ## 顺序与验收
 
@@ -43,13 +44,13 @@
 | **M2：Differential Variant → Intended Verification** | 已完成（2026-09-23） | 逐编辑评估权威引用 M1 的 EventId，保留 Complete/Partial/Missing/UnexpectedStructure 与断点判定；异常靶位事件不因掩码而丢失；支持一事件匹配多声明、cassette 双接头及异常结构判定；edit_outcomes.tsv 正确回指并在输出边界兼容映射；纯内存单元测试与 qcpu_18i 集群端到端验证通过（Job 2784683）。 |
 | **M3：Intended Verification → Mechanistic Association** | **COMPLETE (2026-09-24)** | 内部突变身份权威为 `EventId`；单次候选扫描；搜索状态显式区分；无 `SITE_UNKNOWN` 或伪造 mismatch/distance/PAM；无位置关联回退；OnTarget 缺失测量写 `NA`；未知 EventId 投影为 typed error；保留所有合格关联；关联不等于切割因果。`qcpu_18i` workspace 测试 Job 2791150 与 M3 FASTQ/Bowtie2 E2E Job 2791151 通过。 |
 | **M4：Mechanistic Association → AuditResult 与全部输出** | **COMPLETE (2026-09-24)** | 公开差分事件身份为 `DV1 EventId`；单一 `AuditResult` 与 `AuditSummary` 提供完整产品状态和共享计数；V2 为默认并仅相对 V1 追加列，V1 与 M3 闭环版本 `v0.3.0-m3` / `0f79495` 的七个产品文件逐字节相同。V2 身份/schema、阶段化发布及回滚恢复、跨输出一致性均通过回归验证。`qcpu_18i` FASTQ/Bowtie2 Job 2792159 的默认 V2 与显式 V1 产品生成通过。冻结的不变量见下节。 |
-| **M5：BL21 真实数据复核** | **ACTIVE** | M5-SR1 与 M5-BL21-P1 均已完成（2026-09-28）。SR1 提交 `f30f93b`；执行提交 `dc977ce`。单样本作业：B21_3_1 2815888、B21_4_1 2816157、B21_2_1 2816170。配对矩阵的目的和验收已冻结，尚未提交。M5 整体未完成。 |
-| **M6：PRJNA1088182 队列复核** | M5 后 | 以随仓库交付的 manifest、publication truth 和评估器逐样本验证编辑状态与关联陈述；仅在测量结果完整时更新登记表。 |
+| **M5：BL21 真实数据复核** | **COMPLETE (2026-10-07)** | M5-SR1、M5-BL21-P1 与 PEER_COMPARATOR 六格矩阵均已完成。权威收口：[M5_CLOSEOUT.md](benchmark/real_world/M5_CLOSEOUT.md)。矩阵作业 2888235–2888237（提交 `b558371`）；单样本 2815888 / 2816157 / 2816170；SR1 合成 2815876。保留无核实亲本、无 Cas9 因果、无精确重复拷贝解析等限制。 |
+| **M6：PRJNA1088182 队列复核** | 未开始（M5 不再阻塞） | 以随仓库交付的 manifest、publication truth 和评估器逐样本验证编辑状态与关联陈述；仅在测量结果完整时更新登记表。 |
 | **M7：PRJNA884016 组装 truth 复核** | M6 后 | 以可解析的组装 truth、ProkaDiff calls 和结构比较结果核对 MOB/JC 及断点误差；不得以组装差异直接替代测序检出结果。 |
 | **M8：REL606 引擎扩展对拍** | M7 后 | 记录与 breseq 的双向 GD 比较、差异解释及同作业 wall/RSS；性能或 parity 声明须满足 [parity](docs/parity.md) 的门禁。 |
 | **M9：报告审阅与发布门禁** | M8 后 | 人工审阅真实报告，核对每个 finding 的事件与证据回指、科学措辞和溯源；汇总 M5–M8 的可复核记录及尚未验证的能力，只发布有证据支持的结论。 |
 
-M0–M4 已闭环通过。M5 仍是当前活动里程碑：M5-SR1 与 M5-BL21-P1 已完成，M5 整体未完成。M6–M9 尚未开始。批次模式、CAST/IS110、长读长、混群以及未经外部 oracle 验证的评分保持在后续路线图，不进入当前 M5 工作范围。
+M0–M5 已闭环通过。M6–M9 尚未开始；下一项是 M6（PRJNA1088182 队列复核）。批次模式、CAST/IS110、长读长、混群以及未经外部 oracle 验证的评分保持在后续路线图。
 
 ## 冻结的 M4 不变量
 

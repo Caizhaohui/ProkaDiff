@@ -3,7 +3,7 @@
 Reference for every sample: `GCF_013167015.1`, contig `NZ_CP053602.1`.
 lacZ CDS: `complement(334064..337138)`.
 
-These runs are reference-relative single-sample evidence. They are not matched-parent comparisons and not peer-comparator analyses. Evidence commit `f30f93be5439d2f8eb32f79719fe8482713fcf5a`. Execution commit `dc977ce7d90954ef1185feb4ddfa6700d99dd34a`.
+These runs are reference-relative single-sample evidence. They are not matched-parent comparisons and not peer-comparator analyses. SR1 implementation freeze commit `f30f93be5439d2f8eb32f79719fe8482713fcf5a`. Execution/documentation commit for this reconciliation `dc977ce7d90954ef1185feb4ddfa6700d99dd34a`. Jobs 2816157 and 2816170 explicitly recorded `SR1_COMMIT=f30f93b`. Job 2815888 (also the SR1 focused real-data run) logged HEAD `08d41ed` with a dirty worktree; see [M5_CLOSEOUT.md](M5_CLOSEOUT.md) §C for the provenance qualification.
 
 Molecule counts below are per diagnostic row. Rows at the same anchor are not added together.
 
@@ -90,28 +90,29 @@ No sample is an unexplained discrepancy. No ProkaDiff product contains an exact 
 
 The single-sample question, whether each clone shows a lacZ abnormality relative to `GCF_013167015.1`, is already answered. The peer matrix does not retest that question.
 
-A future `PEER_COMPARATOR` run tests:
+Historical note: when this reconciliation was first written (2026-09-28), the
+peer matrix had not yet been submitted. That statement is superseded.
 
-- DifferentialEvent subtraction between clones
-- comparator-relative intended-edit assessment
-- EventId consistency
-- M4 cross-product consistency
-- guide candidate-search behavior for G1 and G2 independently
-- association semantics
+The `PEER_COMPARATOR` matrix was executed and validated (jobs 2888235,
+2888236, 2888237; commit `b558371`). Authoritative matrix counts, EventId
+checks, provenance caveats, and the M5 COMPLETE verdict are recorded in
+[M5_CLOSEOUT.md](M5_CLOSEOUT.md).
 
-`B21_4_1` and `B21_2_1` are computational comparators in the manifest. `biological_parent_verified` remains false. Shared lacZ abnormalities can be removed by subtraction. `MISSING` may then be the correct comparator-relative status. The matrix must not require `UNEXPECTED_STRUCTURE`.
-
-Planned comparisons, not submitted:
+Completed directions (each with independent G1 and G2):
 
 - B21_3_1 / B21_4_1
 - B21_4_1 / B21_3_1
 - B21_2_1 / B21_3_1
 
-Each comparison runs G1 and G2 independently.
+`B21_4_1` and `B21_2_1` remain computational comparators in the manifest.
+`biological_parent_verified` remains false. Shared lacZ abnormalities can be
+removed by subtraction; all six validated cells reported comparator-relative
+`MISSING`. The matrix must not require `UNEXPECTED_STRUCTURE`.
 
 ## Frozen peer-matrix acceptance
 
-For each future peer run, `MISSING` is valid when all of the following hold:
+These acceptance rules remain the frozen contract used by the completed
+matrix. For each peer run, `MISSING` is valid when all of the following hold:
 
 - no intended-related DifferentialEvent remains after subtraction
 - `matched_event_ids_dv1` is empty
@@ -128,4 +129,6 @@ The run is still rejected if any of the following occur:
 
 G1 and G2 are separate runs. One guide's status does not fill in the other guide.
 
-This document freezes the rules. It does not launch the matrix. M5 remains active. M6 has not started.
+Single-sample reconciliation in this file remains reference-relative evidence
+only. M5 as a whole is **COMPLETE**; see [M5_CLOSEOUT.md](M5_CLOSEOUT.md).
+M6 has not started.
