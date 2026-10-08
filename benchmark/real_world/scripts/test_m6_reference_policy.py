@@ -54,6 +54,27 @@ def test_sra1825115_is_single_biological_read_and_not_initial_paired_smoke():
         assert by[run]["read_structure_class"] != "SECOND_READ_TECHNICAL_ONLY"
 
 
+def test_p1b_smoke_summary_keeps_tier_a_boundaries():
+    import csv
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[1] / "manifests/prjna1088182_m6_p1b_smoke_results.tsv"
+    rows = list(csv.DictReader(path.open(), delimiter="\t"))
+    by = {row["run"] + ":" + row["sample_name"]: row for row in rows}
+    pos = by["SRR28349244:Cas9_1"]
+    assert pos["recovery_status"] == "RECOVERED_EXACT"
+    assert pos["reference"] == "NC_000913.3"
+    assert pos["observed_event_id"] == "NA"
+    assert "301690 T" in pos["observed_event"]
+    neg = by["SRR28349243:Cas9_2"]
+    assert neg["publication_truth"] == "NONE"
+    assert neg["recovery_status"] == "NOT_EVALUABLE"
+    assert "ADDITIONAL_CALL_INVENTORY" in neg["product_status"]
+    assert "not false positives" in neg["notes"]
+    rerun = by["SRR28349244:Cas9_1_rerun"]
+    assert rerun["recovery_status"] == "RECOVERED_EXACT"
+    assert rerun["observed_event"] == pos["observed_event"]
+
+
 def test_unauthorized_run_is_rejected():
     from m6_reference_policy import assert_authorized_smoke_run
     with pytest.raises(ReferencePolicyError, match="not one of the four"):
