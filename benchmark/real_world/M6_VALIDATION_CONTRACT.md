@@ -139,4 +139,13 @@ editing-attributable unexpected-mutation rate.
 substitutions. BW25113 smoke waits on a staged `CP009273.1` job record; the
 reference policy itself is already frozen.
 
+## Initial paired-smoke amendment (2026-10-08)
+
+Tier-A truth eligibility is unchanged. Each SRA Run remains an execution unit.
+`sra-stat -x` and SEQUENCE rows show that `SRR28357593` and `SRR28357592`
+(`SRA1825115`) store one biological read per spot (`spot_count_mates=0`).
+Reported `LibraryLayout` remains `PAIRED`. Those runs stay in the inventory
+and are not eligible for the first paired-end P1b smoke. That smoke, not yet
+started, is `SRR28349244` and `SRR28349243` only.
+
 `VALIDATION_REGISTRY.tsv` stays `PENDING` until execution evidence exists.

@@ -34,6 +34,26 @@ def test_mg1655_request_for_bw25113_reference_fails_closed():
         require_execution_reference(mg["run_long"], BW25113_EXECUTION, rows)
 
 
+def test_sra1825115_is_single_biological_read_and_not_initial_paired_smoke():
+    import csv
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[1] / "manifests/prjna1088182_m6_p1a_fastq_provenance.tsv"
+    rows = list(csv.DictReader(path.open(), delimiter="\t"))
+    by = {row["run"]: row for row in rows}
+    for run in ("SRR28349244", "SRR28349243"):
+        assert by[run]["reported_library_layout"] == "PAIRED"
+        assert by[run]["read_structure_class"] == "TRUE_PAIRED_READS_AVAILABLE"
+        assert by[run]["p1b_initial_paired_smoke"] == "ELIGIBLE_INITIAL_PAIRED_SMOKE"
+        assert by[run]["r1_reads"] == by[run]["r2_reads"]
+    for run in ("SRR28357593", "SRR28357592"):
+        assert by[run]["reported_library_layout"] == "PAIRED"
+        assert by[run]["spots_with_mates"] == "0"
+        assert by[run]["read_structure_class"] == "SINGLE_BIOLOGICAL_READ_PER_SPOT"
+        assert by[run]["p1b_initial_paired_smoke"] == "NOT_ELIGIBLE_INITIAL_PAIRED_SMOKE"
+        assert by[run]["r2_reads"] == ""
+        assert by[run]["read_structure_class"] != "SECOND_READ_TECHNICAL_ONLY"
+
+
 def test_unauthorized_run_is_rejected():
     from m6_reference_policy import assert_authorized_smoke_run
     with pytest.raises(ReferencePolicyError, match="not one of the four"):

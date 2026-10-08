@@ -48,9 +48,9 @@ versioned inputs:
 The PRJNA1088182 publication table and the PRJNA884016 assembly files are validation
 inputs. They are not measured ProkaDiff results. Their registry rows remain `PENDING`
 until the queue-only validation milestones write and preserve a comparison record.
-M6-P0 is **FROZEN FOR TIER A**. M6 remains **ACTIVE**. M6-P1a FASTQ staging is
-**NOT READY FOR M6-P1b** ([`M6_P1A_FASTQ_STAGING.md`](M6_P1A_FASTQ_STAGING.md)):
-two runs have paired FASTQ and two `SRA1825115` runs did not emit R2.
+M6-P0 is **FROZEN FOR TIER A**. M6 remains **ACTIVE**. M6-P1a resolved the two `SRA1825115` runs as one biological read per spot
+([`M6_P1A_FASTQ_STAGING.md`](M6_P1A_FASTQ_STAGING.md)). Initial paired P1b,
+not started, is limited to `SRR28349244` and `SRR28349243`.
 M6-P1b has **NOT STARTED**.
 Tier B is **NOT_EVALUABLE**. The frozen contract is
 [`M6_VALIDATION_CONTRACT.md`](M6_VALIDATION_CONTRACT.md); the inventory is
