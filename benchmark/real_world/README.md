@@ -49,9 +49,11 @@ The PRJNA1088182 publication table and the PRJNA884016 assembly files are valida
 inputs. They are not measured ProkaDiff results. Their registry rows remain `PENDING`
 until the queue-only validation milestones write and preserve a comparison record.
 M6-P0 is **FROZEN FOR TIER A**. M6 remains **ACTIVE**. M6-P1a resolved the two `SRA1825115` runs as one biological read per spot
-([`M6_P1A_FASTQ_STAGING.md`](M6_P1A_FASTQ_STAGING.md)). Initial paired P1b smoke of `SRR28349244` and `SRR28349243` is recorded in
-[`M6_P1B_SMOKE.md`](M6_P1B_SMOKE.md). M6 remains **ACTIVE**. M6-P2 has not started.
-M6-P1b has **NOT STARTED**.
+([`M6_P1A_FASTQ_STAGING.md`](M6_P1A_FASTQ_STAGING.md)). Paired P1b smoke of `SRR28349244` and `SRR28349243` is recorded in
+[`M6_P1B_SMOKE.md`](M6_P1B_SMOKE.md). M6-P2a executed the eligible paired cohort and is recorded in
+[`M6_P2A_COHORT_VALIDATION.md`](M6_P2A_COHORT_VALIDATION.md). That record is execution-complete with publication-event discrepancies for review.
+The P2b audit of those discrepancies is [`M6_P2B_SCIENTIFIC_AUDIT.md`](M6_P2B_SCIENTIFIC_AUDIT.md).
+The P3a read-level plan, not yet executed, is [`M6_P3A_TARGETED_DIAGNOSTIC_PLAN.md`](M6_P3A_TARGETED_DIAGNOSTIC_PLAN.md).
 Tier B is **NOT_EVALUABLE**. The frozen contract is
 [`M6_VALIDATION_CONTRACT.md`](M6_VALIDATION_CONTRACT.md); the inventory is
 [`M6_P0_INVENTORY.md`](M6_P0_INVENTORY.md). Cohort `execution_reference` must
