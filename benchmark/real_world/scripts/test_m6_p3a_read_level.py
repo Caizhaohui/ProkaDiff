@@ -10,15 +10,21 @@ from plan_m6_p3a import classify_diagnostic
 RESULTS = Path(__file__).resolve().parents[1] / "manifests/prjna1088182_m6_p3a_read_level.tsv"
 
 
-def test_four_priority_alleles_keep_p2a_status_and_balance():
+def test_ten_unrecovered_alleles_keep_p2a_status_and_balance():
     rows = list(csv.DictReader(RESULTS.open(encoding="utf-8"), delimiter="\t"))
-    assert len(rows) == 4
+    assert len(rows) == 10
     keys = {(row["run"], row["coordinate"], row["ref"], row["alt"], row["reference"]) for row in rows}
     assert keys == {
         ("SRR28349204", "1571257", "G", "T", "NC_000913.3"),
         ("SRR28349176", "2776013", "T", "C", "NC_000913.3"),
         ("SRR28349176", "4035824", "T", "C", "NC_000913.3"),
         ("SRR28349230", "2872949", "C", "A", "CP009273.1"),
+        ("SRR28349225", "1635887", "A", "G", "CP009273.1"),
+        ("SRR28349221", "3108123", "G", "A", "CP009273.1"),
+        ("SRR28349165", "161068", "A", "C", "CP009273.1"),
+        ("SRR28349232", "2653047", "T", "A", "CP009273.1"),
+        ("SRR28349232", "4115617", "C", "A", "CP009273.1"),
+        ("SRR28349228", "3073571", "G", "A", "CP009273.1"),
     }
     for row in rows:
         assert row["p2a_recovery"] == "NOT_RECOVERED"
