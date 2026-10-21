@@ -53,7 +53,8 @@ M6-P0 is **FROZEN FOR TIER A**. M6 remains **ACTIVE**. M6-P1a resolved the two `
 [`M6_P1B_SMOKE.md`](M6_P1B_SMOKE.md). M6-P2a executed the eligible paired cohort and is recorded in
 [`M6_P2A_COHORT_VALIDATION.md`](M6_P2A_COHORT_VALIDATION.md). That record is execution-complete with publication-event discrepancies for review.
 The P2b audit of those discrepancies is [`M6_P2B_SCIENTIFIC_AUDIT.md`](M6_P2B_SCIENTIFIC_AUDIT.md).
-The P3a read-level plan, not yet executed, is [`M6_P3A_TARGETED_DIAGNOSTIC_PLAN.md`](M6_P3A_TARGETED_DIAGNOSTIC_PLAN.md).
+The P3a plan is [`M6_P3A_TARGETED_DIAGNOSTIC_PLAN.md`](M6_P3A_TARGETED_DIAGNOSTIC_PLAN.md).
+The first-wave read-level measurements are [`M6_P3A_READ_LEVEL_RESULTS.md`](M6_P3A_READ_LEVEL_RESULTS.md).
 Tier B is **NOT_EVALUABLE**. The frozen contract is
 [`M6_VALIDATION_CONTRACT.md`](M6_VALIDATION_CONTRACT.md); the inventory is
 [`M6_P0_INVENTORY.md`](M6_P0_INVENTORY.md). Cohort `execution_reference` must

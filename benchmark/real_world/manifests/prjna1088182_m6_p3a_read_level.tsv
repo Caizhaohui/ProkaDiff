@@ -1,0 +1,5 @@
+sample	run	reference	coordinate	ref	alt	p2a_recovery	p2a_diagnostic	p2b_diagnosis	raw_depth	raw_ref	raw_alt	raw_other	mapq10_depth	mapq10_alt	caller_shaped_depth	caller_shaped_ref	caller_shaped_alt	caller_shaped_other	caller_shaped_alt_fraction	q20_depth	q20_alt	plus_caller_shaped_alt	minus_caller_shaped_alt	nearby_cigar_reads	duplicate_primary_skipped	read_level_diagnosis	confidence	slurm_array
+Cas9_3 _and2others	SRR28349204	NC_000913.3	1571257	G	T	NOT_RECOVERED	UNKNOWN	UNRESOLVED	239	184	55	0	81	24	80	56	24	0	0.300000	236	54	9	15	0	0	LOW_ALT_FREQUENCY	HIGH	2905873
+Cas9_104_105	SRR28349176	NC_000913.3	2776013	T	C	NOT_RECOVERED	UNKNOWN	UNRESOLVED	148	106	42	0	148	42	144	102	42	0	0.291667	126	42	18	24	2	0	LOW_ALT_FREQUENCY	HIGH	2905873
+Cas9_104_105	SRR28349176	NC_000913.3	4035824	T	C	NOT_RECOVERED	UNKNOWN	UNRESOLVED	155	93	62	0	62	38	59	21	38	0	0.644068	152	62	21	17	0	0	LOW_ALT_FREQUENCY	HIGH	2905873
+I-SceI_7_8_9	SRR28349230	CP009273.1	2872949	C	A	NOT_RECOVERED	UNKNOWN	UNRESOLVED	217	66	150	1	217	150	217	66	150	1	0.691244	202	137	96	54	0	0	LOW_ALT_FREQUENCY	HIGH	2905873
