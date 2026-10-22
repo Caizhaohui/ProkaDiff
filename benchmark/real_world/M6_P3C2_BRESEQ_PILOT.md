@@ -48,7 +48,7 @@ Both tools were benchmarked on Slurm partition `qcpu_18i` using 8 CPU cores and 
 | **CPU Utilization** | 221% | 789% | ProkaDiff parallelized across 8 cores |
 | **Peak Memory (MaxRSS)** | **1,548,752 KB** (~1.55 GB) | **2,918,432 KB** (~2.92 GB) | breseq used $47\%$ less peak memory |
 
-*Telemetry Insight:* ProkaDiff's P1b baseline spends significant time on exhaustively sorting and tracking multi-overlapping split reads across every single candidate window. breseq applies an initial hash-based candidate junction filter, reducing the downstream graph construction overhead.
+*Telemetry Insight & Profiling Caveat:* Observed differences in wall-clock and CPU time are purely descriptive empirical measurements from Slurm execution on cluster nodes. Engineering hypotheses regarding split-read sorting overhead or candidate graph construction are currently unprofiled working hypotheses and must not be asserted as proven root causes without dedicated CPU flame-graph profiling.
 
 ---
 

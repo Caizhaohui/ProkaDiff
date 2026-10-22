@@ -9,6 +9,7 @@ As authorized by task `M6-P3C3-GROK-COHORT-EXECUTION`, this report delivers the 
 1. **Successful 5-Run Slurm Execution:**
    - All 5 jobs completed with exit status `0` on dedicated compute nodes (`bnode1`, `bnode2`).
    - Total breseq cohort compute: **1 hour 57 minutes 21 seconds** cumulative wall-clock time; peak resident set size ranged from **1.55 GB** (`SRR28349244`) to **3.66 GB** (`SRR28349176`).
+   - **Descriptive Execution Telemetry Caveat:** Observed differences in wall-clock and CPU time are purely descriptive empirical cluster measurements. Candidate graph building or split-read sorting overhead are unprofiled engineering hypotheses and must not be asserted as proven root causes without dedicated CPU flame-graph profiling.
    - **Reference Provenance & Bit-Identity:** Both callers used bit-identical reference files. For BW25113 (`CP009273.1`), raw FASTA byte SHA-256 is `37eade01311f1f81659fad53bf907a93139075a75d115fd3aec2ef09beac2e90`, raw GenBank byte SHA-256 is `3440cc8d28d643dda30e8ed9054656bc093abf61895077678ef4ddad4343df3a`, and normalized sequence SHA-256 is `3761072f8884add5e9facdafc583de5d81a4cf5dbc7e51023ba966f3cf4887ce` (length: 4,631,469 bp). (The historical string `94ee6a51...` was audited as a transcription artifact and discarded.)
 
 2. **Bipartite Maximum-Cardinality vs. Greedy Matching Resolution:**
@@ -32,14 +33,15 @@ As authorized by task `M6-P3C3-GROK-COHORT-EXECUTION`, this report delivers the 
 4. **Decoupled 4-Attribute MOB Concordance (8 ProkaDiff MOBs vs. 7 breseq MOBs):**
    - **6 EXACT_MOB_MATCH:** Mutual identification with identical insertion coordinates, IS element family, strand, and exact target site duplication (TSD) length.
    - **1 CONCORDANT_MOB_1BP_TSD_RESOLVED:** Canonical IS1 insertion at 1,873,031 (`SRR28349244`), resolved with a 1 bp microhomology TSD slip (`dup=8` vs `dup=9`).
-   - **1 DISCORDANT:** ProkaDiff-only candidate at 2,386,696 (`SRR28349176`).
+   - **1 DISCORDANT (`MOB 247` at 2,386,696, `SRR28349176`):** Unresolved computational candidate exclusive to ProkaDiff. This is **not** a biologically confirmed subclonal insertion, as short-read WGS without orthogonal PCR or Sanger confirmation cannot establish biological ground truth.
    - **BW25113 Resequencing Status:** Both BW25113 samples (`SRR28349231`, `SRR28349226`) exhibited 0 MOB calls in both callers, designated as `BOTH_CALLERS_NO_MOB_REPORTED`. All biological sensitivity/specificity claims are eliminated.
    - **Decoupled Comparator Metrics:**
      - `BRESEQ_REPORTED_MOB_COVERAGE = 7/7 (100.0%)`
      - `PROKADIFF_MOB_COMPARATOR_AGREEMENT = 7/8 (87.5%)`
 
-5. **Epistemic Clarity on Dimension 4:**
+5. **Epistemic Clarity on Dimension 4 & In-Vivo Equivalence:**
    - In accordance with project standards, Dimension 4 (Biological Validation) is strictly maintained as `NOT_EVALUABLE` across all samples. High-confidence computational concordance does not substitute for orthogonal wet-lab PCR/Sanger ground truth.
+   - **Non-Equivalence to In-Vivo Transposition:** Computational corroboration or mutual detection between ProkaDiff and breseq represents shared algorithmic and alignment support on short-read data, and must **never** be equated with validated in-vivo transposition or biological ground truth.
 
 ---
 
@@ -138,7 +140,7 @@ Mobile element insertions (MOB) were reconciled under the decoupled 4-attribute 
 | **SRR28349173** | `MOB 598` | `MOB 4` | 1,873,031 | IS1 | -1 | 9 bp vs 9 bp | **EXACT_MOB_MATCH** | Canonical IS1 insertion at 1,873,031 |
 | **SRR28349176** | `MOB 245` | `MOB 10` | 1,873,031 | IS1 | -1 | 9 bp vs 9 bp | **EXACT_MOB_MATCH** | Canonical IS1 insertion at 1,873,031 |
 | **SRR28349176** | `MOB 246` | `MOB 9` | 889,647 | IS5 | -1 | 4 bp vs 4 bp | **EXACT_MOB_MATCH** | Canonical IS5 insertion at 889,647 |
-| **SRR28349176** | `MOB 247` | `.` | 2,386,696 | IS1 | +1 | 4 bp vs 0 bp | **DISCORDANT** | ProkaDiff-only IS1 candidate at 2,386,696 |
+| **SRR28349176** | `MOB 247` | `.` | 2,386,696 | IS1 | +1 | 4 bp vs 0 bp | **DISCORDANT** | Unresolved computational candidate exclusive to ProkaDiff; not a biologically confirmed subclonal insertion (short-read WGS lacks orthogonal PCR/Sanger confirmation) |
 | **SRR28349244** | `MOB 146` | `MOB 10` | 3,799,683 | IS1 | -1 | 8 bp vs 8 bp | **EXACT_MOB_MATCH** | Canonical IS1 insertion at 3,799,683 |
 | **SRR28349244** | `MOB 147` | `MOB 5` | 1,873,031 | IS1 | -1 | 8 bp vs 9 bp | **CONCORDANT_MOB_1BP_TSD_RESOLVED** | Microhomology slip (dup 8 vs 9 bp) |
 | **SRR28349244** | `MOB 148` | `MOB 4` | 889,647 | IS5 | -1 | 4 bp vs 4 bp | **EXACT_MOB_MATCH** | Canonical IS5 insertion at 889,647 |
@@ -154,6 +156,8 @@ Mobile element insertions (MOB) were reconciled under the decoupled 4-attribute 
 - BW25113 status: `BOTH_CALLERS_NO_MOB_REPORTED` (no biological sensitivity/specificity claims).
 - 6 out of 7 mutual MOBs matched with 100% exact TSD lengths (`EXACT_MOB_MATCH`).
 - 1 mutual MOB exhibited a 1 bp microhomology slip (`CONCORDANT_MOB_1BP_TSD_RESOLVED`), adhering strictly to honest concordance reporting.
+- **Unresolved MOB 247 Status:** `MOB 247` at 2,386,696 (`SRR28349176`) is an unresolved computational prediction exclusive to ProkaDiff, and is **not** a biologically confirmed subclonal insertion. Short-read WGS without orthogonal wet-lab PCR or Sanger confirmation cannot establish biological ground truth.
+- **Epistemic Distinction on In-Vivo Transposition:** Computational corroboration or mutual detection between ProkaDiff and breseq represents shared algorithmic and alignment support on short-read data, and must **never** be equated with validated in-vivo transposition or biological ground truth.
 
 ---
 
@@ -169,7 +173,7 @@ Small mutations (SNPs, insertions, and small deletions) were cross-checked betwe
 | **SRR28349231** | `I-SceI_3_4_5_6` | 9 / 11 (81.8%) | 1 / 1 (100%) | 1 / 2 (50.0%) | 0 / 0 (N/A) | **High Concordance** |
 | **SRR28349226** | `control_1_2_3_4` | 0 / 0 (N/A) | 0 / 0 (N/A) | 0 / 1 (0.0%) | 0 / 0 (N/A) | **Control Background Agreement** |
 
-*Variant Quality Analysis:* In samples with minor SNP/DEL discordances (`SRR28349176`, `SRR28349231`), ProkaDiff called additional low-frequency sub-clonal variants near repetitive regions where breseq's coverage ratio cutoffs suppressed variant promotion. Every single small variant called by breseq in `SRR28349173` and `SRR28349244` was called identically by ProkaDiff.
+*Variant Quality Analysis:* In samples with minor SNP/DEL discordances (`SRR28349176`, `SRR28349231`), ProkaDiff called additional low-frequency candidate variants near repetitive regions where breseq's coverage ratio cutoffs suppressed variant promotion. Every single small variant called by breseq in `SRR28349173` and `SRR28349244` was called identically by ProkaDiff.
 
 ---
 
@@ -201,6 +205,7 @@ Across all 806 ProkaDiff junction records in the cohort:
 2. **Code Freeze Integrity:** All engine crates (`crates/**`) remained strictly untouched throughout Phase 3c execution.
 3. **Registry Status:** In strict accordance with user rules, `benchmark/real_world/VALIDATION_REGISTRY.tsv` remains `PENDING` until explicit orchestrator sign-off.
 4. **Historical Immutability:** Historical manifests (`p2a_*`, `p2b_*`, `p3a_*`) and pilot artifacts remain strictly preserved without alteration.
+5. **Performance Profiling Caveats:** Observed differences in wall-clock and CPU time across cluster runs are purely descriptive empirical measurements. Differences in candidate graph construction, multi-overlapping split-read tracking, or hash filtering are unprofiled engineering hypotheses and must not be asserted as proven root causes without dedicated CPU flame-graph profiling.
 
 ---
 
