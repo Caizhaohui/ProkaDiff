@@ -5,8 +5,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=04:00:00
-#SBATCH --output=benchmark/real_world/results/prjna1088182/m6_p3c/slurm_%j.log
-#SBATCH --error=benchmark/real_world/results/prjna1088182/m6_p3c/slurm_%j.err
+#SBATCH --output=benchmark/real_world/results/prjna1088182/m6_p3c/slurm_%A_%a.log
+#SBATCH --error=benchmark/real_world/results/prjna1088182/m6_p3c/slurm_%A_%a.err
 ## For cohort execution pass --array=0-4%2 on sbatch CLI or uncomment:
 ## #SBATCH --array=0-4%2
 
@@ -212,6 +212,8 @@ if [[ -s "$PK_GD" ]]; then
         --comparator-gd "$BRESEQ_DIR/output/output.gd" \
         --reference-gbk "$REF_GBK" \
         --out-tsv "$OUT_RUN/reconciled_structural_events.tsv" \
+        --mob-tsv "$OUT_RUN/mob_concordance.tsv" \
+        --matrix-tsv "$OUT_RUN/bidirectional_jc_matrix.tsv" \
         --json > "$OUT_RUN/reconciliation_summary.json"
     echo "Reconciliation complete: $OUT_RUN/reconciled_structural_events.tsv"
 else

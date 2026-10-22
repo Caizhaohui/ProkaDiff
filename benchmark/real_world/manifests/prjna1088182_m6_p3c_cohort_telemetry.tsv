@@ -1,0 +1,6 @@
+run	sample_name	slurm_job_id	node	partition	exit_code	wall_clock_seconds	user_cpu_seconds	system_cpu_seconds	cpu_percent	max_rss_kb	prokadiff_jcs	breseq_jcs	exact_matches	family_matches	uncalled_jcs	snps_concordant	ins_concordant	del_concordant	mob_concordant	dim1_unique_anchor	dim1_repeat_anchored	dim1_repeat_ambiguous	dim2_strong	dim2_limited	dim3_corroborated	dim3_family_level	dim3_not_corroborated	dim4_biological_validation
+SRR28349173	Cas9_110_111	2999176	bnode1	qcpu_18i	0	1772.48	2835.24	200.22	171	3053200	505	524	79	3	423	4/4	1/1	1/1	2/2	477	22	6	37	468	79	3	423	NOT_EVALUABLE
+SRR28349176	Cas9_104_105	2999177	bnode2	qcpu_18i	0	1869.89	3739.24	261.05	213	3661172	140	71	10	6	124	11/15	1/1	1/2	2/3	126	11	3	8	132	10	6	124	NOT_EVALUABLE
+SRR28349244	Cas9_1	2997962	bnode2	qcpu_18i	0	768.46	1566.26	137.23	221	1548752	49	17	5	6	38	7/7	2/2	1/1	3/3	38	6	5	5	44	5	6	38	NOT_EVALUABLE
+SRR28349231	I-SceI_3_4_5_6	3000148	bnode1	qcpu_18i	0	1331.55	2446.53	201.19	198	2677140	72	18	4	0	68	9/11	1/1	1/2	0/0	60	5	7	5	67	4	0	68	NOT_EVALUABLE
+SRR28349226	control_1_2_3_4	2999175	bnode2	qcpu_18i	0	1298.73	2256.46	182.43	187	2939528	40	9	3	0	37	0/0	0/0	0/1	0/0	37	2	1	1	39	3	0	37	NOT_EVALUABLE

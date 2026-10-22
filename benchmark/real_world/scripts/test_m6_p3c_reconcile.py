@@ -10,16 +10,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from reconcile_m6_p3c import (
     BidirectionalJcRow,
+    CompatibilityEdge,
     JunctionRecord,
+    MatchingComparisonSummary,
     MobConcordanceResult,
     MobRecord,
     RepeatFeature,
     build_bidirectional_jc_matrix,
+    build_junction_compatibility_graph,
     classify_genomic_placement,
     classify_read_evidence,
+    compare_matching_algorithms,
+    compute_candidate_multiplicity,
     evaluate_mob_pair,
     evaluate_pair,
     match_junctions_greedy,
+    match_junctions_maximum_cardinality,
     parse_gd_text,
     parse_genbank_repeat_features,
     reconcile_cohort,
@@ -491,6 +497,72 @@ def test_greedy_vs_maximum_cardinality_counterexample():
     # Strict cardinality difference demonstrated
     assert greedy_cardinality == 1
     assert greedy_cardinality < max_cardinality
+
+    # 4. Execute maximum-cardinality bipartite matching (Kuhn's augmenting path algorithm)
+    max_results = match_junctions_maximum_cardinality([ja1, ja2], [jb1, jb2], tolerance=5)
+    max_matched = [r for r in max_results.values() if r.match_type != "NONE"]
+    assert len(max_matched) == 2
+
+    # Verify assignments: JA1 -> JB2 (dist=3), JA2 -> JB1 (dist=3)
+    assert max_results["JA1"].comparator_id == "JB2"
+    assert max_results["JA1"].distance == 3
+    assert max_results["JA2"].comparator_id == "JB1"
+    assert max_results["JA2"].distance == 3
+
+    # 5. Verify compare_matching_algorithms summary and candidate multiplicity
+    pk_mult, comp_mult = compute_candidate_multiplicity([ja1, ja2], [jb1, jb2], tolerance=5)
+    assert pk_mult["JA1"] == 2
+    assert pk_mult["JA2"] == 1
+    assert comp_mult["JB1"] == 2
+    assert comp_mult["JB2"] == 1
+
+    _, _, summary = compare_matching_algorithms([ja1, ja2], [jb1, jb2], tolerance=5)
+    assert summary.greedy_cardinality == 1
+    assert summary.max_cardinality == 2
+    assert summary.cardinality_difference == 1
+    assert summary.is_identical is False
+    assert summary.prokadiff_multiplicity_gt1 == 1
+    assert summary.comparator_multiplicity_gt1 == 1
+
+
+def test_maximum_cardinality_and_multiplicity():
+    """Verify compatibility graph builder, multiplicity metrics, and CLI matching mode."""
+    ja1 = JunctionRecord(
+        caller="prokadiff", record_id="P1", seq_id_1="NC_000913", pos_1=1000, strand_1=1,
+        seq_id_2="NC_000913", pos_2=2000, strand_2=-1, attributes={"pd_support_reads": "30"}
+    )
+    ja2 = JunctionRecord(
+        caller="prokadiff", record_id="P2", seq_id_1="NC_000913", pos_1=3000, strand_1=1,
+        seq_id_2="NC_000913", pos_2=4000, strand_2=-1, attributes={"pd_support_reads": "25"}
+    )
+    jb1 = JunctionRecord(
+        caller="breseq", record_id="B1", seq_id_1="NC_000913", pos_1=1000, strand_1=1,
+        seq_id_2="NC_000913", pos_2=2000, strand_2=-1, attributes={"reads_total": "30"}
+    )
+    jb2 = JunctionRecord(
+        caller="breseq", record_id="B2", seq_id_1="NC_000913", pos_1=3001, strand_1=1,
+        seq_id_2="NC_000913", pos_2=4001, strand_2=-1, attributes={"reads_total": "25"}
+    )
+
+    graph = build_junction_compatibility_graph([ja1, ja2], [jb1, jb2], tolerance=5)
+    assert len(graph["P1"]) == 1
+    assert graph["P1"][0].comparator_id == "B1"
+    assert graph["P1"][0].distance == 0
+    assert len(graph["P2"]) == 1
+    assert graph["P2"][0].comparator_id == "B2"
+    assert graph["P2"][0].distance == 2
+
+    pk_mult, comp_mult = compute_candidate_multiplicity([ja1, ja2], [jb1, jb2], tolerance=5)
+    assert pk_mult["P1"] == 1 and pk_mult["P2"] == 1
+    assert comp_mult["B1"] == 1 and comp_mult["B2"] == 1
+
+    _, _, summary = compare_matching_algorithms([ja1, ja2], [jb1, jb2], tolerance=5)
+    assert summary.greedy_cardinality == 2
+    assert summary.max_cardinality == 2
+    assert summary.cardinality_difference == 0
+    assert summary.is_identical is True
+    assert summary.prokadiff_multiplicity_gt1 == 0
+    assert summary.comparator_multiplicity_gt1 == 0
 
 
 def test_decoupled_mob_concordance_evaluator():

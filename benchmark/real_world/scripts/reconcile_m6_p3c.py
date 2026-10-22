@@ -510,6 +510,209 @@ def match_junctions_greedy(
     return results
 
 
+@dataclass
+class CompatibilityEdge:
+    comparator_id: str
+    distance: int
+    match_type: str
+
+
+@dataclass
+class MatchingComparisonSummary:
+    greedy_cardinality: int
+    max_cardinality: int
+    prokadiff_total: int
+    comparator_total: int
+    prokadiff_multiplicity_gt1: int
+    comparator_multiplicity_gt1: int
+    max_prokadiff_multiplicity: int
+    max_comparator_multiplicity: int
+    cardinality_difference: int
+    is_identical: bool
+
+
+def build_junction_compatibility_graph(
+    prokadiff_jcs: list[JunctionRecord],
+    comparator_jcs: list[JunctionRecord],
+    tolerance: int = 5,
+) -> dict[str, list[CompatibilityEdge]]:
+    """Construct bipartite compatibility graph between ProkaDiff and comparator JCs.
+
+    An edge connects (ja, jb) iff evaluate_pair(ja, jb, tolerance) is True.
+    Edges are sorted by (distance, comparator numeric/str ID).
+    """
+    graph: dict[str, list[CompatibilityEdge]] = {}
+    for ja in prokadiff_jcs:
+        edges: list[CompatibilityEdge] = []
+        for jb in comparator_jcs:
+            is_match, mtype, dist, _ = evaluate_pair(ja, jb, tolerance=tolerance)
+            if is_match and dist <= 10:
+                edges.append(CompatibilityEdge(comparator_id=jb.record_id, distance=dist, match_type=mtype))
+        edges.sort(key=lambda e: (e.distance, int(e.comparator_id) if e.comparator_id.isdigit() else str(e.comparator_id)))
+        graph[ja.record_id] = edges
+    return graph
+
+
+def compute_candidate_multiplicity(
+    prokadiff_jcs: list[JunctionRecord],
+    comparator_jcs: list[JunctionRecord],
+    tolerance: int = 5,
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Compute candidate multiplicity (degree in bipartite compatibility graph) for each node.
+
+    Returns:
+        (prokadiff_multiplicity, comparator_multiplicity)
+    """
+    graph = build_junction_compatibility_graph(prokadiff_jcs, comparator_jcs, tolerance=tolerance)
+    pk_mult = {ja.record_id: len(graph.get(ja.record_id, [])) for ja in prokadiff_jcs}
+    comp_mult = {jb.record_id: 0 for jb in comparator_jcs}
+    for edges in graph.values():
+        for edge in edges:
+            comp_mult[edge.comparator_id] = comp_mult.get(edge.comparator_id, 0) + 1
+    return pk_mult, comp_mult
+
+
+def match_junctions_maximum_cardinality(
+    prokadiff_jcs: list[JunctionRecord],
+    comparator_jcs: list[JunctionRecord],
+    tolerance: int = 5,
+) -> dict[str, MatchResult]:
+    """Execute maximum-cardinality bipartite matching using augmenting path DFS (Kuhn's algorithm).
+
+    Guarantees finding a matching M that maximizes |M|.
+    Edges are explored in order of increasing distance D to favor minimal-distance pairings.
+    """
+    graph = build_junction_compatibility_graph(prokadiff_jcs, comparator_jcs, tolerance=tolerance)
+
+    # comparator_id -> prokadiff_id
+    match_comp: dict[str, str] = {}
+    # comparator_id -> CompatibilityEdge
+    match_edge_comp: dict[str, CompatibilityEdge] = {}
+
+    def dfs(u: str, visited: set[str]) -> bool:
+        for edge in graph.get(u, []):
+            v = edge.comparator_id
+            if v not in visited:
+                visited.add(v)
+                if v not in match_comp or dfs(match_comp[v], visited):
+                    match_comp[v] = u
+                    match_edge_comp[v] = edge
+                    return True
+        return False
+
+    # Seed with exact matches (D == 0) first to preserve zero-distance pairings
+    for ja in prokadiff_jcs:
+        u = ja.record_id
+        for edge in graph.get(u, []):
+            if edge.distance == 0 and edge.comparator_id not in match_comp:
+                match_comp[edge.comparator_id] = u
+                match_edge_comp[edge.comparator_id] = edge
+                break
+
+    # Seed with greedy near matches
+    greedy_results = match_junctions_greedy(prokadiff_jcs, comparator_jcs, tolerance=tolerance)
+    for u, m in greedy_results.items():
+        if m.match_type != "NONE" and m.comparator_id:
+            v = m.comparator_id
+            if v not in match_comp:
+                match_comp[v] = u
+                match_edge_comp[v] = CompatibilityEdge(comparator_id=v, distance=m.distance or 0, match_type=m.match_type)
+
+    # Augment for any unmatched u via DFS augmenting paths
+    matched_u_set = set(match_comp.values())
+    for ja in prokadiff_jcs:
+        u = ja.record_id
+        if u not in matched_u_set:
+            visited: set[str] = set()
+            if dfs(u, visited):
+                matched_u_set.add(u)
+
+    # Invert match_comp to u -> edge
+    match_pk: dict[str, CompatibilityEdge] = {}
+    for v, u in match_comp.items():
+        match_pk[u] = match_edge_comp[v]
+
+    results: dict[str, MatchResult] = {}
+    for ja in prokadiff_jcs:
+        u = ja.record_id
+        if u in match_pk:
+            edge = match_pk[u]
+            results[u] = MatchResult(
+                prokadiff_id=u,
+                comparator_id=edge.comparator_id,
+                match_type=edge.match_type,
+                distance=edge.distance,
+                mismatch_reason="NONE",
+            )
+        else:
+            # Unmatched ProkaDiff record: determine mismatch reason
+            best_reason = "NO_NEAR_CANDIDATE"
+            best_comparator_id = None
+            for jb in comparator_jcs:
+                is_match, mtype, dist, reason = evaluate_pair(ja, jb, tolerance=tolerance)
+                if reason == "TOPOLOGY_MISMATCH":
+                    best_reason = "TOPOLOGY_MISMATCH"
+                    best_comparator_id = jb.record_id
+                    break
+                elif reason == "AMBIGUOUS_FAMILY_MATCH":
+                    best_reason = "AMBIGUOUS_FAMILY_MATCH"
+                    best_comparator_id = jb.record_id
+                    break
+                elif reason == "DISCORDANT_BREAKEND" and best_reason != "TOPOLOGY_MISMATCH":
+                    best_reason = "DISCORDANT_BREAKEND"
+                    best_comparator_id = jb.record_id
+
+            results[u] = MatchResult(
+                prokadiff_id=u,
+                comparator_id=best_comparator_id,
+                match_type="NONE",
+                distance=None,
+                mismatch_reason=best_reason,
+            )
+
+    return results
+
+
+def compare_matching_algorithms(
+    prokadiff_jcs: list[JunctionRecord],
+    comparator_jcs: list[JunctionRecord],
+    tolerance: int = 5,
+) -> tuple[dict[str, MatchResult], dict[str, MatchResult], MatchingComparisonSummary]:
+    """Compare greedy and maximum-cardinality bipartite matching side-by-side."""
+    greedy_matches = match_junctions_greedy(prokadiff_jcs, comparator_jcs, tolerance=tolerance)
+    max_matches = match_junctions_maximum_cardinality(prokadiff_jcs, comparator_jcs, tolerance=tolerance)
+
+    greedy_card = sum(1 for m in greedy_matches.values() if m.match_type != "NONE")
+    max_card = sum(1 for m in max_matches.values() if m.match_type != "NONE")
+
+    pk_mult, comp_mult = compute_candidate_multiplicity(prokadiff_jcs, comparator_jcs, tolerance=tolerance)
+    pk_gt1 = sum(1 for c in pk_mult.values() if c > 1)
+    comp_gt1 = sum(1 for c in comp_mult.values() if c > 1)
+    max_pk_m = max(pk_mult.values(), default=0)
+    max_comp_m = max(comp_mult.values(), default=0)
+
+    is_identical = True
+    for k, m in greedy_matches.items():
+        m2 = max_matches.get(k)
+        if not m2 or m.comparator_id != m2.comparator_id or m.match_type != m2.match_type:
+            is_identical = False
+            break
+
+    summary = MatchingComparisonSummary(
+        greedy_cardinality=greedy_card,
+        max_cardinality=max_card,
+        prokadiff_total=len(prokadiff_jcs),
+        comparator_total=len(comparator_jcs),
+        prokadiff_multiplicity_gt1=pk_gt1,
+        comparator_multiplicity_gt1=comp_gt1,
+        max_prokadiff_multiplicity=max_pk_m,
+        max_comparator_multiplicity=max_comp_m,
+        cardinality_difference=max_card - greedy_card,
+        is_identical=is_identical,
+    )
+    return greedy_matches, max_matches, summary
+
+
 def classify_genomic_placement(
     jc: JunctionRecord, repeat_features: list[RepeatFeature], boundary_tolerance: int = 20
 ) -> str:
@@ -578,6 +781,7 @@ def reconcile_cohort(
     prokadiff_gd_text: str,
     comparator_gd_text: Optional[str] = None,
     reference_gbk_text: Optional[str] = None,
+    matching_mode: str = "max_cardinality",
 ) -> list[ReconciledRecord]:
     """Perform full 4D orthogonal evidence classification and reconciliation."""
     prokadiff_jcs, _ = parse_gd_text(prokadiff_gd_text, caller="prokadiff")
@@ -598,7 +802,10 @@ def reconcile_cohort(
                 jc.repeat_family_2 = rf.name
 
     # Matching
-    matches = match_junctions_greedy(prokadiff_jcs, comparator_jcs, tolerance=5)
+    if matching_mode == "greedy":
+        matches = match_junctions_greedy(prokadiff_jcs, comparator_jcs, tolerance=5)
+    else:
+        matches = match_junctions_maximum_cardinality(prokadiff_jcs, comparator_jcs, tolerance=5)
 
     reconciled: list[ReconciledRecord] = []
     for jc in prokadiff_jcs:
@@ -1066,6 +1273,7 @@ def main() -> int:
     parser.add_argument("--out-tsv", required=True, type=Path, help="Output reconciliation TSV path")
     parser.add_argument("--mob-tsv", type=Path, default=None, help="Output MOB concordance TSV path (optional)")
     parser.add_argument("--matrix-tsv", type=Path, default=None, help="Output Bidirectional JC Matrix TSV path (optional)")
+    parser.add_argument("--matching-mode", choices=["greedy", "max_cardinality"], default="max_cardinality", help="Bipartite matching algorithm (default: max_cardinality)")
     parser.add_argument("--json", action="store_true", help="Print summary JSON")
     args = parser.parse_args()
 
@@ -1077,7 +1285,7 @@ def main() -> int:
     comp_text = args.comparator_gd.read_text(encoding="utf-8", errors="replace") if args.comparator_gd and args.comparator_gd.is_file() else None
     ref_text = args.reference_gbk.read_text(encoding="utf-8", errors="replace") if args.reference_gbk and args.reference_gbk.is_file() else None
 
-    reconciled = reconcile_cohort(pk_text, comp_text, ref_text)
+    reconciled = reconcile_cohort(pk_text, comp_text, ref_text, matching_mode=args.matching_mode)
     write_reconciled_tsv(reconciled, args.out_tsv)
     print(f"Wrote {len(reconciled)} reconciled structural records to {args.out_tsv}", file=sys.stderr)
 
@@ -1129,6 +1337,11 @@ def main() -> int:
             "dim4_biological_validation": "NOT_EVALUABLE",
             "composite_confidence": composite_counts,
         }
+        if comp_text:
+            pk_jcs, _ = parse_gd_text(pk_text, caller="prokadiff")
+            comp_jcs, _ = parse_gd_text(comp_text, caller="breseq")
+            _, _, match_cmp = compare_matching_algorithms(pk_jcs, comp_jcs)
+            summary["matching_comparison"] = match_cmp.__dict__
         print(json.dumps(summary, indent=2))
 
     return 0
