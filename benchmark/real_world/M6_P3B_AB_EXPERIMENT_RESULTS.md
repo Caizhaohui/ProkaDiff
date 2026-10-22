@@ -24,7 +24,7 @@ The experiment tested whether providing repeat annotations alters small variant 
 1. **Gate 1 (Sequence Bit-Identity):** **PASS** across all runs. Condition A FASTA and Condition B GenBank ORIGIN are 100% bit-identical (`3761072f8884add5e9facdafc583de5d81a4cf5dbc7e51023ba966f3cf4887ce`, length 4,631,469 bp).
 2. **Gate 2 (Small Variant Invariance):** **PASS** across all runs. Across all 3 samples, every SNP, INS, DEL, and MC call is 100% bit-identical ($\Delta = 0$). Repeat ingestion causes zero drift in point mutation or small indel detection.
 3. **Gate 3 (Control No New MOB):** **PASS**. In unedited control `SRR28349226`, `MOB = 0` (`MOB_NOT_CALLED`) under both conditions ($\Delta \text{MOB} = 0$). No spurious mobile element transpositions are induced by providing 401 repeat annotations. (Note: Biological specificity and sensitivity remain `BIOLOGICAL_TRUTH_NOT_EVALUABLE` without independent orthogonal ground truth).
-4. **Gate 4 (Structural Artifact Suppression / MOB Promotion):** **PASS**. While `MOB = 0` (`MOB_NOT_CALLED`) in both conditions, Condition B successfully suppressed **7 repeat-associated junctions** (`ANNOTATION_FILTERED_JC` / `REPEAT_ASSOCIATED_JC`: 3 in `SRR28349230`, 4 in `SRR28349231`, reducing triad JC calls from 160 to 153). Every single filtered junction directly overlaps an annotated repeat feature in `CP009273.1.gbk`. Independent biological truth regarding presence or absence of transposition remains `BIOLOGICAL_TRUTH_NOT_EVALUABLE` without orthogonal experimental validation.
+4. **Gate 4 (Structural Filtering & MOB Consistency):** **PASS**. Gate 4 validates non-negative delta MOB ($\Delta \text{MOB} \ge 0$), constituent parent-JC consistency (for any emitted MOB, parent JCs exist and are tagged `mob_evidence=1`), and non-expansion of standalone JCs ($\text{JC}_B \le \text{JC}_A$) due to repeat filtering (`ANNOTATION_FILTERED_JC` / `REPEAT_ASSOCIATED_JC`: 3 in `SRR28349230`, 4 in `SRR28349231`, reducing triad JC calls from 160 to 153). Every single filtered junction directly overlaps an annotated repeat feature in `CP009273.1.gbk`. Crucially, **positive empirical MOB detection was NOT demonstrated in these 3 BW25113 runs** (all tested MOB counts remained zero / `MOB_NOT_CALLED`). Gate 4 validates structural filtering and MOB call consistency, not active MOB recovery. Independent biological truth regarding presence or absence of transposition remains `BIOLOGICAL_TRUTH_NOT_EVALUABLE` without orthogonal experimental validation.
 5. **Compute & Resource Observations:** Observed walltime and RSS metrics on Slurm compute nodes are reported directly from execution telemetry. Runs were conducted on different nodes without controlled performance replication; no statistically significant performance equivalence is asserted.
 
 ---
@@ -64,11 +64,13 @@ The evaluated runs represent the core BW25113 triad from PRJNA1088182:
 
 Validation was performed via [`summarize_m6_p3b.py`](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff/benchmark/real_world/scripts/summarize_m6_p3b.py) outputting to [`prjna1088182_m6_p3b_ab_comparison.tsv`](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff/benchmark/real_world/manifests/prjna1088182_m6_p3b_ab_comparison.tsv):
 
-| Run | Sample | Gate 1 (Identity) | Gate 2 (Invariance) | Gate 3 (Control No New MOB) | Gate 4 (Structural / MOB) | Overall Status |
+| Run | Sample | Gate 1 (Identity) | Gate 2 (Invariance) | Gate 3 (Control No New MOB) | Gate 4 (Structural Filtering & MOB Consistency) | Overall Status |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
 | **`SRR28349226`** | `control_1_2_3_4` | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** |
 | **`SRR28349231`** | `I-SceI_3_4_5_6` | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** |
 | **`SRR28349230`** | `I-SceI_7_8_9` | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** |
+
+*Note on Gate 4 Semantics:* Gate 4 evaluates structural filtering and MOB call consistency: (1) $\Delta \text{MOB} \ge 0$, (2) constituent parent-JC consistency for any emitted MOB, and (3) non-expansion of standalone JCs ($\text{JC}_B \le \text{JC}_A$). In these 3 BW25113 runs, all MOB counts remained zero (`MOB_NOT_CALLED`); positive empirical MOB detection was NOT demonstrated. Gate 4 confirms that repeat annotations enable artifact suppression without inducing illegitimate MOB calls or expanding standalone JCs.
 
 ### Detailed Mutation Comparison
 
@@ -91,7 +93,7 @@ To maintain scientific rigor, this study explicitly distinguishes four analytica
 1. **Detection-Path Capability:** The algorithmic pathway within ProkaDiff that searches for repeat-flanked junction pairs to promote into MOB records requires repeat annotations in `opts.repeats`. When plain FASTA is supplied (Condition A), this detection path is structurally disabled (`find_repeat_at` always returns `None`). Supplying GenBank annotations (Condition B) fully restores the detection-path capability.
 2. **Observed Candidate Evidence:** In the sequencing reads of the BW25113 triad, candidate split/discordant reads were mapped, but no reciprocal junction pairs flanking an annotated repeat element were identified to assemble into candidate MOB records under Condition B.
 3. **Reported MOB Events:** In the final output Genome Diff files, `MOB = 0` (`MOB_NOT_CALLED`) under both Condition A and Condition B across all three runs.
-4. **Independent Biological Truth:** Whether transposition biologically occurred or did not occur cannot be conclusively affirmed without orthogonal experimental validation (e.g., target-site PCR, Southern blot, long-read sequencing) (`BIOLOGICAL_TRUTH_NOT_EVALUABLE`). Similarly, MOB calls reported in the MG1655 cohort during Phase M6-P2a (23 total MOB calls across 10 runs) represent ProkaDiff algorithmic calling outputs, not orthogonally verified biological ground truth.
+4. **Independent Biological Truth:** Whether transposition biologically occurred or did not occur cannot be conclusively affirmed without orthogonal experimental validation (e.g., target-site PCR, Southern blot, long-read sequencing) (`BIOLOGICAL_TRUTH_NOT_EVALUABLE`). Similarly, MOB calls reported in the MG1655 cohort during Phase M6-P2a (10 runs: total MOB = 23, range: 2 to 3, mean: 2.30, values: [3, 2, 2, 3, 2, 3, 2, 2, 2, 2]; total JC = 1,230, range: 45 to 505, mean: 123.00. BW25113 cohort 15 runs: total MOB = 0; total JC = 719, range: 35 to 72, mean: 47.93) represent ProkaDiff algorithmic calling outputs, not orthogonally verified biological ground truth.
 
 ### 4.2 Hypothesis Evaluation
 
@@ -106,8 +108,8 @@ To maintain scientific rigor, this study explicitly distinguishes four analytica
   - `SRR28349231`: 11 SNP, 1 INS, 2 DEL, 77 MC (0 differences).
   - `SRR28349230`: 12 SNP, 0 INS, 1 DEL, 75 MC (0 differences).
 
-#### Hypothesis 3: Structural Variant Artifact Suppression & MOB Promotion (CONFIRMED FOR SUPPRESSION)
-- **Hypothesis:** Ingesting repeat annotations provides `opts.repeats` to the evidence engine, enabling it to distinguish repeat-associated mapping artifacts from standalone structural variations.
+#### Hypothesis 3: Structural Filtering & MOB Consistency (CONFIRMED FOR FILTERING)
+- **Hypothesis:** Ingesting repeat annotations provides `opts.repeats` to the evidence engine, enabling it to distinguish repeat-associated mapping artifacts from standalone structural variations and maintain MOB call consistency.
 - **Evidence:** In Condition A, lacking repeat annotations, ProkaDiff emitted 7 standalone junctions that originated from repetitive elements. In Condition B, the repeat annotations enabled ProkaDiff to recognize and filter these 7 repeat-associated junctions (`ANNOTATION_FILTERED_JC` / `REPEAT_ASSOCIATED_JC`):
   - In `SRR28349230`: 3 JCs filtered ($48 \to 45$).
   - In `SRR28349231`: 4 JCs filtered ($72 \to 68$).
@@ -119,7 +121,7 @@ To maintain scientific rigor, this study explicitly distinguishes four analytica
     5. `SRR28349231` pos `345305..345683`: precisely spans annotated `repeat_region` (345316..345680).
     6. `SRR28349231` pos `3591742`: directly adjacent (15 bp) to annotated `repeat_region` (3591757..3591855).
     7. `SRR28349231` pos `4497263`: directly adjacent (13 bp) to annotated `mobile_element` (4497276..4498496).
-  - **MOB Promotion Evaluation:** MOB calls remained 0 across all runs (`MOB_NOT_CALLED`). Without reciprocal junction pairs flanking insertion sequences, no candidate MOB events were eligible for promotion.
+  - **MOB Consistency & Absence of Active MOB Detection:** Positive empirical MOB detection was **NOT demonstrated** in these 3 BW25113 runs (all tested MOB counts remained zero / `MOB_NOT_CALLED`). Without reciprocal junction pairs flanking insertion sequences in these sequencing reads, no candidate MOB events were eligible for promotion. Gate 4 confirms that structural filtering operates correctly ($\text{JC}_B \le \text{JC}_A$) and that MOB calling rules are consistently satisfied ($\Delta \text{MOB} \ge 0$), validating structural filtering and MOB call consistency, not active MOB recovery.
 
 #### Hypothesis 4: Control No New MOB (CONFIRMED)
 - **Hypothesis:** Providing 401 repeat annotations to an unedited control strain does not generate spurious MOB transpositions or destabilize junction filtering.

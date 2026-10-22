@@ -72,6 +72,14 @@ def test_reference_provenance_manifest():
 
 
 def test_ab_comparison_manifest():
+    """Verify that comparison manifest reflects Gate 1-4 validations.
+
+    Gate 4 validates structural filtering and MOB call consistency (Delta MOB >= 0,
+    parent-JC consistency, non-expansion of standalone JCs: JC_B <= JC_A via repeat
+    filtering). Explicitly: positive empirical MOB detection was NOT demonstrated
+    in these 3 BW25113 runs (all tested MOB counts remained zero / MOB_NOT_CALLED);
+    Gate 4 validates structural filtering and MOB call consistency, not active MOB recovery.
+    """
     cmp_file = REPO / "benchmark/real_world/manifests/prjna1088182_m6_p3b_ab_comparison.tsv"
     assert cmp_file.exists(), f"Missing {cmp_file}"
     lines = cmp_file.read_text(encoding="utf-8").strip().splitlines()
@@ -85,3 +93,9 @@ def test_ab_comparison_manifest():
         assert row["gate2_small_variant_invariance"] == "PASS"
         assert row["gate3_control_no_new_mob"] == "PASS"
         assert row["gate4_mob_promotion"] == "PASS"
+        # Positive empirical MOB detection was NOT demonstrated (all MOB == 0 / MOB_NOT_CALLED)
+        assert row["cond_a_mob"] == "0"
+        assert row["cond_b_mob"] == "0"
+        assert int(row["delta_mob"]) >= 0
+        # Standalone JCs did not expand (JC_B <= JC_A)
+        assert int(row["delta_jc"]) <= 0

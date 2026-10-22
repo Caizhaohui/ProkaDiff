@@ -12,8 +12,8 @@
 ## 1. Executive Summary
 
 Phase M6-P2a evaluated 25 eligible paired WGS runs from PRJNA1088182 against reference genomes according to strain:
-- **10 MG1655 runs** against `NC_000913.3` using GenBank input `data/references/MG1655.gbk`. Result: **MOB = 2 or 3** per run (Total: 23 MOB calls; range: 2 to 3, mean: 2.30; per-run values: [3, 2, 2, 3, 2, 3, 2, 2, 2, 2]). Total JC: 1,230 (range: 45 to 505, mean: 123.00). (Note: These MOB records represent engine calling output; independent biological truth remains `BIOLOGICAL_TRUTH_NOT_EVALUABLE` without orthogonal validation).
-- **15 BW25113 runs** against `CP009273.1` using plain FASTA input `data/references/m6_identity/CP009273.1.fasta`. Result: **MOB = 0** (`MOB_NOT_CALLED`) across all 15 runs, with 35 to 72 JC calls per run (Total: 719 JC calls; mean: 47.93).
+- **10 MG1655 runs** against `NC_000913.3` using GenBank input `data/references/MG1655.gbk`. Result: total MOB = 23 (range: 2 to 3, mean: 2.30, values: [3, 2, 2, 3, 2, 3, 2, 2, 2, 2]); total JC = 1,230 (range: 45 to 505, mean: 123.00). (Note: These MOB records represent engine calling output; independent biological truth remains `BIOLOGICAL_TRUTH_NOT_EVALUABLE` without orthogonal validation).
+- **15 BW25113 runs** against `CP009273.1` using plain FASTA input `data/references/m6_identity/CP009273.1.fasta`. Result: total MOB = 0 (all 15 runs MOB=0 / `MOB_NOT_CALLED`); total JC = 719 (range: 35 to 72, mean: 47.93).
 
 This audit investigates the computational and algorithmic basis of this difference: whether the zero-MOB outcome in BW25113 is an artifact of reference file format (lack of repeat annotations in FASTA bypassing detection-path capability) or reflects whether candidate evidence was present or absent in the reads. (Independent biological truth regarding transposition remains `BIOLOGICAL_TRUTH_NOT_EVALUABLE` without orthogonal ground truth).
 
@@ -95,12 +95,12 @@ Line-by-line inspection of the production evidence engine identified the exact m
 
 In PRJNA1088182 P2a canonical execution records:
 - **MG1655 Cohort (10 paired runs):**
+  - Total MOB calls: 23 (range: 2 to 3, mean: 2.30, values: [3, 2, 2, 3, 2, 3, 2, 2, 2, 2])
   - Total JC calls: 1,230 (range: 45 to 505, mean: 123.00)
-  - Total MOB calls: 23 (range: 2 to 3, mean: 2.30; per-run values: [3, 2, 2, 3, 2, 3, 2, 2, 2, 2])
   - MOB parent JCs: In the engine calling pipeline, candidate JCs flanking repeat annotations are tagged with `mob_evidence=1`
 - **BW25113 Cohort (15 paired runs):**
+  - Total MOB calls: 0 (all 15 runs MOB=0 / `MOB_NOT_CALLED`)
   - Total JC calls: 719 (range: 35 to 72, mean: 47.93)
-  - Total MOB calls: 0 across all 15 runs (`MOB_NOT_CALLED`)
   - MOB parent JCs: 0
 
 ---

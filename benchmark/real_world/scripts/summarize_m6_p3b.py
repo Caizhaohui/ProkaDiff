@@ -6,8 +6,11 @@ Validates Gates 1-4:
   Gate 2: Small Variant Invariance (Delta SNP == 0, Delta INS == 0, Delta DEL == 0, Delta MC == 0)
   Gate 3: Control No New MOB (gate3_control_no_new_mob: control_1_2_3_4 produces MOB == 0 under both conditions;
           biological specificity/sensitivity remain NOT_EVALUABLE without independent ground truth)
-  Gate 4: MOB Promotion / Repeat Artifact Suppression (Delta MOB >= 0; candidate JCs overlapping annotated repeats
-          classified as ANNOTATION_FILTERED_JC / REPEAT_ASSOCIATED_JC)
+  Gate 4: Structural Filtering & MOB Consistency (gate4_mob_promotion: validates Delta MOB >= 0, constituent
+          parent-JC consistency when MOB emitted, and non-expansion of standalone JCs [JC_B <= JC_A] via repeat
+          filtering [ANNOTATION_FILTERED_JC / REPEAT_ASSOCIATED_JC]. Explicitly: positive empirical MOB detection
+          was NOT demonstrated in these 3 BW25113 runs [all tested MOB counts remained zero / MOB_NOT_CALLED];
+          Gate 4 validates structural filtering and MOB call consistency, not active MOB recovery).
 """
 
 from __future__ import annotations
@@ -121,7 +124,13 @@ def evaluate_run(run_info: dict[str, object]) -> dict[str, object]:
     else:
         gate3_pass = True  # Evaluated for control
 
-    # Gate 4: MOB promotion & parent JC audit
+    # Gate 4: Structural filtering and MOB consistency (gate4_mob_promotion)
+    # Validates:
+    # 1. Non-negative delta MOB (Delta MOB >= 0).
+    # 2. Constituent parent-JC consistency: for any emitted MOB in Cond B, parent JCs exist and mob_evidence=1.
+    # 3. Non-expansion of standalone JCs (JC_B <= JC_A) via repeat filtering (ANNOTATION_FILTERED_JC / REPEAT_ASSOCIATED_JC).
+    # Note: Positive empirical MOB detection was NOT demonstrated in these 3 BW25113 runs (all tested MOB counts
+    # remained zero / MOB_NOT_CALLED). Gate 4 validates structural filtering and MOB call consistency, not active MOB recovery.
     gate4_pass = True
     delta_mob = counts_b["MOB"] - counts_a["MOB"]
     if delta_mob < 0:
@@ -139,7 +148,7 @@ def evaluate_run(run_info: dict[str, object]) -> dict[str, object]:
                 if jc.get("mob_evidence") != "1":
                     gate4_pass = False
 
-    # Check that JC count did not expand (JC_B <= JC_A) due to inter-repeat artifact suppression
+    # Check that JC count did not expand (JC_B <= JC_A) due to repeat-associated junction filtering
     delta_jc = counts_b["JC"] - counts_a["JC"]
     if counts_b["JC"] > counts_a["JC"]:
         gate4_pass = False
