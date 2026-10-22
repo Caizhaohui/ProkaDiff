@@ -5,9 +5,10 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=04:00:00
-#SBATCH --array=0-4%2
-#SBATCH --output=benchmark/real_world/results/prjna1088182/m6_p3c/slurm_%A_%a.log
-#SBATCH --error=benchmark/real_world/results/prjna1088182/m6_p3c/slurm_%A_%a.err
+#SBATCH --output=benchmark/real_world/results/prjna1088182/m6_p3c/slurm_%j.log
+#SBATCH --error=benchmark/real_world/results/prjna1088182/m6_p3c/slurm_%j.err
+## For cohort execution pass --array=0-4%2 on sbatch CLI or uncomment:
+## #SBATCH --array=0-4%2
 
 # ==============================================================================
 # ProkaDiff M6-P3c Structural Comparator & Reconciliation Pipeline

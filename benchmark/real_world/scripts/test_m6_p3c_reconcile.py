@@ -376,3 +376,109 @@ def test_cli_execution():
         summary = json.loads(res.stdout)
         assert summary["total_records"] == 1
         assert summary["dim3_corroboration"]["CORROBORATED"] == 1
+
+
+def test_greedy_vs_maximum_cardinality_counterexample():
+    """Verify synthetic counterexample where greedy matching yields strictly smaller cardinality.
+
+    Theoretical scenario under tolerance <= 5 bp:
+      JA1 at pos 1000, JA2 at pos 1004.
+      JB1 at pos 1001, JB2 at pos 997.
+      Breakend 2 is identical for all at pos 5000 (-1).
+
+    Pairwise distances:
+      - (JA1, JB1): D = |1000-1001| = 1 <= 5 (valid)
+      - (JA1, JB2): D = |1000-997|  = 3 <= 5 (valid)
+      - (JA2, JB1): D = |1004-1001| = 3 <= 5 (valid)
+      - (JA2, JB2): D = |1004-997|  = 7 > 5  (INVALID: exceeds tolerance)
+
+    1. Maximum-Cardinality Matching:
+       - Match (JA1, JB2) [D=3] and (JA2, JB1) [D=3].
+       - Both JA1 and JA2 are matched -> Cardinality = 2.
+
+    2. Greedy Bipartite Matching:
+       - Greedy prioritizes candidate pairs by minimal distance D.
+       - Candidate (JA1, JB1) has minimal D=1, so it is paired first.
+       - JB1 is consumed by JA1.
+       - JA2 cannot match JB2 (D=7 > 5), so JA2 remains unmatched.
+       - Greedy Cardinality = 1 < Maximum Cardinality = 2.
+    """
+    ja1 = JunctionRecord(
+        caller="prokadiff",
+        record_id="JA1",
+        seq_id_1="NC_000913.3",
+        pos_1=1000,
+        strand_1=1,
+        seq_id_2="NC_000913.3",
+        pos_2=5000,
+        strand_2=-1,
+        attributes={"pd_support_reads": "20"},
+    )
+    ja2 = JunctionRecord(
+        caller="prokadiff",
+        record_id="JA2",
+        seq_id_1="NC_000913.3",
+        pos_1=1004,
+        strand_1=1,
+        seq_id_2="NC_000913.3",
+        pos_2=5000,
+        strand_2=-1,
+        attributes={"pd_support_reads": "20"},
+    )
+    jb1 = JunctionRecord(
+        caller="breseq",
+        record_id="JB1",
+        seq_id_1="NC_000913.3",
+        pos_1=1001,
+        strand_1=1,
+        seq_id_2="NC_000913.3",
+        pos_2=5000,
+        strand_2=-1,
+        attributes={"reads_total": "20"},
+    )
+    jb2 = JunctionRecord(
+        caller="breseq",
+        record_id="JB2",
+        seq_id_1="NC_000913.3",
+        pos_1=997,
+        strand_1=1,
+        seq_id_2="NC_000913.3",
+        pos_2=5000,
+        strand_2=-1,
+        attributes={"reads_total": "20"},
+    )
+
+    # 1. Verify individual pair compatibility
+    m11, _, d11, _ = evaluate_pair(ja1, jb1, tolerance=5)
+    m12, _, d12, _ = evaluate_pair(ja1, jb2, tolerance=5)
+    m21, _, d21, _ = evaluate_pair(ja2, jb1, tolerance=5)
+    m22, _, d22, _ = evaluate_pair(ja2, jb2, tolerance=5)
+
+    assert m11 is True and d11 == 1
+    assert m12 is True and d12 == 3
+    assert m21 is True and d21 == 3
+    assert m22 is False  # D=7 > 5 tolerance
+
+    # 2. Maximum cardinality matching exists and has size 2
+    # Assignment: JA1 -> JB2 (valid), JA2 -> JB1 (valid)
+    assert m12 is True and m21 is True
+    max_cardinality = 2
+
+    # 3. Execute greedy bipartite matching
+    greedy_results = match_junctions_greedy([ja1, ja2], [jb1, jb2], tolerance=5)
+
+    greedy_matched = [r for r in greedy_results.values() if r.match_type != "NONE"]
+    greedy_cardinality = len(greedy_matched)
+
+    # Greedy paired JA1 with JB1 (min distance 1)
+    assert greedy_results["JA1"].match_type in ("NEAR_MATCH", "EXACT_MATCH")
+    assert greedy_results["JA1"].comparator_id == "JB1"
+    assert greedy_results["JA1"].distance == 1
+
+    # JA2 was starved and left unmatched
+    assert greedy_results["JA2"].match_type == "NONE"
+    assert greedy_results["JA2"].comparator_id is None or greedy_results["JA2"].mismatch_reason != "NONE"
+
+    # Strict cardinality difference demonstrated
+    assert greedy_cardinality == 1
+    assert greedy_cardinality < max_cardinality

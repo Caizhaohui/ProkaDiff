@@ -61,7 +61,14 @@ class JunctionRecord:
 
     @property
     def support_reads(self) -> Optional[int]:
-        for k in ("pd_support_reads", "support_reads", "reads_total", "coverage"):
+        for k in (
+            "pd_support_reads",
+            "support_reads",
+            "reads_total",
+            "coverage",
+            "new_junction_read_count",
+            "total_non_overlap_reads",
+        ):
             if k in self.attributes:
                 try:
                     return int(self.attributes[k])
@@ -71,7 +78,7 @@ class JunctionRecord:
 
     @property
     def plus_reads(self) -> Optional[int]:
-        for k in ("pd_plus_reads", "plus_reads", "reads_plus"):
+        for k in ("pd_plus_reads", "plus_reads", "reads_plus", "coverage_plus"):
             if k in self.attributes:
                 try:
                     return int(self.attributes[k])
@@ -81,7 +88,7 @@ class JunctionRecord:
 
     @property
     def minus_reads(self) -> Optional[int]:
-        for k in ("pd_minus_reads", "minus_reads", "reads_minus"):
+        for k in ("pd_minus_reads", "minus_reads", "reads_minus", "coverage_minus"):
             if k in self.attributes:
                 try:
                     return int(self.attributes[k])
@@ -229,6 +236,17 @@ def parse_gd_text(text: str, caller: str = "prokadiff") -> tuple[list[JunctionRe
     return junctions, mobs
 
 
+def extract_repeat_family(name: str) -> str:
+    """Extract canonical repeat family name (e.g. 'IS1' from 'insertion sequence:IS1A')."""
+    m = re.search(r"IS(\d+)", name)
+    if m:
+        return f"IS{m.group(1)}"
+    m2 = re.search(r"IS([A-Z]+)", name)
+    if m2:
+        return f"IS{m2.group(1)}"
+    return name
+
+
 def parse_genbank_repeat_features(gbk_text: str) -> list[RepeatFeature]:
     """Parse repeat_region and mobile_element features from GenBank text."""
     features: list[RepeatFeature] = []
@@ -257,11 +275,18 @@ def parse_genbank_repeat_features(gbk_text: str) -> list[RepeatFeature]:
                 elif qual.startswith("/note="):
                     name = qual.split("=", 1)[1].strip('"')
                 j += 1
-            features.append(RepeatFeature(seq_id="", start=start, end=end, feature_type=ftype, name=name))
+            features.append(RepeatFeature(seq_id="", start=start, end=end, feature_type=ftype, name=extract_repeat_family(name)))
             i = j
         else:
             i += 1
     return features
+
+
+def contig_match(c1: str, c2: str) -> bool:
+    """Check contig equivalence, normalizing accession version differences (e.g. NC_000913.3 vs NC_000913)."""
+    if c1 == c2:
+        return True
+    return c1.split(".")[0] == c2.split(".")[0]
 
 
 def evaluate_pair(
@@ -273,9 +298,9 @@ def evaluate_pair(
         (is_match, match_type, distance, mismatch_reason)
     """
     # Direct match: c1==c1' and c2==c2'
-    direct_contig = (ja.seq_id_1 == jb.seq_id_1) and (ja.seq_id_2 == jb.seq_id_2)
+    direct_contig = contig_match(ja.seq_id_1, jb.seq_id_1) and contig_match(ja.seq_id_2, jb.seq_id_2)
     # Swapped match: c1==c2' and c2==c1'
-    swapped_contig = (ja.seq_id_1 == jb.seq_id_2) and (ja.seq_id_2 == jb.seq_id_1)
+    swapped_contig = contig_match(ja.seq_id_1, jb.seq_id_2) and contig_match(ja.seq_id_2, jb.seq_id_1)
 
     if not direct_contig and not swapped_contig:
         return False, "NONE", 999999, "DIFFERENT_CONTIGS"
