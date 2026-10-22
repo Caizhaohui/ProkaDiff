@@ -9,25 +9,34 @@ As authorized by task `M6-P3C3-GROK-COHORT-EXECUTION`, this report delivers the 
 1. **Successful 5-Run Slurm Execution:**
    - All 5 jobs completed with exit status `0` on dedicated compute nodes (`bnode1`, `bnode2`).
    - Total breseq cohort compute: **1 hour 57 minutes 21 seconds** cumulative wall-clock time; peak resident set size ranged from **1.55 GB** (`SRR28349244`) to **3.66 GB** (`SRR28349176`).
+   - **Reference Provenance & Bit-Identity:** Both callers used bit-identical reference files. For BW25113 (`CP009273.1`), raw FASTA byte SHA-256 is `37eade01311f1f81659fad53bf907a93139075a75d115fd3aec2ef09beac2e90`, raw GenBank byte SHA-256 is `3440cc8d28d643dda30e8ed9054656bc093abf61895077678ef4ddad4343df3a`, and normalized sequence SHA-256 is `3761072f8884add5e9facdafc583de5d81a4cf5dbc7e51023ba966f3cf4887ce` (length: 4,631,469 bp). (The historical string `94ee6a51...` was audited as a transcription artifact and discarded.)
 
 2. **Bipartite Maximum-Cardinality vs. Greedy Matching Resolution:**
-   - Kuhn's augmenting-path algorithm was implemented in `reconcile_m6_p3c.py` (`match_junctions_maximum_cardinality`) and verified with 15 passing automated tests.
+   - Kuhn's augmenting-path algorithm was implemented in `reconcile_m6_p3c.py` (`match_junctions_maximum_cardinality`) and verified with 20 passing automated tests.
    - Theoretical starvation vulnerability of greedy matching was proved via a synthetic counterexample ($|M_{greedy}| = 1 < |M_{max}| = 2$).
    - **Cohort Multiplicity Discovery:** On all 5 real-world datasets—including high-complexity sample `SRR28349173` (505 ProkaDiff JCs vs. 524 breseq JCs)—candidate multiplicity $> 1$ was **exactly 0** ($d_{max} = 1$). Consequently, greedy matching and maximum-cardinality matching produce **100% identical pairings** across all 806 ProkaDiff junctions and 639 breseq junctions (`is_identical: true`, cardinality difference: 0).
 
-3. **Bijective JC Event Accounting (1,319 Total Edges):**
-   - **91 Exact Matches ($D=0$):** Mutual dual-breakend identity within 5 bp tolerance.
-   - **15 Repeat-Family Matches (Case 6):** Constituent edges of mobile element insertions where the anchor breakend matched identically, but the repeat breakend aligned to paralogous copies of the same transposable element family (IS1, IS5).
-   - **20 Near-Miss Boundary Matches:** Microhomology window boundary slippage ($6 \le \Delta \le 16$ bp, total distance $D \le 10$).
+3. **Bijective JC Event Accounting (1,319 Total Edges Across 6 Categories):**
+   - **91 Exact Matches ($D=0$):** Mutual dual-breakend identity ($d_1 = 0 \land d_2 = 0$).
+   - **10 Near Matches Within Tolerance ($0 < \max(d_1, d_2) \le 5$ bp):** Dual-breakend identity within microhomology tolerance.
+   - **Total Corroborated Matches: 101 records** ($91 + 10 = 101$), exactly matching Dimension 3 `CORROBORATED` count in `reconciled_structural_events.tsv`.
+   - **15 Repeat-Family Matches (Case 6):** Constituent edges of mobile element insertions where the anchor breakend matched identically ($\le 5$ bp), but the repeat breakend aligned to paralogous copies of the same transposable element family (IS1, IS5).
+   - **10 Near-Miss Boundary Matches:** Microhomology window boundary slippage ($6 \le \max(d_1, d_2) \le 10$ bp, $d_1 + d_2 \le 15$ bp).
    - **513 breseq-Only Candidates:** Suppressed by breseq internal filters (`reject=COVERAGE_EVENNESS_SKEW` or `reject=FREQUENCY_CUTOFF`).
    - **680 ProkaDiff-Only Candidates:** Sub-threshold candidates ($N < 10$) or multi-copy ribosomal RNA operon chimeras (`rrnA`–`rrnH`).
-   - Every single junction from both callers is accounted for with zero omissions and zero duplicate assignments.
+   - **Conservation Checks:**
+     - ProkaDiff $= 91 + 10 + 15 + 10 + 680 = \mathbf{806}$.
+     - breseq $= 91 + 10 + 15 + 10 + 513 = \mathbf{639}$.
+     - Every single junction from both callers is accounted for with zero omissions and zero duplicate assignments.
 
 4. **Decoupled 4-Attribute MOB Concordance (8 ProkaDiff MOBs vs. 7 breseq MOBs):**
    - **6 EXACT_MOB_MATCH:** Mutual identification with identical insertion coordinates, IS element family, strand, and exact target site duplication (TSD) length.
    - **1 CONCORDANT_MOB_1BP_TSD_RESOLVED:** Canonical IS1 insertion at 1,873,031 (`SRR28349244`), resolved with a 1 bp microhomology TSD slip (`dup=8` vs `dup=9`).
    - **1 DISCORDANT:** ProkaDiff-only candidate at 2,386,696 (`SRR28349176`).
-   - **Zero MOB False Positives:** Both BW25113 samples (`SRR28349231`, `SRR28349226`) correctly exhibited 0 MOB calls in both callers (100% true-negative agreement).
+   - **BW25113 Resequencing Status:** Both BW25113 samples (`SRR28349231`, `SRR28349226`) exhibited 0 MOB calls in both callers, designated as `BOTH_CALLERS_NO_MOB_REPORTED`. All biological sensitivity/specificity claims are eliminated.
+   - **Decoupled Comparator Metrics:**
+     - `BRESEQ_REPORTED_MOB_COVERAGE = 7/7 (100.0%)`
+     - `PROKADIFF_MOB_COMPARATOR_AGREEMENT = 7/8 (87.5%)`
 
 5. **Epistemic Clarity on Dimension 4:**
    - In accordance with project standards, Dimension 4 (Biological Validation) is strictly maintained as `NOT_EVALUABLE` across all samples. High-confidence computational concordance does not substitute for orthogonal wet-lab PCR/Sanger ground truth.
@@ -38,14 +47,14 @@ As authorized by task `M6-P3C3-GROK-COHORT-EXECUTION`, this report delivers the 
 
 All runs were executed on Slurm partition `qcpu_18i` with 8 CPUs and 32 GB RAM allocation. Manifest reference: [`prjna1088182_m6_p3c_cohort_telemetry.tsv`](manifests/prjna1088182_m6_p3c_cohort_telemetry.tsv).
 
-| Run Accession | Sample Name | Strain / Reference Contig | Slurm Job ID | Compute Node | Wall Clock (m:ss) | Peak RSS (GB) | ProkaDiff JCs | breseq JCs | Exact Matches ($D=0$) | Family Matches (Case 6) | Uncalled JCs |
-| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **SRR28349173** | `Cas9_110_111` | *E. coli* MG1655 (`NC_000913.3`) | `2999176` | `bnode1` | 29m 32.48s | 3.05 GB | 505 | 524 | 70 | 3 | 423 |
-| **SRR28349176** | `Cas9_104_105` | *E. coli* MG1655 (`NC_000913.3`) | `2999177` | `bnode2` | 31m 09.89s | 3.66 GB | 140 | 71 | 9 | 6 | 124 |
-| **SRR28349244** | `Cas9_1` [Pilot] | *E. coli* MG1655 (`NC_000913.3`) | `2997962` | `bnode2` | 12m 48.46s | 1.55 GB | 49 | 17 | 5 | 6 | 38 |
-| **SRR28349231** | `I-SceI_3_4_5_6` | *E. coli* BW25113 (`CP009273.1`) | `3000148` | `bnode1` | 22m 11.55s | 2.68 GB | 72 | 18 | 4 | 0 | 68 |
-| **SRR28349226** | `control_1_2_3_4` | *E. coli* BW25113 (`CP009273.1`) | `2999175` | `bnode2` | 21m 38.73s | 2.94 GB | 40 | 9 | 3 | 0 | 37 |
-| **TOTAL** | — | — | — | — | **1h 57m 21s** | **3.66 GB** (max) | **806** | **639** | **91** | **15** | **690** |
+| Run Accession | Sample Name | Strain / Reference Contig | Slurm Job ID | Compute Node | Wall Clock (m:ss) | Peak RSS (GB) | ProkaDiff JCs | breseq JCs | Exact Matches ($D=0$) | Near Matches (<= 5 bp) | Dim 3 Corroborated | Family Matches (Case 6) | Uncalled JCs |
+| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **SRR28349173** | `Cas9_110_111` | *E. coli* MG1655 (`NC_000913.3`) | `2999176` | `bnode1` | 29m 32.48s | 3.05 GB | 505 | 524 | 70 | 9 | 79 | 3 | 423 |
+| **SRR28349176** | `Cas9_104_105` | *E. coli* MG1655 (`NC_000913.3`) | `2999177` | `bnode2` | 31m 09.89s | 3.66 GB | 140 | 71 | 9 | 1 | 10 | 6 | 124 |
+| **SRR28349244** | `Cas9_1` [Pilot] | *E. coli* MG1655 (`NC_000913.3`) | `2997962` | `bnode2` | 12m 48.46s | 1.55 GB | 49 | 17 | 5 | 0 | 5 | 6 | 38 |
+| **SRR28349231** | `I-SceI_3_4_5_6` | *E. coli* BW25113 (`CP009273.1`) | `3000148` | `bnode1` | 22m 11.55s | 2.68 GB | 72 | 18 | 4 | 0 | 4 | 0 | 68 |
+| **SRR28349226** | `control_1_2_3_4` | *E. coli* BW25113 (`CP009273.1`) | `2999175` | `bnode2` | 21m 38.73s | 2.94 GB | 40 | 9 | 3 | 0 | 3 | 0 | 37 |
+| **TOTAL** | — | — | — | — | **1h 57m 21s** | **3.66 GB** (max) | **806** | **639** | **91** | **10** | **101** | **15** | **690** |
 
 ---
 
@@ -86,10 +95,13 @@ Every junction candidate from both callers was partitioned into exactly one mutu
 
 ```
 Total Edges in Bidirectional Accounting Matrix: 1,319
-├── Mutual Corroborations: 126
+├── Corroborated Matches: 101
 │   ├── EXACT_MATCH (D=0): 91
-│   ├── REPEAT_FAMILY_MATCH (Case 6): 15
-│   └── NEAR_MISS_BOUNDARY (Microhomology 6-16 bp): 20
+│   └── NEAR_MATCH_WITHIN_TOLERANCE (0 < max(d1, d2) <= 5): 10
+├── Paralogous Repeat Matches: 15
+│   └── REPEAT_FAMILY_MATCH (Case 6): 15
+├── Boundary Near-Misses: 10
+│   └── NEAR_MISS_BOUNDARY (Microhomology 6-10 bp): 10
 ├── breseq-Only Candidates: 513
 │   └── BRESEQ_ONLY_REJECTED (Filtered by breseq coverage/frequency gates): 513
 └── ProkaDiff-Only Candidates: 680
@@ -102,15 +114,16 @@ Total Edges in Bidirectional Accounting Matrix: 1,319
 | Category | SRR28349173 | SRR28349176 | SRR28349244 | SRR28349231 | SRR28349226 | Cohort Total |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **EXACT_MATCH** | 70 | 9 | 5 | 4 | 3 | **91** |
+| **NEAR_MATCH_WITHIN_TOLERANCE** | 9 | 1 | 0 | 0 | 0 | **10** |
 | **REPEAT_FAMILY_MATCH** | 3 | 6 | 6 | 0 | 0 | **15** |
-| **NEAR_MISS_BOUNDARY** | 15 | 2 | 1 | 1 | 1 | **20** |
+| **NEAR_MISS_BOUNDARY** | 6 | 1 | 1 | 1 | 1 | **10** |
 | **BRESEQ_ONLY_REJECTED** | 436 | 54 | 5 | 13 | 5 | **513** |
 | **PROKADIFF_ONLY** | 417 | 123 | 37 | 67 | 36 | **680** |
 | **Total Accounted Edges** | **941** | **194** | **54** | **85** | **45** | **1,319** |
 
 *Accounting Verification:*
-- Total breseq JCs: $513 + 91 + 15 + 20 = 639$ (matches exact sum $524 + 71 + 17 + 18 + 9 = 639$).
-- Total ProkaDiff JCs: $680 + 91 + 15 + 20 = 806$ (matches exact sum $505 + 140 + 49 + 72 + 40 = 806$).
+- Total breseq JCs: $513 + 91 + 10 + 15 + 10 = 639$ (matches exact sum $524 + 71 + 17 + 18 + 9 = 639$).
+- Total ProkaDiff JCs: $680 + 91 + 10 + 15 + 10 = 806$ (matches exact sum $505 + 140 + 49 + 72 + 40 = 806$).
 - Bijective accounting holds with 0 duplicate assignments and 0 omissions across all 1,319 records.
 
 ---
@@ -129,13 +142,16 @@ Mobile element insertions (MOB) were reconciled under the decoupled 4-attribute 
 | **SRR28349244** | `MOB 146` | `MOB 10` | 3,799,683 | IS1 | -1 | 8 bp vs 8 bp | **EXACT_MOB_MATCH** | Canonical IS1 insertion at 3,799,683 |
 | **SRR28349244** | `MOB 147` | `MOB 5` | 1,873,031 | IS1 | -1 | 8 bp vs 9 bp | **CONCORDANT_MOB_1BP_TSD_RESOLVED** | Microhomology slip (dup 8 vs 9 bp) |
 | **SRR28349244** | `MOB 148` | `MOB 4` | 889,647 | IS5 | -1 | 4 bp vs 4 bp | **EXACT_MOB_MATCH** | Canonical IS5 insertion at 889,647 |
-| **SRR28349231** | — | — | — | — | — | — | **TRUE NEGATIVE** | 0 MOBs in BW25113 (both callers agree) |
-| **SRR28349226** | — | — | — | — | — | — | **TRUE NEGATIVE** | 0 MOBs in BW25113 (both callers agree) |
+| **SRR28349231** | — | — | — | — | — | — | **BOTH_CALLERS_NO_MOB_REPORTED** | 0 MOBs in BW25113 (both callers report no MOBs; Dimension 4 NOT_EVALUABLE) |
+| **SRR28349226** | — | — | — | — | — | — | **BOTH_CALLERS_NO_MOB_REPORTED** | 0 MOBs in BW25113 (both callers report no MOBs; Dimension 4 NOT_EVALUABLE) |
 
 ### Summary of MOB Concordance:
 - Total ProkaDiff MOBs: 8
 - Total breseq MOBs: 7
-- Mutual Agreement: **7 / 8 (87.5%)** from ProkaDiff perspective; **7 / 7 (100%)** from breseq perspective.
+- Decoupled Comparator Metrics:
+  - `BRESEQ_REPORTED_MOB_COVERAGE = 7/7 (100.0%)`
+  - `PROKADIFF_MOB_COMPARATOR_AGREEMENT = 7/8 (87.5%)`
+- BW25113 status: `BOTH_CALLERS_NO_MOB_REPORTED` (no biological sensitivity/specificity claims).
 - 6 out of 7 mutual MOBs matched with 100% exact TSD lengths (`EXACT_MOB_MATCH`).
 - 1 mutual MOB exhibited a 1 bp microhomology slip (`CONCORDANT_MOB_1BP_TSD_RESOLVED`), adhering strictly to honest concordance reporting.
 

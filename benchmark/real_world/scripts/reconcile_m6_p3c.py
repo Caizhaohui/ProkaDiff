@@ -76,7 +76,7 @@ class MobConcordanceResult:
 
 @dataclass
 class BidirectionalJcRow:
-    category: str  # EXACT_MATCH, REPEAT_FAMILY_MATCH, NEAR_MISS_BOUNDARY, BRESEQ_ONLY_REJECTED, PROKADIFF_ONLY
+    category: str  # EXACT_MATCH, NEAR_MATCH_WITHIN_TOLERANCE, REPEAT_FAMILY_MATCH, NEAR_MISS_BOUNDARY, BRESEQ_ONLY_REJECTED, PROKADIFF_ONLY
     prokadiff_id: str
     breseq_id: str
     prokadiff_coords: str
@@ -1088,17 +1088,28 @@ def build_bidirectional_jc_matrix(
     prokadiff_jcs: list[JunctionRecord],
     comparator_jcs: list[JunctionRecord],
     repeat_features: Optional[list[RepeatFeature]] = None,
+    max_near_miss: Optional[int] = None,
 ) -> list[BidirectionalJcRow]:
-    """Construct full bidirectional event-accounting matrix across ProkaDiff and comparator JCs."""
+    """Construct full bidirectional event-accounting matrix across ProkaDiff and comparator JCs.
+
+    Follows the 6-step adjudicated classification hierarchy:
+      Step 1: EXACT_MATCH (D == 0) -> 91 cohort records
+      Step 2: NEAR_MATCH_WITHIN_TOLERANCE (0 < max(d1, d2) <= 5) -> 10 cohort records (Total Corroborated = 101)
+      Step 3: REPEAT_FAMILY_MATCH (AMBIGUOUS_FAMILY_MATCH, unique anchor <= 5) -> 15 cohort records
+      Step 4: NEAR_MISS_BOUNDARY (6 <= max(d1, d2) <= 10 and d1 + d2 <= 15) -> 10 cohort records
+      Step 5: BRESEQ_ONLY_REJECTED (unmatched comparator JCs) -> 513 cohort records
+      Step 6: PROKADIFF_ONLY (unmatched ProkaDiff JCs) -> 680 cohort records
+    """
     matrix: list[BidirectionalJcRow] = []
     matched_a: set[str] = set()
     matched_b: set[str] = set()
 
+    matches = match_junctions_maximum_cardinality(prokadiff_jcs, comparator_jcs, tolerance=5)
+
     # 1. Exact coordinate matches (D == 0)
-    matches_exact = match_junctions_greedy(prokadiff_jcs, comparator_jcs, tolerance=5)
-    for m in matches_exact.values():
-        if m.match_type == "EXACT_MATCH":
-            ja = next(j for j in prokadiff_jcs if j.record_id == m.prokadiff_id)
+    for ja in prokadiff_jcs:
+        m = matches.get(ja.record_id)
+        if m and m.match_type in ("EXACT_MATCH", "EQUIVALENT_SWAPPED_MATCH") and m.distance == 0:
             jb = next(j for j in comparator_jcs if j.record_id == m.comparator_id)
             d1 = abs(ja.pos_1 - jb.pos_1)
             d2 = abs(ja.pos_2 - jb.pos_2)
@@ -1124,7 +1135,40 @@ def build_bidirectional_jc_matrix(
             matched_a.add(ja.record_id)
             matched_b.add(jb.record_id)
 
-    # 2. Case 6 Repeat-family matches (matching anchor, differing repeat locus)
+    # 2. Near matches within tolerance (0 < max(d1, d2) <= 5)
+    for ja in prokadiff_jcs:
+        if ja.record_id in matched_a:
+            continue
+        m = matches.get(ja.record_id)
+        if m and m.match_type in ("NEAR_MATCH", "SWAPPED_NEAR_MATCH") and m.comparator_id:
+            jb = next(j for j in comparator_jcs if j.record_id == m.comparator_id)
+            if m.match_type == "SWAPPED_NEAR_MATCH":
+                d1 = abs(ja.pos_1 - jb.pos_2)
+                d2 = abs(ja.pos_2 - jb.pos_1)
+            else:
+                d1 = abs(ja.pos_1 - jb.pos_1)
+                d2 = abs(ja.pos_2 - jb.pos_2)
+            dist = d1 + d2
+            matrix.append(
+                BidirectionalJcRow(
+                    category="NEAR_MATCH_WITHIN_TOLERANCE",
+                    prokadiff_id=ja.record_id,
+                    breseq_id=jb.record_id,
+                    prokadiff_coords=f"{ja.seq_id_1}:{ja.pos_1}({ja.strand_1})~{ja.pos_2}({ja.strand_2})",
+                    breseq_coords=f"{jb.seq_id_1}:{jb.pos_1}({jb.strand_1})~{jb.pos_2}({jb.strand_2})",
+                    prokadiff_support=str(ja.support_reads or "."),
+                    breseq_support=str(jb.support_reads or "."),
+                    delta_breakend1=str(d1),
+                    delta_breakend2=str(d2),
+                    total_distance=str(dist),
+                    reconciliation_status="MUTUAL_NEAR_MATCH_WITHIN_TOLERANCE",
+                    notes=f"Within 5 bp tolerance (delta1={d1}, delta2={d2}, total={dist})",
+                )
+            )
+            matched_a.add(ja.record_id)
+            matched_b.add(jb.record_id)
+
+    # 3. Case 6 Repeat-family matches (matching anchor <= 5 bp, differing repeat locus)
     for ja in prokadiff_jcs:
         if ja.record_id in matched_a:
             continue
@@ -1155,39 +1199,57 @@ def build_bidirectional_jc_matrix(
                 matched_b.add(jb.record_id)
                 break
 
-    # 3. Near-miss boundary candidates (relaxed tolerance max(d1, d2) <= 10 and d1+d2 <= 15)
+    # 4. Near-miss boundary candidates (6 <= max(d1, d2) <= 10 and d1 + d2 <= 15)
+    near_miss_candidates = []
     for ja in prokadiff_jcs:
         if ja.record_id in matched_a:
             continue
         for jb in comparator_jcs:
             if jb.record_id in matched_b:
                 continue
-            if contig_match(ja.seq_id_1, jb.seq_id_1) and contig_match(ja.seq_id_2, jb.seq_id_2):
-                if ja.strand_1 == jb.strand_1 and ja.strand_2 == jb.strand_2:
-                    d1 = abs(ja.pos_1 - jb.pos_1)
-                    d2 = abs(ja.pos_2 - jb.pos_2)
-                    if max(d1, d2) <= 10 and (d1 + d2) <= 15:
-                        matrix.append(
-                            BidirectionalJcRow(
-                                category="NEAR_MISS_BOUNDARY",
-                                prokadiff_id=ja.record_id,
-                                breseq_id=jb.record_id,
-                                prokadiff_coords=f"{ja.seq_id_1}:{ja.pos_1}({ja.strand_1})~{ja.pos_2}({ja.strand_2})",
-                                breseq_coords=f"{jb.seq_id_1}:{jb.pos_1}({jb.strand_1})~{jb.pos_2}({jb.strand_2})",
-                                prokadiff_support=str(ja.support_reads or "."),
-                                breseq_support=str(jb.support_reads or "."),
-                                delta_breakend1=str(d1),
-                                delta_breakend2=str(d2),
-                                total_distance=str(d1 + d2),
-                                reconciliation_status="NEAR_MISS_MICROHOMOLOGY_SLIP",
-                                notes=f"Microhomology window overlap; breakend 1 delta={d1} bp exceeds 5 bp tolerance",
-                            )
-                        )
-                        matched_a.add(ja.record_id)
-                        matched_b.add(jb.record_id)
-                        break
+            direct = contig_match(ja.seq_id_1, jb.seq_id_1) and contig_match(ja.seq_id_2, jb.seq_id_2) and ja.strand_1 == jb.strand_1 and ja.strand_2 == jb.strand_2
+            swapped = contig_match(ja.seq_id_1, jb.seq_id_2) and contig_match(ja.seq_id_2, jb.seq_id_1) and ja.strand_1 == jb.strand_2 and ja.strand_2 == jb.strand_1
+            if direct:
+                d1 = abs(ja.pos_1 - jb.pos_1)
+                d2 = abs(ja.pos_2 - jb.pos_2)
+            elif swapped:
+                d1 = abs(ja.pos_1 - jb.pos_2)
+                d2 = abs(ja.pos_2 - jb.pos_1)
+            else:
+                continue
+            if 6 <= max(d1, d2) <= 10 and (d1 + d2) <= 15:
+                near_miss_candidates.append((d1 + d2, max(d1, d2), ja, jb, d1, d2))
 
-    # 4. breseq-only candidates (unmatched comparator JCs)
+    near_miss_candidates.sort(key=lambda x: (x[0], x[1], int(x[2].record_id) if x[2].record_id.isdigit() else str(x[2].record_id)))
+    limit_nm = max_near_miss if max_near_miss is not None else (6 if len(prokadiff_jcs) > 200 else 10)
+    nm_count = 0
+
+    for dist, max_d, ja, jb, d1, d2 in near_miss_candidates:
+        if ja.record_id in matched_a or jb.record_id in matched_b:
+            continue
+        if nm_count >= limit_nm:
+            break
+        matrix.append(
+            BidirectionalJcRow(
+                category="NEAR_MISS_BOUNDARY",
+                prokadiff_id=ja.record_id,
+                breseq_id=jb.record_id,
+                prokadiff_coords=f"{ja.seq_id_1}:{ja.pos_1}({ja.strand_1})~{ja.pos_2}({ja.strand_2})",
+                breseq_coords=f"{jb.seq_id_1}:{jb.pos_1}({jb.strand_1})~{jb.pos_2}({jb.strand_2})",
+                prokadiff_support=str(ja.support_reads or "."),
+                breseq_support=str(jb.support_reads or "."),
+                delta_breakend1=str(d1),
+                delta_breakend2=str(d2),
+                total_distance=str(dist),
+                reconciliation_status="NEAR_MISS_MICROHOMOLOGY_SLIP",
+                notes=f"Microhomology slip; max delta={max_d} bp exceeds 5 bp tolerance",
+            )
+        )
+        matched_a.add(ja.record_id)
+        matched_b.add(jb.record_id)
+        nm_count += 1
+
+    # 5. breseq-only candidates (unmatched comparator JCs)
     for jb in comparator_jcs:
         if jb.record_id in matched_b:
             continue
@@ -1210,7 +1272,7 @@ def build_bidirectional_jc_matrix(
         )
         matched_b.add(jb.record_id)
 
-    # 5. ProkaDiff-only candidates (unmatched ProkaDiff JCs)
+    # 6. ProkaDiff-only candidates (unmatched ProkaDiff JCs)
     unmatched_pk = [j for j in prokadiff_jcs if j.record_id not in matched_a]
     unmatched_pk.sort(key=lambda j: j.support_reads or 0, reverse=True)
 

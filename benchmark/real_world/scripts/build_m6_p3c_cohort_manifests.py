@@ -13,7 +13,19 @@ and bidirectional JC event accounting across all 5 benchmark samples in PRJNA108
 import csv
 import json
 import re
+import sys
 from pathlib import Path
+
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from reconcile_m6_p3c import (
+    build_bidirectional_jc_matrix,
+    parse_gd_text,
+    parse_genbank_repeat_features,
+    write_bidirectional_jc_matrix_tsv,
+)
 
 REPO = Path(__file__).resolve().parents[3]
 RESULTS_DIR = REPO / "benchmark/real_world/results/prjna1088182/m6_p3c"
@@ -139,9 +151,27 @@ def build_cohort_manifests():
         comp_total_jcs = summary_data.get("matching_comparison", {}).get("comparator_total")
         if comp_total_jcs is None or comp_total_jcs == 0:
             comp_total_jcs = sum(1 for line in breseq_gd.read_text(encoding="utf-8").splitlines() if line.startswith("JC\t"))
-        exact_matches = summary_data["dim3_corroboration"].get("CORROBORATED", 0)
-        family_matches = summary_data["dim3_corroboration"].get("CORROBORATED_AT_FAMILY_LEVEL_UNRESOLVED_AT_LOCUS", 0)
+
+        # Re-generate bidirectional matrix for the run with the updated 6-category hierarchy
+        ref_p = REPO / ("data/references/MG1655.gbk" if run not in ("SRR28349231", "SRR28349226") else "data/references/m6_identity/CP009273.1.gbk")
+        ref_feats = parse_genbank_repeat_features(ref_p.read_text(encoding="utf-8")) if ref_p.is_file() else []
+        pk_jcs, _ = parse_gd_text(pk_gd.read_text(encoding="utf-8"), caller="prokadiff")
+        comp_jcs, _ = parse_gd_text(breseq_gd.read_text(encoding="utf-8"), caller="breseq")
+        for jc in pk_jcs + comp_jcs:
+            for rf in ref_feats:
+                if (rf.start - 20) <= jc.pos_1 <= (rf.end + 20):
+                    jc.repeat_family_1 = rf.name
+                if (rf.start - 20) <= jc.pos_2 <= (rf.end + 20):
+                    jc.repeat_family_2 = rf.name
+
+        mat_rows = build_bidirectional_jc_matrix(pk_jcs, comp_jcs, ref_feats)
+        write_bidirectional_jc_matrix_tsv(mat_rows, run_dir / "bidirectional_jc_matrix.tsv")
+
+        exact_matches = sum(1 for r in mat_rows if r.category == "EXACT_MATCH")
+        near_matches = sum(1 for r in mat_rows if r.category == "NEAR_MATCH_WITHIN_TOLERANCE")
+        family_matches = sum(1 for r in mat_rows if r.category == "REPEAT_FAMILY_MATCH")
         uncalled_jcs = summary_data["dim3_corroboration"].get("NOT_CORROBORATED", 0)
+        corroborated_total = exact_matches + near_matches
 
         t_row = {
             "run": run,
@@ -158,6 +188,7 @@ def build_cohort_manifests():
             "prokadiff_jcs": pk_total_jcs,
             "breseq_jcs": comp_total_jcs,
             "exact_matches": exact_matches,
+            "near_matches_within_tolerance": near_matches,
             "family_matches": family_matches,
             "uncalled_jcs": uncalled_jcs,
             "snps_concordant": snps_conc,
@@ -169,7 +200,7 @@ def build_cohort_manifests():
             "dim1_repeat_ambiguous": summary_data["dim1_placement"].get("REPEAT_AMBIGUOUS", 0),
             "dim2_strong": summary_data["dim2_read_evidence"].get("STRONG", 0),
             "dim2_limited": summary_data["dim2_read_evidence"].get("LIMITED", 0),
-            "dim3_corroborated": exact_matches,
+            "dim3_corroborated": corroborated_total,
             "dim3_family_level": family_matches,
             "dim3_not_corroborated": uncalled_jcs,
             "dim4_biological_validation": summary_data["dim4_biological_validation"],

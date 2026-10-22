@@ -717,3 +717,176 @@ def test_bidirectional_jc_matrix_partitioning():
     b_assigned = [r.breseq_id for r in matrix if r.breseq_id != "."]
     assert len(pk_assigned) == len(set(pk_assigned)) == 4
     assert len(b_assigned) == len(set(b_assigned)) == 4
+
+
+def test_reference_hashes_raw_and_normalized():
+    """Verify bit-identical CP009273.1 reference files and reject transcription artifacts."""
+    import hashlib
+
+    fa_p = REPO / "data/references/m6_identity/CP009273.1.fasta"
+    gbk_p = REPO / "data/references/m6_identity/CP009273.1.gbk"
+    assert fa_p.is_file(), f"Missing {fa_p}"
+    assert gbk_p.is_file(), f"Missing {gbk_p}"
+
+    raw_fa_hash = hashlib.sha256(fa_p.read_bytes()).hexdigest()
+    raw_gbk_hash = hashlib.sha256(gbk_p.read_bytes()).hexdigest()
+
+    assert raw_fa_hash == "37eade01311f1f81659fad53bf907a93139075a75d115fd3aec2ef09beac2e90"
+    assert raw_gbk_hash == "3440cc8d28d643dda30e8ed9054656bc093abf61895077678ef4ddad4343df3a"
+
+    # Normalized sequence SHA-256 (length 4,631,469 bp)
+    seq = "".join(line.strip() for line in fa_p.read_text(encoding="utf-8").splitlines() if not line.startswith(">"))
+    assert len(seq) == 4631469
+    norm_seq_hash = hashlib.sha256(seq.upper().encode("ascii")).hexdigest()
+    assert norm_seq_hash == "3761072f8884add5e9facdafc583de5d81a4cf5dbc7e51023ba966f3cf4887ce"
+
+    # Ensure deprecated / corrupted transcription artifact hash 94ee6a51... is rejected
+    corrupted_hash = "94ee6a512c1d0202720d2d3a95c9a1738743a68ea107b3c2e176ebc24f5a3e14"
+    assert raw_fa_hash != corrupted_hash
+    assert raw_gbk_hash != corrupted_hash
+    assert norm_seq_hash != corrupted_hash
+
+
+def test_bidirectional_matrix_split_corroborated_vs_near_miss():
+    """Verify 6-category bidirectional matrix split: 101 corroborated (91 exact + 10 near) vs 10 near-miss."""
+    matrix_p = REPO / "benchmark/real_world/manifests/prjna1088182_m6_p3c_cohort_bidirectional_matrix.tsv"
+    assert matrix_p.is_file(), f"Missing manifest: {matrix_p}"
+
+    with matrix_p.open(encoding="utf-8") as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+
+    assert len(rows) == 1319
+
+    from collections import Counter
+    counts = Counter(r["category"] for r in rows)
+
+    assert counts["EXACT_MATCH"] == 91
+    assert counts["NEAR_MATCH_WITHIN_TOLERANCE"] == 10
+    assert counts["EXACT_MATCH"] + counts["NEAR_MATCH_WITHIN_TOLERANCE"] == 101
+    assert counts["REPEAT_FAMILY_MATCH"] == 15
+    assert counts["NEAR_MISS_BOUNDARY"] == 10
+    assert counts["BRESEQ_ONLY_REJECTED"] == 513
+    assert counts["PROKADIFF_ONLY"] == 680
+
+
+def test_cohort_bijective_accounting_conservation():
+    """Verify exact edge-level accounting conservation across ProkaDiff, breseq, and manifests."""
+    matrix_p = REPO / "benchmark/real_world/manifests/prjna1088182_m6_p3c_cohort_bidirectional_matrix.tsv"
+    telemetry_p = REPO / "benchmark/real_world/manifests/prjna1088182_m6_p3c_cohort_telemetry.tsv"
+    reconciliation_p = REPO / "benchmark/real_world/manifests/prjna1088182_m6_p3c_cohort_reconciliation.tsv"
+
+    with matrix_p.open(encoding="utf-8") as f:
+        mat_rows = list(csv.DictReader(f, delimiter="\t"))
+
+    with telemetry_p.open(encoding="utf-8") as f:
+        tel_rows = list(csv.DictReader(f, delimiter="\t"))
+
+    with reconciliation_p.open(encoding="utf-8") as f:
+        rec_rows = list(csv.DictReader(f, delimiter="\t"))
+
+    # Matrix sums
+    from collections import Counter
+    cat_counts = Counter(r["category"] for r in mat_rows)
+    pk_sum = (cat_counts["EXACT_MATCH"] + cat_counts["NEAR_MATCH_WITHIN_TOLERANCE"] +
+              cat_counts["REPEAT_FAMILY_MATCH"] + cat_counts["NEAR_MISS_BOUNDARY"] +
+              cat_counts["PROKADIFF_ONLY"])
+    b_sum = (cat_counts["EXACT_MATCH"] + cat_counts["NEAR_MATCH_WITHIN_TOLERANCE"] +
+             cat_counts["REPEAT_FAMILY_MATCH"] + cat_counts["NEAR_MISS_BOUNDARY"] +
+             cat_counts["BRESEQ_ONLY_REJECTED"])
+
+    assert pk_sum == 806
+    assert b_sum == 639
+    assert len(mat_rows) == 1319
+    assert len(rec_rows) == 806
+
+    # Verify 1:1 bijectivity within each run in matrix
+    runs = set(r["run"] for r in mat_rows)
+    assert len(runs) == 5
+    for r in runs:
+        run_rows = [x for x in mat_rows if x["run"] == r]
+        pk_ids = [x["prokadiff_id"] for x in run_rows if x["prokadiff_id"] != "."]
+        b_ids = [x["breseq_id"] for x in run_rows if x["breseq_id"] != "."]
+        assert len(pk_ids) == len(set(pk_ids)), f"Duplicate ProkaDiff ID in run {r}"
+        assert len(b_ids) == len(set(b_ids)), f"Duplicate breseq ID in run {r}"
+
+    # Telemetry column totals
+    assert sum(int(x["exact_matches"]) for x in tel_rows) == 91
+    assert sum(int(x["near_matches_within_tolerance"]) for x in tel_rows) == 10
+    assert sum(int(x["dim3_corroborated"]) for x in tel_rows) == 101
+    assert sum(int(x["family_matches"]) for x in tel_rows) == 15
+    assert sum(int(x["dim3_family_level"]) for x in tel_rows) == 15
+    assert sum(int(x["uncalled_jcs"]) for x in tel_rows) == 690
+    assert sum(int(x["dim3_not_corroborated"]) for x in tel_rows) == 690
+    assert sum(int(x["prokadiff_jcs"]) for x in tel_rows) == 806
+    assert sum(int(x["breseq_jcs"]) for x in tel_rows) == 639
+
+
+def test_mob_comparator_metrics_no_biological_claims():
+    """Verify decoupled MOB comparator concordance metrics and complete absence of biological claims."""
+    mob_p = REPO / "benchmark/real_world/manifests/prjna1088182_m6_p3c_cohort_mob_concordance.tsv"
+    telemetry_p = REPO / "benchmark/real_world/manifests/prjna1088182_m6_p3c_cohort_telemetry.tsv"
+
+    with mob_p.open(encoding="utf-8") as f:
+        mob_rows = list(csv.DictReader(f, delimiter="\t"))
+
+    with telemetry_p.open(encoding="utf-8") as f:
+        tel_rows = list(csv.DictReader(f, delimiter="\t"))
+
+    assert len(mob_rows) == 8
+
+    from collections import Counter
+    mc = Counter(r["composite_classification"] for r in mob_rows)
+    assert mc["EXACT_MOB_MATCH"] == 6
+    assert mc["CONCORDANT_MOB_1BP_TSD_RESOLVED"] == 1
+    assert mc["DISCORDANT"] == 1
+
+    # Comparator concordance: 7/8 agreement, 7/7 breseq coverage
+    agreed = mc["EXACT_MOB_MATCH"] + mc["CONCORDANT_MOB_1BP_TSD_RESOLVED"]
+    assert agreed == 7
+    breseq_covered = sum(1 for r in mob_rows if r["comparator_id"] != ".")
+    assert breseq_covered == 7
+
+    # BW25113 samples (SRR28349231, SRR28349226) reported zero MOBs by both callers
+    bw_mob_rows = [r for r in mob_rows if r["run"] in ("SRR28349231", "SRR28349226")]
+    assert len(bw_mob_rows) == 0
+
+    for r in tel_rows:
+        if r["run"] in ("SRR28349231", "SRR28349226"):
+            assert r["mob_concordant"] == "0/0"
+        # Dim 4 biological validation must be NOT_EVALUABLE across cohort
+        assert r["dim4_biological_validation"] == "NOT_EVALUABLE"
+
+    # Strict audit: verify no biological sensitivity/specificity claims in manifests
+    forbidden_terms = [
+        "BIOLOGICAL_SENSITIVITY",
+        "BIOLOGICAL_SPECIFICITY",
+        "BIOLOGICAL_PRECISION",
+        "TRUE_NEGATIVE",
+    ]
+    mob_text = mob_p.read_text(encoding="utf-8")
+    for term in forbidden_terms:
+        assert term not in mob_text, f"Forbidden biological term '{term}' found in MOB concordance manifest"
+
+
+def test_no_contradictory_notes_in_matrix():
+    """Verify notes field in bidirectional matrix contains no contradictory tolerance claims."""
+    matrix_p = REPO / "benchmark/real_world/manifests/prjna1088182_m6_p3c_cohort_bidirectional_matrix.tsv"
+    with matrix_p.open(encoding="utf-8") as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+
+    for r in rows:
+        cat = r["category"]
+        notes = r["notes"]
+        if cat == "NEAR_MATCH_WITHIN_TOLERANCE":
+            d1 = int(r["delta_breakend1"])
+            d2 = int(r["delta_breakend2"])
+            assert d1 <= 5 and d2 <= 5
+            assert "exceeds 5 bp tolerance" not in notes
+            assert "Within 5 bp tolerance" in notes
+            assert r["reconciliation_status"] == "MUTUAL_NEAR_MATCH_WITHIN_TOLERANCE"
+        elif cat == "NEAR_MISS_BOUNDARY":
+            d1 = int(r["delta_breakend1"])
+            d2 = int(r["delta_breakend2"])
+            assert max(d1, d2) >= 6
+            assert "exceeds 5 bp tolerance" in notes
+            assert r["reconciliation_status"] == "NEAR_MISS_MICROHOMOLOGY_SLIP"
