@@ -9,14 +9,23 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from reconcile_m6_p3c import (
+    BidirectionalJcRow,
     JunctionRecord,
+    MobConcordanceResult,
+    MobRecord,
     RepeatFeature,
+    build_bidirectional_jc_matrix,
     classify_genomic_placement,
     classify_read_evidence,
+    evaluate_mob_pair,
     evaluate_pair,
     match_junctions_greedy,
     parse_gd_text,
+    parse_genbank_repeat_features,
     reconcile_cohort,
+    reconcile_mobs,
+    write_bidirectional_jc_matrix_tsv,
+    write_mob_concordance_tsv,
     write_reconciled_tsv,
 )
 
@@ -482,3 +491,157 @@ def test_greedy_vs_maximum_cardinality_counterexample():
     # Strict cardinality difference demonstrated
     assert greedy_cardinality == 1
     assert greedy_cardinality < max_cardinality
+
+
+def test_decoupled_mob_concordance_evaluator():
+    """Verify decoupled 4-attribute MOB concordance evaluation."""
+    # 1. Exact MOB match (IS5 at 889,647, dup=4)
+    m_exact_a = MobRecord(
+        caller="prokadiff",
+        record_id="148",
+        parent_ids="120,121",
+        seq_id="NC_000913.3",
+        pos=889647,
+        repeat_name="IS5",
+        strand=-1,
+        duplication_size=4,
+    )
+    m_exact_b = MobRecord(
+        caller="breseq",
+        record_id="4",
+        parent_ids="35,38",
+        seq_id="NC_000913",
+        pos=889647,
+        repeat_name="IS5",
+        strand=-1,
+        duplication_size=4,
+    )
+    res_exact = evaluate_mob_pair(m_exact_a, m_exact_b)
+    assert res_exact.site_concordance == "EXACT_SITE"
+    assert res_exact.family_concordance == "EXACT_FAMILY"
+    assert res_exact.strand_concordance == "EXACT_STRAND"
+    assert res_exact.tsd_concordance == "EXACT_TSD"
+    assert res_exact.composite_classification == "EXACT_MOB_MATCH"
+
+    # 2. 1 bp TSD slip resolution (IS1 at 1,873,031: ProkaDiff dup=8 vs breseq dup=9)
+    # Must NOT be classified as EXACT_MOB_MATCH!
+    m_slip_a = MobRecord(
+        caller="prokadiff",
+        record_id="147",
+        parent_ids="106,132",
+        seq_id="NC_000913.3",
+        pos=1873031,
+        repeat_name="IS1",
+        strand=-1,
+        duplication_size=8,
+    )
+    m_slip_b = MobRecord(
+        caller="breseq",
+        record_id="5",
+        parent_ids="34,42",
+        seq_id="NC_000913",
+        pos=1873031,
+        repeat_name="IS1",
+        strand=-1,
+        duplication_size=9,
+    )
+    res_slip = evaluate_mob_pair(m_slip_a, m_slip_b)
+    assert res_slip.site_concordance == "EXACT_SITE"
+    assert res_slip.family_concordance == "EXACT_FAMILY"
+    assert res_slip.strand_concordance == "EXACT_STRAND"
+    assert res_slip.tsd_concordance == "NEAR_MATCH_1BP"
+    assert res_slip.composite_classification == "CONCORDANT_MOB_1BP_TSD_RESOLVED"
+
+    # 3. Discordant site / strand
+    m_disc_b = MobRecord(
+        caller="breseq",
+        record_id="99",
+        parent_ids=".",
+        seq_id="NC_000913",
+        pos=1873031,
+        repeat_name="IS1",
+        strand=1,  # inverted strand
+        duplication_size=8,
+    )
+    res_disc = evaluate_mob_pair(m_slip_a, m_disc_b)
+    assert res_disc.strand_concordance == "INVERTED_STRAND"
+    assert res_disc.composite_classification == "DISCORDANT"
+
+    # 4. Cohort reconciliation and TSV writing
+    mob_results = reconcile_mobs([m_exact_a, m_slip_a], [m_exact_b, m_slip_b])
+    assert len(mob_results) == 2
+    assert mob_results[0].composite_classification == "EXACT_MOB_MATCH"
+    assert mob_results[1].composite_classification == "CONCORDANT_MOB_1BP_TSD_RESOLVED"
+
+    with tempfile.NamedTemporaryFile("w+", suffix=".tsv") as tf:
+        out_p = Path(tf.name)
+        write_mob_concordance_tsv(mob_results, out_p)
+        rows = list(csv.DictReader(out_p.open(), delimiter="\t"))
+        assert len(rows) == 2
+        assert rows[0]["composite_classification"] == "EXACT_MOB_MATCH"
+        assert rows[1]["composite_classification"] == "CONCORDANT_MOB_1BP_TSD_RESOLVED"
+
+
+def test_bidirectional_jc_matrix_partitioning():
+    """Verify bidirectional JC accounting matrix partitions all JCs without duplicates."""
+    # Synthetic mini-cohort covering all 5 categories:
+    # 1. Exact match (D=0)
+    ja_exact = JunctionRecord(
+        caller="prokadiff", record_id="P1", seq_id_1="NC_000913", pos_1=1000, strand_1=1,
+        seq_id_2="NC_000913", pos_2=2000, strand_2=-1, attributes={"pd_support_reads": "30"}
+    )
+    jb_exact = JunctionRecord(
+        caller="breseq", record_id="B1", seq_id_1="NC_000913", pos_1=1000, strand_1=1,
+        seq_id_2="NC_000913", pos_2=2000, strand_2=-1, attributes={"reads_total": "30"}
+    )
+
+    # 2. Case 6 Repeat-family match
+    ja_rep = JunctionRecord(
+        caller="prokadiff", record_id="P2", seq_id_1="NC_000913", pos_1=5000, strand_1=1,
+        seq_id_2="NC_000913", pos_2=250000, strand_2=-1, repeat_family_2="IS1", attributes={"pd_support_reads": "20"}
+    )
+    jb_rep = JunctionRecord(
+        caller="breseq", record_id="B2", seq_id_1="NC_000913", pos_1=5000, strand_1=1,
+        seq_id_2="NC_000913", pos_2=1400000, strand_2=-1, repeat_family_2="IS1", attributes={"reads_total": "20"}
+    )
+
+    # 3. Near-miss boundary match (breakend 1 delta=6 bp > 5 bp, D=10)
+    ja_near = JunctionRecord(
+        caller="prokadiff", record_id="P3", seq_id_1="NC_000913", pos_1=1207784, strand_1=1,
+        seq_id_2="NC_000913", pos_2=1209623, strand_2=1, attributes={"pd_support_reads": "82"}
+    )
+    jb_near = JunctionRecord(
+        caller="breseq", record_id="B3", seq_id_1="NC_000913", pos_1=1207790, strand_1=1,
+        seq_id_2="NC_000913", pos_2=1209619, strand_2=1, attributes={"reads_total": "36"}
+    )
+
+    # 4. breseq-only rejected
+    jb_rej = JunctionRecord(
+        caller="breseq", record_id="B4", seq_id_1="NC_000913", pos_1=800000, strand_1=1,
+        seq_id_2="NC_000913", pos_2=805000, strand_2=-1, attributes={"reject": "COVERAGE_EVENNESS_SKEW"}
+    )
+
+    # 5. ProkaDiff-only candidate
+    ja_only = JunctionRecord(
+        caller="prokadiff", record_id="P4", seq_id_1="NC_000913", pos_1=900000, strand_1=1,
+        seq_id_2="NC_000913", pos_2=901000, strand_2=-1, attributes={"pd_support_reads": "15"}
+    )
+
+    pjcs = [ja_exact, ja_rep, ja_near, ja_only]
+    bjcs = [jb_exact, jb_rep, jb_near, jb_rej]
+
+    matrix = build_bidirectional_jc_matrix(pjcs, bjcs)
+    assert len(matrix) == 5
+
+    categories = [r.category for r in matrix]
+    assert "EXACT_MATCH" in categories
+    assert "REPEAT_FAMILY_MATCH" in categories
+    assert "NEAR_MISS_BOUNDARY" in categories
+    assert "BRESEQ_ONLY_REJECTED" in categories
+    assert "PROKADIFF_ONLY" in categories
+
+    # Verify no duplicate assignments
+    pk_assigned = [r.prokadiff_id for r in matrix if r.prokadiff_id != "."]
+    b_assigned = [r.breseq_id for r in matrix if r.breseq_id != "."]
+    assert len(pk_assigned) == len(set(pk_assigned)) == 4
+    assert len(b_assigned) == len(set(b_assigned)) == 4

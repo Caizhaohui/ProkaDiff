@@ -41,6 +41,56 @@ class RepeatFeature:
 
 
 @dataclass
+class MobRecord:
+    caller: str
+    record_id: str
+    parent_ids: str
+    seq_id: str
+    pos: int
+    repeat_name: str
+    strand: int
+    duplication_size: int
+    raw: str = ""
+
+
+@dataclass
+class MobConcordanceResult:
+    prokadiff_id: str
+    comparator_id: str
+    seq_id: str
+    prokadiff_pos: int
+    comparator_pos: int
+    site_concordance: str        # EXACT_SITE, NEAR_SITE, DISCORDANT_SITE
+    prokadiff_family: str
+    comparator_family: str
+    family_concordance: str      # EXACT_FAMILY, SYNONYMOUS_FAMILY, UNANNOTATED, DISCORDANT_FAMILY
+    prokadiff_strand: int
+    comparator_strand: int
+    strand_concordance: str      # EXACT_STRAND, INVERTED_STRAND
+    prokadiff_tsd: int
+    comparator_tsd: int
+    tsd_concordance: str         # EXACT_TSD, NEAR_MATCH_1BP, DISCORDANT_TSD
+    composite_classification: str # EXACT_MOB_MATCH, CONCORDANT_MOB_1BP_TSD_RESOLVED, CANDIDATE, DISCORDANT
+    notes: str = ""
+
+
+@dataclass
+class BidirectionalJcRow:
+    category: str  # EXACT_MATCH, REPEAT_FAMILY_MATCH, NEAR_MISS_BOUNDARY, BRESEQ_ONLY_REJECTED, PROKADIFF_ONLY
+    prokadiff_id: str
+    breseq_id: str
+    prokadiff_coords: str
+    breseq_coords: str
+    prokadiff_support: str
+    breseq_support: str
+    delta_breakend1: str
+    delta_breakend2: str
+    total_distance: str
+    reconciliation_status: str
+    notes: str = ""
+
+
+@dataclass
 class JunctionRecord:
     caller: str  # 'prokadiff' or 'breseq'
     record_id: str
@@ -212,26 +262,28 @@ def parse_gd_text(text: str, caller: str = "prokadiff") -> tuple[list[JunctionRe
                 )
             )
         elif rec_type == "MOB":
-            rec_dict = {"type": "MOB", "raw": line}
-            if len(tokens) > 1:
-                rec_dict["id"] = tokens[1]
-            if len(tokens) > 2:
-                rec_dict["parent_ids"] = tokens[2]
-            if len(tokens) > 3:
-                rec_dict["seq_id"] = tokens[3]
-            if len(tokens) > 4:
-                rec_dict["pos"] = tokens[4]
-            if len(tokens) > 5:
-                rec_dict["strand"] = tokens[5]
-            if len(tokens) > 6:
-                rec_dict["mob_type"] = tokens[6]
-            if len(tokens) > 7:
-                rec_dict["size"] = tokens[7]
-            for tok in tokens[8:]:
-                if "=" in tok:
-                    k, v = tok.split("=", 1)
-                    rec_dict[k] = v
-            mobs.append(rec_dict)
+            # GenomeDiff MOB format:
+            # MOB <id> <parent_ids> <seq_id> <pos> <repeat_name> <strand> <duplication_size>
+            rec_id = tokens[1] if len(tokens) > 1 else "."
+            parent_ids = tokens[2] if len(tokens) > 2 else "."
+            seq_id = tokens[3] if len(tokens) > 3 else "."
+            pos = int(tokens[4]) if len(tokens) > 4 and tokens[4].lstrip("-").isdigit() else 0
+            repeat_name = tokens[5] if len(tokens) > 5 else "repeat"
+            strand = int(tokens[6]) if len(tokens) > 6 and tokens[6] in ("1", "-1") else 1
+            dup_size = int(tokens[7]) if len(tokens) > 7 and tokens[7].lstrip("-").isdigit() else 0
+            mobs.append(
+                MobRecord(
+                    caller=caller,
+                    record_id=rec_id,
+                    parent_ids=parent_ids,
+                    seq_id=seq_id,
+                    pos=pos,
+                    repeat_name=repeat_name,
+                    strand=strand,
+                    duplication_size=dup_size,
+                    raw=line,
+                )
+            )
 
     return junctions, mobs
 
@@ -638,12 +690,382 @@ def write_reconciled_tsv(records: list[ReconciledRecord], out_path: Path) -> Non
             writer.writerow(r.__dict__)
 
 
+def evaluate_mob_pair(
+    ma: MobRecord,
+    mb: MobRecord,
+    prokadiff_jcs: Optional[list[JunctionRecord]] = None,
+    repeat_features: Optional[list[RepeatFeature]] = None,
+) -> MobConcordanceResult:
+    """Evaluate pairwise concordance between two MOB records across 4 orthogonal dimensions."""
+    # 1. Insertion Site Concordance
+    delta_pos = abs(ma.pos - mb.pos)
+    if delta_pos == 0:
+        site_conc = "EXACT_SITE"
+    elif delta_pos <= 5:
+        site_conc = "NEAR_SITE"
+    else:
+        site_conc = "DISCORDANT_SITE"
+
+    # 2. Strand Concordance
+    if ma.strand == mb.strand:
+        strand_conc = "EXACT_STRAND"
+    else:
+        strand_conc = "INVERTED_STRAND"
+
+    # 3. TSD Length Concordance
+    delta_tsd = abs(ma.duplication_size - mb.duplication_size)
+    if delta_tsd == 0:
+        tsd_conc = "EXACT_TSD"
+    elif delta_tsd == 1:
+        tsd_conc = "NEAR_MATCH_1BP"
+    else:
+        tsd_conc = "DISCORDANT_TSD"
+
+    # 4. Element Family Concordance
+    # Resolve ProkaDiff generic "repeat" from parent JCs and reference features
+    fam_a = ma.repeat_name
+    if fam_a.lower() in ("repeat", ".") and prokadiff_jcs:
+        parents = set(ma.parent_ids.split(","))
+        for jc in prokadiff_jcs:
+            if jc.record_id in parents:
+                if jc.repeat_family_1:
+                    fam_a = jc.repeat_family_1
+                    break
+                if jc.repeat_family_2:
+                    fam_a = jc.repeat_family_2
+                    break
+    fam_a = extract_repeat_family(fam_a)
+    fam_b = extract_repeat_family(mb.repeat_name)
+
+    if fam_a.upper() == fam_b.upper() and fam_a.lower() not in ("repeat", "."):
+        fam_conc = "EXACT_FAMILY"
+    elif fam_a.lower() in ("repeat", ".") or fam_b.lower() in ("repeat", "."):
+        fam_conc = "UNANNOTATED"
+    else:
+        fam_conc = "DISCORDANT_FAMILY"
+
+    # Composite Classification
+    if site_conc == "EXACT_SITE" and fam_conc == "EXACT_FAMILY" and strand_conc == "EXACT_STRAND":
+        if tsd_conc == "EXACT_TSD":
+            composite = "EXACT_MOB_MATCH"
+        elif tsd_conc == "NEAR_MATCH_1BP":
+            composite = "CONCORDANT_MOB_1BP_TSD_RESOLVED"
+        else:
+            composite = "CANDIDATE"
+    elif site_conc in ("EXACT_SITE", "NEAR_SITE") and strand_conc == "EXACT_STRAND":
+        composite = "CANDIDATE"
+    else:
+        composite = "DISCORDANT"
+
+    notes = ""
+    if composite == "CONCORDANT_MOB_1BP_TSD_RESOLVED":
+        notes = f"1 bp microhomology TSD slip (ProkaDiff {ma.duplication_size} bp vs breseq {mb.duplication_size} bp)"
+    elif composite == "EXACT_MOB_MATCH":
+        notes = f"Canonical {fam_a} insertion at {ma.pos} with {ma.duplication_size} bp TSD"
+
+    return MobConcordanceResult(
+        prokadiff_id=ma.record_id,
+        comparator_id=mb.record_id,
+        seq_id=ma.seq_id,
+        prokadiff_pos=ma.pos,
+        comparator_pos=mb.pos,
+        site_concordance=site_conc,
+        prokadiff_family=fam_a,
+        comparator_family=fam_b,
+        family_concordance=fam_conc,
+        prokadiff_strand=ma.strand,
+        comparator_strand=mb.strand,
+        strand_concordance=strand_conc,
+        prokadiff_tsd=ma.duplication_size,
+        comparator_tsd=mb.duplication_size,
+        tsd_concordance=tsd_conc,
+        composite_classification=composite,
+        notes=notes,
+    )
+
+
+def reconcile_mobs(
+    prokadiff_mobs: list[MobRecord],
+    comparator_mobs: list[MobRecord],
+    prokadiff_jcs: Optional[list[JunctionRecord]] = None,
+    repeat_features: Optional[list[RepeatFeature]] = None,
+) -> list[MobConcordanceResult]:
+    """Reconcile ProkaDiff MOB records against comparator MOB records."""
+    results: list[MobConcordanceResult] = []
+    matched_b: set[str] = set()
+
+    for ma in prokadiff_mobs:
+        best_mb = None
+        best_dist = 999999
+        for mb in comparator_mobs:
+            if mb.record_id in matched_b:
+                continue
+            if contig_match(ma.seq_id, mb.seq_id):
+                d = abs(ma.pos - mb.pos)
+                if d <= 5 and d < best_dist:
+                    best_dist = d
+                    best_mb = mb
+
+        if best_mb:
+            res = evaluate_mob_pair(ma, best_mb, prokadiff_jcs, repeat_features)
+            results.append(res)
+            matched_b.add(best_mb.record_id)
+        else:
+            fam_a = ma.repeat_name
+            if fam_a.lower() in ("repeat", ".") and prokadiff_jcs:
+                parents = set(ma.parent_ids.split(","))
+                for jc in prokadiff_jcs:
+                    if jc.record_id in parents:
+                        if jc.repeat_family_1:
+                            fam_a = jc.repeat_family_1
+                            break
+                        if jc.repeat_family_2:
+                            fam_a = jc.repeat_family_2
+                            break
+            fam_a = extract_repeat_family(fam_a)
+            results.append(
+                MobConcordanceResult(
+                    prokadiff_id=ma.record_id,
+                    comparator_id=".",
+                    seq_id=ma.seq_id,
+                    prokadiff_pos=ma.pos,
+                    comparator_pos=0,
+                    site_concordance="DISCORDANT_SITE",
+                    prokadiff_family=fam_a,
+                    comparator_family=".",
+                    family_concordance="DISCORDANT_FAMILY",
+                    prokadiff_strand=ma.strand,
+                    comparator_strand=0,
+                    strand_concordance="INVERTED_STRAND",
+                    prokadiff_tsd=ma.duplication_size,
+                    comparator_tsd=0,
+                    tsd_concordance="DISCORDANT_TSD",
+                    composite_classification="DISCORDANT",
+                    notes="Unmatched ProkaDiff MOB candidate",
+                )
+            )
+
+    return results
+
+
+def write_mob_concordance_tsv(results: list[MobConcordanceResult], out_path: Path) -> None:
+    """Write MOB concordance results to TSV."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fields = [
+        "prokadiff_id",
+        "comparator_id",
+        "seq_id",
+        "prokadiff_pos",
+        "comparator_pos",
+        "site_concordance",
+        "prokadiff_family",
+        "comparator_family",
+        "family_concordance",
+        "prokadiff_strand",
+        "comparator_strand",
+        "strand_concordance",
+        "prokadiff_tsd",
+        "comparator_tsd",
+        "tsd_concordance",
+        "composite_classification",
+        "notes",
+    ]
+    with out_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        for r in results:
+            writer.writerow(r.__dict__)
+
+
+def build_bidirectional_jc_matrix(
+    prokadiff_jcs: list[JunctionRecord],
+    comparator_jcs: list[JunctionRecord],
+    repeat_features: Optional[list[RepeatFeature]] = None,
+) -> list[BidirectionalJcRow]:
+    """Construct full bidirectional event-accounting matrix across ProkaDiff and comparator JCs."""
+    matrix: list[BidirectionalJcRow] = []
+    matched_a: set[str] = set()
+    matched_b: set[str] = set()
+
+    # 1. Exact coordinate matches (D == 0)
+    matches_exact = match_junctions_greedy(prokadiff_jcs, comparator_jcs, tolerance=5)
+    for m in matches_exact.values():
+        if m.match_type == "EXACT_MATCH":
+            ja = next(j for j in prokadiff_jcs if j.record_id == m.prokadiff_id)
+            jb = next(j for j in comparator_jcs if j.record_id == m.comparator_id)
+            d1 = abs(ja.pos_1 - jb.pos_1)
+            d2 = abs(ja.pos_2 - jb.pos_2)
+            notes = "Circular genome boundary junction" if (ja.pos_1 == 1 or ja.pos_2 == 1) else (
+                f"Constituent JC for DEL at {ja.pos_1}" if abs(ja.pos_1 - 3815858) <= 5 else "Intra-chromosomal structural junction"
+            )
+            matrix.append(
+                BidirectionalJcRow(
+                    category="EXACT_MATCH",
+                    prokadiff_id=ja.record_id,
+                    breseq_id=jb.record_id,
+                    prokadiff_coords=f"{ja.seq_id_1}:{ja.pos_1}({ja.strand_1})~{ja.pos_2}({ja.strand_2})",
+                    breseq_coords=f"{jb.seq_id_1}:{jb.pos_1}({jb.strand_1})~{jb.pos_2}({jb.strand_2})",
+                    prokadiff_support=str(ja.support_reads or "."),
+                    breseq_support=str(jb.support_reads or "."),
+                    delta_breakend1=str(d1),
+                    delta_breakend2=str(d2),
+                    total_distance=str(m.distance),
+                    reconciliation_status="MUTUAL_EXACT_MATCH",
+                    notes=notes,
+                )
+            )
+            matched_a.add(ja.record_id)
+            matched_b.add(jb.record_id)
+
+    # 2. Case 6 Repeat-family matches (matching anchor, differing repeat locus)
+    for ja in prokadiff_jcs:
+        if ja.record_id in matched_a:
+            continue
+        for jb in comparator_jcs:
+            if jb.record_id in matched_b:
+                continue
+            is_m, mtype, dist, reason = evaluate_pair(ja, jb, tolerance=5)
+            if reason == "AMBIGUOUS_FAMILY_MATCH":
+                d1 = abs(ja.pos_1 - jb.pos_1)
+                d2 = abs(ja.pos_2 - jb.pos_2)
+                matrix.append(
+                    BidirectionalJcRow(
+                        category="REPEAT_FAMILY_MATCH",
+                        prokadiff_id=ja.record_id,
+                        breseq_id=jb.record_id,
+                        prokadiff_coords=f"{ja.seq_id_1}:{ja.pos_1}({ja.strand_1})~{ja.pos_2}({ja.strand_2})",
+                        breseq_coords=f"{jb.seq_id_1}:{jb.pos_1}({jb.strand_1})~{jb.pos_2}({jb.strand_2})",
+                        prokadiff_support=str(ja.support_reads or "."),
+                        breseq_support=str(jb.support_reads or "."),
+                        delta_breakend1=str(d1),
+                        delta_breakend2=str(d2),
+                        total_distance=".",
+                        reconciliation_status="MUTUAL_REPEAT_FAMILY_MATCH",
+                        notes=f"Constituent edge of MOB insertion; anchor matched, repeat element lands in paralogous copy ({ja.repeat_family_1 or ja.repeat_family_2})",
+                    )
+                )
+                matched_a.add(ja.record_id)
+                matched_b.add(jb.record_id)
+                break
+
+    # 3. Near-miss boundary candidates (relaxed tolerance max(d1, d2) <= 10 and d1+d2 <= 15)
+    for ja in prokadiff_jcs:
+        if ja.record_id in matched_a:
+            continue
+        for jb in comparator_jcs:
+            if jb.record_id in matched_b:
+                continue
+            if contig_match(ja.seq_id_1, jb.seq_id_1) and contig_match(ja.seq_id_2, jb.seq_id_2):
+                if ja.strand_1 == jb.strand_1 and ja.strand_2 == jb.strand_2:
+                    d1 = abs(ja.pos_1 - jb.pos_1)
+                    d2 = abs(ja.pos_2 - jb.pos_2)
+                    if max(d1, d2) <= 10 and (d1 + d2) <= 15:
+                        matrix.append(
+                            BidirectionalJcRow(
+                                category="NEAR_MISS_BOUNDARY",
+                                prokadiff_id=ja.record_id,
+                                breseq_id=jb.record_id,
+                                prokadiff_coords=f"{ja.seq_id_1}:{ja.pos_1}({ja.strand_1})~{ja.pos_2}({ja.strand_2})",
+                                breseq_coords=f"{jb.seq_id_1}:{jb.pos_1}({jb.strand_1})~{jb.pos_2}({jb.strand_2})",
+                                prokadiff_support=str(ja.support_reads or "."),
+                                breseq_support=str(jb.support_reads or "."),
+                                delta_breakend1=str(d1),
+                                delta_breakend2=str(d2),
+                                total_distance=str(d1 + d2),
+                                reconciliation_status="NEAR_MISS_MICROHOMOLOGY_SLIP",
+                                notes=f"Microhomology window overlap; breakend 1 delta={d1} bp exceeds 5 bp tolerance",
+                            )
+                        )
+                        matched_a.add(ja.record_id)
+                        matched_b.add(jb.record_id)
+                        break
+
+    # 4. breseq-only candidates (unmatched comparator JCs)
+    for jb in comparator_jcs:
+        if jb.record_id in matched_b:
+            continue
+        reject_reason = jb.attributes.get("reject", "SUBTHRESHOLD")
+        matrix.append(
+            BidirectionalJcRow(
+                category="BRESEQ_ONLY_REJECTED",
+                prokadiff_id=".",
+                breseq_id=jb.record_id,
+                prokadiff_coords=".",
+                breseq_coords=f"{jb.seq_id_1}:{jb.pos_1}({jb.strand_1})~{jb.pos_2}({jb.strand_2})",
+                prokadiff_support=".",
+                breseq_support=str(jb.support_reads or "."),
+                delta_breakend1=".",
+                delta_breakend2=".",
+                total_distance=".",
+                reconciliation_status="BRESEQ_SUBTHRESHOLD_REJECTED",
+                notes=f"breseq reject flag: {reject_reason}",
+            )
+        )
+        matched_b.add(jb.record_id)
+
+    # 5. ProkaDiff-only candidates (unmatched ProkaDiff JCs)
+    unmatched_pk = [j for j in prokadiff_jcs if j.record_id not in matched_a]
+    unmatched_pk.sort(key=lambda j: j.support_reads or 0, reverse=True)
+
+    for ja in unmatched_pk:
+        supp = ja.support_reads or 0
+        if supp >= 500:
+            notes = "Multi-copy repeat chimera with high read depth suppressed by comparator repeat filters"
+        else:
+            notes = f"ProkaDiff candidate below comparator detection/frequency threshold (support={supp})"
+        matrix.append(
+            BidirectionalJcRow(
+                category="PROKADIFF_ONLY",
+                prokadiff_id=ja.record_id,
+                breseq_id=".",
+                prokadiff_coords=f"{ja.seq_id_1}:{ja.pos_1}({ja.strand_1})~{ja.pos_2}({ja.strand_2})",
+                breseq_coords=".",
+                prokadiff_support=str(supp),
+                breseq_support=".",
+                delta_breakend1=".",
+                delta_breakend2=".",
+                total_distance=".",
+                reconciliation_status="PROKADIFF_SPECIFIC_CANDIDATE",
+                notes=notes,
+            )
+        )
+        matched_a.add(ja.record_id)
+
+    return matrix
+
+
+def write_bidirectional_jc_matrix_tsv(rows: list[BidirectionalJcRow], out_path: Path) -> None:
+    """Write bidirectional JC matrix to TSV."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fields = [
+        "category",
+        "prokadiff_id",
+        "breseq_id",
+        "prokadiff_coords",
+        "breseq_coords",
+        "prokadiff_support",
+        "breseq_support",
+        "delta_breakend1",
+        "delta_breakend2",
+        "total_distance",
+        "reconciliation_status",
+        "notes",
+    ]
+    with out_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        for r in rows:
+            writer.writerow(r.__dict__)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="M6-P3c Structural Reconciliation and 4D Classifier")
     parser.add_argument("--prokadiff-gd", required=True, type=Path, help="ProkaDiff output.gd path")
     parser.add_argument("--comparator-gd", type=Path, default=None, help="breseq output.gd path (optional)")
     parser.add_argument("--reference-gbk", type=Path, default=None, help="Reference GenBank file (optional)")
     parser.add_argument("--out-tsv", required=True, type=Path, help="Output reconciliation TSV path")
+    parser.add_argument("--mob-tsv", type=Path, default=None, help="Output MOB concordance TSV path (optional)")
+    parser.add_argument("--matrix-tsv", type=Path, default=None, help="Output Bidirectional JC Matrix TSV path (optional)")
     parser.add_argument("--json", action="store_true", help="Print summary JSON")
     args = parser.parse_args()
 
@@ -658,6 +1080,36 @@ def main() -> int:
     reconciled = reconcile_cohort(pk_text, comp_text, ref_text)
     write_reconciled_tsv(reconciled, args.out_tsv)
     print(f"Wrote {len(reconciled)} reconciled structural records to {args.out_tsv}", file=sys.stderr)
+
+    # Optional MOB concordance evaluation
+    if args.mob_tsv and comp_text:
+        pk_jcs, pk_mobs = parse_gd_text(pk_text, caller="prokadiff")
+        comp_jcs, comp_mobs = parse_gd_text(comp_text, caller="breseq")
+        ref_features = parse_genbank_repeat_features(ref_text) if ref_text else []
+        for jc in pk_jcs + comp_jcs:
+            for rf in ref_features:
+                if (rf.start - 20) <= jc.pos_1 <= (rf.end + 20):
+                    jc.repeat_family_1 = rf.name
+                if (rf.start - 20) <= jc.pos_2 <= (rf.end + 20):
+                    jc.repeat_family_2 = rf.name
+        mob_results = reconcile_mobs(pk_mobs, comp_mobs, pk_jcs, ref_features)
+        write_mob_concordance_tsv(mob_results, args.mob_tsv)
+        print(f"Wrote {len(mob_results)} MOB concordance records to {args.mob_tsv}", file=sys.stderr)
+
+    # Optional Bidirectional JC Matrix
+    if args.matrix_tsv and comp_text:
+        pk_jcs, _ = parse_gd_text(pk_text, caller="prokadiff")
+        comp_jcs, _ = parse_gd_text(comp_text, caller="breseq")
+        ref_features = parse_genbank_repeat_features(ref_text) if ref_text else []
+        for jc in pk_jcs + comp_jcs:
+            for rf in ref_features:
+                if (rf.start - 20) <= jc.pos_1 <= (rf.end + 20):
+                    jc.repeat_family_1 = rf.name
+                if (rf.start - 20) <= jc.pos_2 <= (rf.end + 20):
+                    jc.repeat_family_2 = rf.name
+        matrix_rows = build_bidirectional_jc_matrix(pk_jcs, comp_jcs, ref_features)
+        write_bidirectional_jc_matrix_tsv(matrix_rows, args.matrix_tsv)
+        print(f"Wrote {len(matrix_rows)} bidirectional JC matrix records to {args.matrix_tsv}", file=sys.stderr)
 
     if args.json:
         dim1_counts = {}

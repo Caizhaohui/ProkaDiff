@@ -4,12 +4,14 @@
 
 As authorized by task `M6-P3C2-GROK-PILOT-EXECUTION`, this report documents the execution of the independent `breseq 0.40.2` comparator pilot for sample `Cas9_1` (run accession `SRR28349244`, BioProject `PRJNA1088182`) on Slurm partition `qcpu_18i`. All operations strictly adhered to clean-room development rules (AGENTS.md Rules 4, 5, 11, and 12).
 
-The breseq job executed successfully to completion in **12 minutes 48 seconds** (MaxRSS: 1.55 GB) without errors. Small-variant mutation calls (7 SNPs, 2 small INS) exhibited **100% coordinate and base identity** between ProkaDiff and breseq. Structural mutation promotion also exhibited **100% concordance** across all resolved events: 1/1 large deletions (82 bp DEL at coordinate 3,815,859) and 3/3 mobile element insertions (IS5 at 889,647, IS1 at 1,873,031, IS1 at 3,799,683) were mutually identified with identical target site duplication lengths.
+The breseq job executed successfully to completion in **12 minutes 48 seconds** (MaxRSS: 1.55 GB) without errors. Small-variant mutation calls (7 SNPs, 2 small INS) exhibited **100% coordinate and base identity** between ProkaDiff and breseq. Structural mutation promotion demonstrated robust biological concordance: 1/1 large deletions (82 bp DEL at coordinate 3,815,859) and 3/3 mobile element insertions (IS5 at 889,647, IS1 at 1,873,031, IS1 at 3,799,683) were mutually identified. Under the decoupled 4-attribute MOB concordance model, two MOBs match with exact TSD duplication lengths (`EXACT_MOB_MATCH`), while MOB 147 at 1,873,031 displays a 1 bp microhomology slip (`dup=8` vs `dup=9`), classified strictly as `CONCORDANT_MOB_1BP_TSD_RESOLVED`.
 
 Orthogonal 4-dimensional classification of the 49 ProkaDiff junction candidates revealed:
 - **5 junctions** were corroborated with exact dual-breakend coordinate identity ($D=0$, `EXACT_MATCH`).
 - **6 junctions** were corroborated at the repeat-family level (`CORROBORATED_AT_FAMILY_LEVEL_UNRESOLVED_AT_LOCUS`, Section 3.J Case 6), corresponding to the constituent junction edges of the 3 mobile element insertions.
-- **38 junctions** were uncalled by breseq (`NOT_CORROBORATED`), reflecting breseq's internal coverage/frequency rejection filters on low-frequency chimeric reads.
+- **1 junction** is a near-miss boundary candidate (breseq 39 <-> ProkaDiff 123, $D=10$ bp, breakend 1 delta=6 bp) arising from a 16 bp microhomology window.
+- **37 junctions** were uncalled by breseq (`NOT_CORROBORATED`), comprising 4 multi-copy repeat chimeras with massive read depth suppressed by breseq repeat filters and 33 low/moderate support candidates below breseq's frequency thresholds.
+- All 17 breseq JCs and all 49 ProkaDiff JCs are completely accounted for in a bidirectional bijective accounting matrix with zero duplicate assignments.
 
 Greedy bipartite matching was evaluated against maximum-cardinality matching. For `SRR28349244`, all candidate pairings are strictly 1:1 with zero multiplicity, making greedy matching equivalent to the global maximum. The theoretical starvation vulnerability of greedy matching was formally demonstrated via a dedicated unit test in `test_m6_p3c_reconcile.py`.
 
@@ -85,14 +87,17 @@ All 9 small variants detected by ProkaDiff matched breseq predictions with **100
 | `INS 9` | INS | 4,296,381 | . | GC | `INS 13` | **EXACT MATCH** |
 
 ### B. Structural Mutations (Deletions & Mobile Element Insertions)
-High-level structural mutations promoted from junction and missing coverage evidence demonstrated **100% agreement**:
+High-level structural mutations promoted from junction and missing coverage evidence were evaluated under the decoupled 4-attribute MOB concordance model (manifest: [`prjna1088182_m6_p3c_mob_concordance.tsv`](manifests/prjna1088182_m6_p3c_mob_concordance.tsv)):
 
-| Event Type | ProkaDiff ID | breseq ID | Position | Element / Size | Strand | TSD / Dup | Concordance Status |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **Large Deletion** | `DEL 73` | `DEL 11` | 3,815,859 | 82 bp DEL | . | . | **100% Exact** (Identical 82 bp span) |
-| **IS Insertion** | `MOB 148` | `MOB 4` | 889,647 | IS5 | -1 | 4 bp | **100% Exact** (Identical TSD: 4 bp) |
-| **IS Insertion** | `MOB 147` | `MOB 5` | 1,873,031 | IS1 | -1 | 8-9 bp | **100% Exact** (Coordinates match) |
-| **IS Insertion** | `MOB 146` | `MOB 10` | 3,799,683 | IS1 | -1 | 8 bp | **100% Exact** (Identical TSD: 8 bp) |
+| Event Type | ProkaDiff ID | breseq ID | Position | Element / Size | Strand | TSD / Dup | Concordance Classification | Notes |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- | :--- |
+| **Large Deletion** | `DEL 73` | `DEL 11` | 3,815,859 | 82 bp DEL | . | . | **EXACT MATCH** | Identical 82 bp span (3,815,859..3,815,940) |
+| **IS Insertion** | `MOB 148` | `MOB 4` | 889,647 | IS5 | -1 | 4 bp vs 4 bp | **EXACT_MOB_MATCH** | Exact site, exact family (IS5), exact strand, exact TSD |
+| **IS Insertion** | `MOB 147` | `MOB 5` | 1,873,031 | IS1 | -1 | 8 bp vs 9 bp | **CONCORDANT_MOB_1BP_TSD_RESOLVED** | Exact site & family (IS1); 1 bp microhomology TSD slip |
+| **IS Insertion** | `MOB 146` | `MOB 10` | 3,799,683 | IS1 | -1 | 8 bp vs 8 bp | **EXACT_MOB_MATCH** | Exact site, exact family (IS1), exact strand, exact TSD |
+
+*Scientific Note on MOB 147 (1 bp TSD Microhomology Slip):*
+Both callers place the insertion anchor at coordinate 1,873,031 and identify the inserted element as IS1 on the negative strand. However, breseq reports a 9 bp target site duplication (`dup=9`, constituent breakend at 1,873,039), whereas ProkaDiff reports an 8 bp target site duplication (`dup=8`, constituent breakend at 1,873,038). This 1 bp difference arises from aligner resolution of split-read overhangs across the microhomologous boundary (`|dup_A - dup_B| = 1 bp`). In strict accordance with the decoupled concordance model, this event is classified as `CONCORDANT_MOB_1BP_TSD_RESOLVED` rather than an exact match.
 
 ---
 
@@ -117,7 +122,7 @@ High-level structural mutations promoted from junction and missing coverage evid
   +--> Dimension 3: Computational Corroboration
   |      - CORROBORATED (Exact Coordinate Match, D=0):           5 (10.2%)
   |      - CORROBORATED_AT_FAMILY_LEVEL_UNRESOLVED_AT_LOCUS:      6 (12.2%)
-  |      - NOT_CORROBORATED (breseq uncalled):                   38 (77.6%)
+  |      - NOT_CORROBORATED (breseq uncalled / near-miss):       38 (77.6%)
   |
   +--> Dimension 4: Biological Validation
   |      - NOT_EVALUABLE: 49 (100.0%) [Requires orthogonal non-sequencing assay]
@@ -141,6 +146,56 @@ Six ProkaDiff junctions were corroborated at the repeat-family level (`CORROBORA
 - Both callers identified the identical insertion anchor locus on the non-repeat flank.
 - Because *E. coli* MG1655 contains multiple identical genomic copies of IS1 and IS5, the callers mapped split reads to different paralogous donor copies.
 - Under Section 3.J Case 6, these events are recognized as **biologically equivalent structural insertions** despite divergence in internal repeat coordinates.
+
+### D. Full Bidirectional Event-Accounting Specification & Matrix
+
+Every junction called by either tool is fully and non-redundantly accounted for in the bidirectional matrix (manifest: [`prjna1088182_m6_p3c_pilot_bidirectional_jc_matrix.tsv`](manifests/prjna1088182_m6_p3c_pilot_bidirectional_jc_matrix.tsv)). The 17 breseq junctions and 49 ProkaDiff junctions partition into 5 mutually exclusive categories ($N = 54$ total rows):
+
+```
++---------------------------------------------------------------------------------------+
+| Bidirectional Bijective Accounting (54 Matrix Rows)                                   |
++---------------------------------------------------------------------------------------+
+| Category               | ProkaDiff JCs (49) | breseq JCs (17) | Accounting Status     |
++------------------------+--------------------+-----------------+-----------------------+
+| EXACT_MATCH            | 5 (97,124,134,     | 5 (33,40,44,    | Mutual Exact Match    |
+|                        |    140,143)        |    47,48)       | (D = 0 bp)            |
++------------------------+--------------------+-----------------+-----------------------+
+| REPEAT_FAMILY_MATCH    | 6 (98,100,106,     | 6 (45,43,42,    | Case 6 Paralogous     |
+|                        |    120,121,132)    |    35,38,34)    | MOB constituent edges |
++------------------------+--------------------+-----------------+-----------------------+
+| NEAR_MISS_BOUNDARY     | 1 (123)            | 1 (39)          | 16 bp microhomology   |
+|                        |                    |                 | window slip (D=10 bp) |
++------------------------+--------------------+-----------------+-----------------------+
+| BRESEQ_ONLY_REJECTED   | 0                  | 5 (36,37,41,    | Internal breseq skew/ |
+|                        |                    |    46,49)       | frequency reject tags |
++------------------------+--------------------+-----------------+-----------------------+
+| PROKADIFF_ONLY         | 37                 | 0               | 4 multi-copy chimeras |
+|                        |                    |                 | + 33 sub-threshold    |
++------------------------+--------------------+-----------------+-----------------------+
+| Total Unique Accounts  | 49 / 49 (100.0%)   | 17 / 17 (100.0%)| 0 Duplicate / Omitted |
++---------------------------------------------------------------------------------------+
+```
+
+#### 1. Near-Miss Boundary Analysis (ProkaDiff 123 <-> breseq 39)
+- **Coordinates:** ProkaDiff JC 123 (`1207784(+) ~ 1209623(+)`, support=82) vs breseq JC 39 (`1207790(+) ~ 1209619(+)`, support=36).
+- **Distance:** Breakend 1 delta = 6 bp, Breakend 2 delta = 4 bp ($D = 10$ bp).
+- **Algorithmic Provenance:** breseq reports `alignment_overlap=16`, establishing that a 16 bp exact sequence microhomology exists across this breakpoint. Within a 16 bp homology window, different alignment algorithms place the boundary at different offsets. ProkaDiff aligned the split reads with a 6 bp offset relative to breseq. Because the contract tolerance requires $\le 5$ bp on *each* individual breakend, breakend 1 ($\Delta = 6$ bp) narrowly exceeds the threshold, accurately categorizing this event as a near-miss microhomology boundary artifact rather than a true topological discordance.
+
+#### 2. breseq-Only Sub-Threshold Candidates ($N = 5$)
+All 5 breseq-only junctions (JCs 36, 37, 41, 46, 49) represent low-frequency split reads ($N = 3$ to $5$ supporting reads) that failed breseq's internal quality filters:
+- JCs 37, 46, 49 bear `reject=COVERAGE_EVENNESS_SKEW,FREQUENCY_CUTOFF`.
+- JCs 36, 41 bear `reject=COVERAGE_EVENNESS_SKEW`.
+These candidates are recorded in breseq's `output.gd` as rejected evidence items, and were filtered out by ProkaDiff's minimum support depth thresholds.
+
+#### 3. ProkaDiff-Only Candidates ($N = 37$)
+The 37 ProkaDiff-only junction candidates divide into two distinct algorithmic classes:
+1. **Multi-Copy Repeat Chimeras ($N = 4$):**
+   - JC 103 (14,956 reads) and JC 136 (6,489 reads) connecting 16S/23S ribosomal RNA operons (`rrsB` / `rrsE` / `rrnD`).
+   - JC 139 (13,622 reads) internal to the `rrnE` operon.
+   - JC 99 (590 reads) between IS1 repeats.
+   These junctions possess massive read support but connect identical multi-copy repeats across the genome. breseq actively suppresses these using its coverage distribution calibration and repeat redundancy filters (`side_redundant=1`).
+2. **Sub-Threshold / Marginal Candidates ($N = 33$):**
+   Low to moderate read support (depth 4 to 48 reads) that fall below breseq's junction frequency cutoffs.
 
 ---
 

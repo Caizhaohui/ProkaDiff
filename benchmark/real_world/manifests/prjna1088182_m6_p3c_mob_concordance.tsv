@@ -1,0 +1,4 @@
+prokadiff_id	comparator_id	seq_id	prokadiff_pos	comparator_pos	site_concordance	prokadiff_family	comparator_family	family_concordance	prokadiff_strand	comparator_strand	strand_concordance	prokadiff_tsd	comparator_tsd	tsd_concordance	composite_classification	notes
+146	10	NC_000913.3	3799683	3799683	EXACT_SITE	IS1	IS1	EXACT_FAMILY	-1	-1	EXACT_STRAND	8	8	EXACT_TSD	EXACT_MOB_MATCH	Canonical IS1 insertion at 3799683 with 8 bp TSD
+147	5	NC_000913.3	1873031	1873031	EXACT_SITE	IS1	IS1	EXACT_FAMILY	-1	-1	EXACT_STRAND	8	9	NEAR_MATCH_1BP	CONCORDANT_MOB_1BP_TSD_RESOLVED	1 bp microhomology TSD slip (ProkaDiff 8 bp vs breseq 9 bp)
+148	4	NC_000913.3	889647	889647	EXACT_SITE	IS5	IS5	EXACT_FAMILY	-1	-1	EXACT_STRAND	4	4	EXACT_TSD	EXACT_MOB_MATCH	Canonical IS5 insertion at 889647 with 4 bp TSD
