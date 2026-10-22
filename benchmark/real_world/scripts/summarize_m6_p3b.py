@@ -4,8 +4,10 @@
 Validates Gates 1-4:
   Gate 1: Reference Sequence Identity (SHA256 3761072f...)
   Gate 2: Small Variant Invariance (Delta SNP == 0, Delta INS == 0, Delta DEL == 0, Delta MC == 0)
-  Gate 3: Control Specificity (control_1_2_3_4 produces MOB == 0)
-  Gate 4: MOB Promotion (Delta MOB >= 0, parent JCs tagged mob_evidence=1)
+  Gate 3: Control No New MOB (gate3_control_no_new_mob: control_1_2_3_4 produces MOB == 0 under both conditions;
+          biological specificity/sensitivity remain NOT_EVALUABLE without independent ground truth)
+  Gate 4: MOB Promotion / Repeat Artifact Suppression (Delta MOB >= 0; candidate JCs overlapping annotated repeats
+          classified as ANNOTATION_FILTERED_JC / REPEAT_ASSOCIATED_JC)
 """
 
 from __future__ import annotations
@@ -111,11 +113,13 @@ def evaluate_run(run_info: dict[str, object]) -> dict[str, object]:
         if recs_a_norm != recs_b_norm:
             gate2_pass = False
 
-    # Gate 3: Control specificity
+    # Gate 3: Control No New MOB (gate3_control_no_new_mob)
+    # Control sample SRR28349226 has MOB == 0 under both conditions.
+    # Biological specificity/sensitivity remain NOT_EVALUABLE without independent ground truth.
     if run == "SRR28349226":
-        gate3_pass = (counts_b["MOB"] == 0)
+        gate3_pass = (counts_b["MOB"] == 0 and counts_a["MOB"] == 0)
     else:
-        gate3_pass = True  # Not evaluated for non-control
+        gate3_pass = True  # Evaluated for control
 
     # Gate 4: MOB promotion & parent JC audit
     gate4_pass = True
@@ -167,7 +171,7 @@ def evaluate_run(run_info: dict[str, object]) -> dict[str, object]:
         "delta_mob": delta_mob,
         "gate1_sequence_identity": "PASS" if gate1_pass else "FAIL",
         "gate2_small_variant_invariance": "PASS" if gate2_pass else "FAIL",
-        "gate3_control_specificity": "PASS" if gate3_pass else "FAIL",
+        "gate3_control_no_new_mob": "PASS" if gate3_pass else "FAIL",
         "gate4_mob_promotion": "PASS" if gate4_pass else "FAIL",
     }
 
@@ -182,7 +186,7 @@ def main() -> int:
         gates = [res[f"gate{i}_{suffix}"] for i, suffix in [
             (1, "sequence_identity"),
             (2, "small_variant_invariance"),
-            (3, "control_specificity"),
+            (3, "control_no_new_mob"),
             (4, "mob_promotion"),
         ]]
         if any(g == "FAIL" for g in gates):
@@ -202,7 +206,7 @@ def main() -> int:
         snps = f"{r['cond_a_snp']}->{r['cond_b_snp']}"
         jcs = f"{r['cond_a_jc']}->{r['cond_b_jc']}"
         mobs = f"{r['cond_a_mob']}->{r['cond_b_mob']}"
-        gates = f"{r['gate1_sequence_identity']}/{r['gate2_small_variant_invariance']}/{r['gate3_control_specificity']}/{r['gate4_mob_promotion']}"
+        gates = f"{r['gate1_sequence_identity']}/{r['gate2_small_variant_invariance']}/{r['gate3_control_no_new_mob']}/{r['gate4_mob_promotion']}"
         print(f"{r['run']:<12} {r['sample']:<20} {snps:<10} {jcs:<12} {mobs:<10} {gates:<10}")
 
     return 0 if all_pass else 1

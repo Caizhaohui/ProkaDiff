@@ -69,3 +69,19 @@ def test_reference_provenance_manifest():
     assert data["length_bp"] == "4631469"
     assert data["sequence_sha256"] == EXPECTED_SHA
     assert data["total_repeats_parsed"] == "401"
+
+
+def test_ab_comparison_manifest():
+    cmp_file = REPO / "benchmark/real_world/manifests/prjna1088182_m6_p3b_ab_comparison.tsv"
+    assert cmp_file.exists(), f"Missing {cmp_file}"
+    lines = cmp_file.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 4
+    header = lines[0].split("\t")
+    assert "gate3_control_no_new_mob" in header
+    assert "gate3_control_specificity" not in header
+    for line in lines[1:]:
+        row = dict(zip(header, line.split("\t")))
+        assert row["gate1_sequence_identity"] == "PASS"
+        assert row["gate2_small_variant_invariance"] == "PASS"
+        assert row["gate3_control_no_new_mob"] == "PASS"
+        assert row["gate4_mob_promotion"] == "PASS"

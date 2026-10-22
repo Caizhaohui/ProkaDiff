@@ -12,10 +12,10 @@
 ## 1. Executive Summary
 
 Phase M6-P2a evaluated 25 eligible paired WGS runs from PRJNA1088182 against reference genomes according to strain:
-- **10 MG1655 runs** against `NC_000913.3` using GenBank input `data/references/MG1655.gbk`. Result: **MOB = 2 or 3** per run (22 MOB calls total).
-- **15 BW25113 runs** against `CP009273.1` using plain FASTA input `data/references/m6_identity/CP009273.1.fasta`. Result: **MOB = 0** across all 15 runs, despite 35 to 72 JC calls per run (749 JC calls total).
+- **10 MG1655 runs** against `NC_000913.3` using GenBank input `data/references/MG1655.gbk`. Result: **MOB = 2 or 3** per run (Total: 23 MOB calls; range: 2 to 3, mean: 2.30; per-run values: [3, 2, 2, 3, 2, 3, 2, 2, 2, 2]). Total JC: 1,230 (range: 45 to 505, mean: 123.00). (Note: These MOB records represent engine calling output; independent biological truth remains `BIOLOGICAL_TRUTH_NOT_EVALUABLE` without orthogonal validation).
+- **15 BW25113 runs** against `CP009273.1` using plain FASTA input `data/references/m6_identity/CP009273.1.fasta`. Result: **MOB = 0** (`MOB_NOT_CALLED`) across all 15 runs, with 35 to 72 JC calls per run (Total: 719 JC calls; mean: 47.93).
 
-This audit investigates the computational and algorithmic basis of this difference: whether the zero-MOB outcome in BW25113 is an artifact of reference file format (lack of repeat annotations in FASTA) or reflects genuine absence of mobile element transpositions in the sequencing reads.
+This audit investigates the computational and algorithmic basis of this difference: whether the zero-MOB outcome in BW25113 is an artifact of reference file format (lack of repeat annotations in FASTA bypassing detection-path capability) or reflects whether candidate evidence was present or absent in the reads. (Independent biological truth regarding transposition remains `BIOLOGICAL_TRUTH_NOT_EVALUABLE` without orthogonal ground truth).
 
 ---
 
@@ -93,21 +93,22 @@ Line-by-line inspection of the production evidence engine identified the exact m
 
 ## 5. P2a Cohort Structural Event Summary
 
-In PRJNA1088182 P2a:
+In PRJNA1088182 P2a canonical execution records:
 - **MG1655 Cohort (10 paired runs):**
-  - Average JC calls: 133 (range: 45 to 505)
-  - MOB calls: 2 or 3 per run (Total: 22 MOB calls)
-  - MOB parent JCs: Successfully absorbed and tagged with `mob_evidence=1`
+  - Total JC calls: 1,230 (range: 45 to 505, mean: 123.00)
+  - Total MOB calls: 23 (range: 2 to 3, mean: 2.30; per-run values: [3, 2, 2, 3, 2, 3, 2, 2, 2, 2])
+  - MOB parent JCs: In the engine calling pipeline, candidate JCs flanking repeat annotations are tagged with `mob_evidence=1`
 - **BW25113 Cohort (15 paired runs):**
-  - Average JC calls: 50 (range: 35 to 72; Total: 749 JC calls)
-  - MOB calls: **0** across all 15 runs
+  - Total JC calls: 719 (range: 35 to 72, mean: 47.93)
+  - Total MOB calls: 0 across all 15 runs (`MOB_NOT_CALLED`)
   - MOB parent JCs: 0
 
 ---
 
 ## 6. Audit Conclusion & Handoff to Claude
 
-1. **Input-Format Discrepancy Confirmed:** The observed `MOB=0` across 15 BW25113 runs is an inevitable mathematical consequence of passing a plain FASTA file to an engine whose MOB promotion logic strictly requires reference repeat annotations.
-2. **Nucleotide Identity Confirmed:** An authentic, sequence-identical GenBank record for `CP009273.1` exists in NCBI Entrez (4,631,469 bp, SHA256 `3761072f...`).
-3. **Hypothesis Formulation:** Providing `CP009273.1.gbk` provides `opts.repeats` to the engine without altering a single base pair of the reference genome sequence or the Bowtie2 alignment index.
-4. **Handoff:** The baseline audit is complete. Claude is requested to review the scientific architecture and design a controlled A/B experiment.
+1. **Input-Format Discrepancy Confirmed:** The observed `MOB=0` across 15 BW25113 runs in P2a was computationally inevitable because passing a plain FASTA file disabled the engine's MOB candidate-pairing detection path, which strictly requires reference repeat annotations.
+2. **Detection-Path Capability vs Biological Truth:** Restoring repeat annotations restores the algorithmic detection-path capability to detect repeat-associated junctions and pair MOB candidates. It does not presuppose whether candidate evidence exists in the reads or whether biological transposition occurred (`BIOLOGICAL_TRUTH_NOT_EVALUABLE`).
+3. **Nucleotide Identity Confirmed:** An authentic, sequence-identical GenBank record for `CP009273.1` exists in NCBI Entrez (4,631,469 bp, SHA256 `3761072f8884add5e9facdafc583de5d81a4cf5dbc7e51023ba966f3cf4887ce`).
+4. **Hypothesis Formulation:** Providing `CP009273.1.gbk` provides `opts.repeats` to the engine without altering a single base pair of the reference genome sequence or the Bowtie2 alignment index.
+5. **Handoff:** The baseline audit is complete. Claude is requested to review the scientific architecture and design a controlled A/B experiment.
