@@ -41,6 +41,16 @@ test "$(awk '$1 == "JC" { count += 1 } END { print count + 0 }' benchmark/real_w
 test "$(awk 'NR > 1 { count += 1 } END { print count + 0 }' benchmark/real_world/truth/prjna884016/mob_truth.tsv)" -eq 0
 test "$(awk 'NR > 1 { count += 1 } END { print count + 0 }' benchmark/real_world/truth/prjna884016/jc_truth.tsv)" -eq 0
 
+# M7-P0b: sidecar outputs of the invalidated truncated SY22A1_vs_SY221 MUMmer run
+# must not live in the active truth directory. Only the zeroed .rdiff remains.
+for sidecar in delta report 1delta mdelta 1coords mcoords qdiff snps; do
+    stale_sidecar="benchmark/real_world/truth/prjna884016/SY22A1_vs_SY221.${sidecar}"
+    if test -e "$stale_sidecar"; then
+        printf 'stale MUMmer sidecar present in active truth dir: %s\n' "$stale_sidecar" >&2
+        exit 1
+    fi
+done
+
 while IFS= read -r asset; do
     if git check-ignore -q "$asset"; then
         printf 'validation asset is ignored: %s\n' "$asset" >&2

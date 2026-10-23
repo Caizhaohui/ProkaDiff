@@ -9,6 +9,44 @@ import sys
 import argparse
 import re
 from collections import defaultdict
+from pathlib import Path
+
+NOT_EVALUABLE = "NOT_EVALUABLE"
+
+_QUARANTINED_TRUTH_DIR = (
+    Path(__file__).resolve().parent.parent / "truth" / "prjna884016" / "quarantined_legacy"
+)
+
+
+def safe_ratio(numerator, denominator):
+    """Zero-denominator metrics are NOT_EVALUABLE, never a fabricated 0.0/1.0 (M7-P0b)."""
+    if denominator == 0:
+        return NOT_EVALUABLE
+    return numerator / denominator
+
+
+def format_metric(value, spec):
+    """Print the NOT_EVALUABLE sentinel verbatim; never float-format it (M7-P0b)."""
+    if isinstance(value, str):
+        return value
+    return format(value, spec)
+
+
+def reject_quarantined_truth(truth_gd):
+    """Fail closed (exit 2): quarantined PRJNA884016 legacy truth must never be
+    scored as positive truth (M7-P0b). Applies to --truth-gd only; --test-gd is
+    never rejected by this check. Ordinary positive truth (e.g. BL21 curated)
+    passes through untouched."""
+    resolved = Path(truth_gd).resolve()
+    quarantined = "invalid_legacy" in resolved.name or _QUARANTINED_TRUTH_DIR.resolve() in resolved.parents
+    if not quarantined:
+        return
+    print(
+        f"ERROR: quarantined truth cannot be used as positive truth: {truth_gd} "
+        "(PRJNA884016 quarantined_legacy / invalid_legacy, M7-P0b)",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 
 def parse_gd(filepath, include_rejected=False):
@@ -282,13 +320,17 @@ def match_mutations(test_records, truth_records, jc_tol_bp=5):
     overall_fp = sum(v["fp"] for v in results.values())
     overall_fn = sum(v["fn"] for v in results.values())
 
-    precision = overall_tp / (overall_tp + overall_fp) if (overall_tp + overall_fp) > 0 else 1.0
-    recall = overall_tp / (overall_tp + overall_fn) if (overall_tp + overall_fn) > 0 else 1.0
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    precision = safe_ratio(overall_tp, overall_tp + overall_fp)
+    recall = safe_ratio(overall_tp, overall_tp + overall_fn)
+    if isinstance(precision, str) or isinstance(recall, str):
+        # F1 is undefined when either parent metric has a zero denominator (M7-P0b).
+        f1 = NOT_EVALUABLE
+    else:
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
 
-    bp_exact = total_exact_bp / total_tested_bp if total_tested_bp > 0 else 1.0
-    bp_1bp = total_1bp / total_tested_bp if total_tested_bp > 0 else 1.0
-    bp_5bp = total_5bp / total_tested_bp if total_tested_bp > 0 else 1.0
+    bp_exact = safe_ratio(total_exact_bp, total_tested_bp)
+    bp_1bp = safe_ratio(total_1bp, total_tested_bp)
+    bp_5bp = safe_ratio(total_5bp, total_tested_bp)
 
     return {
         "by_type": results,
@@ -313,6 +355,8 @@ def main():
     parser.add_argument("--include-rejected", action="store_true", help="Include records with reject= attributes (default: False)")
     args = parser.parse_args()
 
+    reject_quarantined_truth(args.truth_gd)
+
     test_records = parse_gd(args.test_gd, include_rejected=args.include_rejected)
     truth_records = parse_gd(args.truth_gd, include_rejected=args.include_rejected)
 
@@ -325,36 +369,42 @@ def main():
 
     if args.tsv:
         print("metric\tvalue")
-        print(f"variant_precision\t{metrics['variant_precision']:.4f}")
-        print(f"variant_recall\t{metrics['variant_recall']:.4f}")
-        print(f"variant_f1\t{metrics['variant_f1']:.4f}")
+        print(f"variant_precision\t{format_metric(metrics['variant_precision'], '.4f')}")
+        print(f"variant_recall\t{format_metric(metrics['variant_recall'], '.4f')}")
+        print(f"variant_f1\t{format_metric(metrics['variant_f1'], '.4f')}")
         for mtype in ("SNP", "INS", "DEL", "MOB", "JC", "MC"):
             d = metrics["by_type"].get(mtype, {"tp": 0, "fp": 0, "fn": 0})
             tp, fp, fn = d["tp"], d["fp"], d["fn"]
-            prec = tp / (tp + fp) if (tp + fp) > 0 else 1.0
-            rec = tp / (tp + fn) if (tp + fn) > 0 else 1.0
+            prec = safe_ratio(tp, tp + fp)
+            rec = safe_ratio(tp, tp + fn)
             print(f"{mtype}_tp\t{tp}")
             print(f"{mtype}_fp\t{fp}")
             print(f"{mtype}_fn\t{fn}")
-            print(f"{mtype}_precision\t{prec:.4f}")
-            print(f"{mtype}_recall\t{rec:.4f}")
-        print(f"breakpoint_exact_fraction\t{metrics['breakpoint_exact_fraction']:.4f}")
-        print(f"breakpoint_within_1bp\t{metrics['breakpoint_within_1bp']:.4f}")
-        print(f"breakpoint_within_5bp\t{metrics['breakpoint_within_5bp']:.4f}")
+            print(f"{mtype}_precision\t{format_metric(prec, '.4f')}")
+            print(f"{mtype}_recall\t{format_metric(rec, '.4f')}")
+        print(f"breakpoint_exact_fraction\t{format_metric(metrics['breakpoint_exact_fraction'], '.4f')}")
+        print(f"breakpoint_within_1bp\t{format_metric(metrics['breakpoint_within_1bp'], '.4f')}")
+        print(f"breakpoint_within_5bp\t{format_metric(metrics['breakpoint_within_5bp'], '.4f')}")
         print(f"MC_fp_explained_by_un\t{mc_fp_explained_by_un}")
         print(f"MC_fp_total\t{mc_fp_total}")
     else:
+        p_str = format_metric(metrics["variant_precision"], ".2%")
+        r_str = format_metric(metrics["variant_recall"], ".2%")
         print("=== Variant Comparison Summary ===")
-        print(f"Precision: {metrics['variant_precision']:.2%} ({metrics['overall_tp']}/{(metrics['overall_tp'] + metrics['overall_fp'])})")
-        print(f"Recall:    {metrics['variant_recall']:.2%} ({metrics['overall_tp']}/{(metrics['overall_tp'] + metrics['overall_fn'])})")
-        print(f"F1 Score:  {metrics['variant_f1']:.4f}")
-        print(f"Breakpoint accuracy: Exact={metrics['breakpoint_exact_fraction']:.1%}, <=1bp={metrics['breakpoint_within_1bp']:.1%}, <=5bp={metrics['breakpoint_within_5bp']:.1%}")
+        print(f"Precision: {p_str} ({metrics['overall_tp']}/{(metrics['overall_tp'] + metrics['overall_fp'])})")
+        print(f"Recall:    {r_str} ({metrics['overall_tp']}/{(metrics['overall_tp'] + metrics['overall_fn'])})")
+        print(f"F1 Score:  {format_metric(metrics['variant_f1'], '.4f')}")
+        print(
+            f"Breakpoint accuracy: Exact={format_metric(metrics['breakpoint_exact_fraction'], '.1%')}, "
+            f"<=1bp={format_metric(metrics['breakpoint_within_1bp'], '.1%')}, "
+            f"<=5bp={format_metric(metrics['breakpoint_within_5bp'], '.1%')}"
+        )
         print("\nBreakdown by Mutation Type:")
         for mtype, d in sorted(metrics["by_type"].items()):
             tp, fp, fn = d["tp"], d["fp"], d["fn"]
-            prec = tp / (tp + fp) if (tp + fp) > 0 else 1.0
-            rec = tp / (tp + fn) if (tp + fn) > 0 else 1.0
-            print(f"  {mtype:5s} | TP: {tp:3d} | FP: {fp:3d} | FN: {fn:3d} | Prec: {prec:.1%} | Rec: {rec:.1%}")
+            prec = safe_ratio(tp, tp + fp)
+            rec = safe_ratio(tp, tp + fn)
+            print(f"  {mtype:5s} | TP: {tp:3d} | FP: {fp:3d} | FN: {fn:3d} | Prec: {format_metric(prec, '.1%')} | Rec: {format_metric(rec, '.1%')}")
         if mc_fp_total > 0:
             print(f"\nMC false positives explained by breseq UN (ambiguous) regions: {mc_fp_explained_by_un}/{mc_fp_total}")
 

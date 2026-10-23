@@ -11,12 +11,12 @@ benchmark/real_world/
 │   ├── bl21_user.tsv          # Real Cas9-edited BL21 clones (B21_2_1, B21_3_1, B21_4_1)
 │   ├── prjna1088182.tsv       # Widney/Copley 2024 deep-resequencing cohort
 │   ├── prjna1088182_cohort.tsv # Curated 25-sample cohort declaration
-│   ├── prjna884016.tsv        # IS/transposon structural ground truth cohort
+│   ├── prjna884016.tsv        # SY22A1/SY221 zero-difference concordance control (historical 4 MOB / 7 JC quarantined)
 │   └── rel606.tsv             # REL606 long-term evolution & mobile element truth
 ├── truth/
 │   └── bl21_curated_truth.tsv # Curated breakpoints and SV annotations for BL21 clones
 │   ├── prjna1088182_publication_truth.tsv # Reported, not WGS-measured, variants
-│   └── prjna884016/            # Assembly-derived GD/MOB/JC structural truth
+│   └── prjna884016/            # Zero-difference concordance control truth (0 chromosomal variants); historical 4 MOB / 7 JC quarantined in quarantined_legacy/; positive chromosomal sensitivity NOT_EVALUABLE
 ├── scripts/
 │   ├── download_dataset.sh    # SRA fetch utility for public accession datasets
 │   ├── run_prokadiff.sh       # Runner for ProkaDiff differential audit

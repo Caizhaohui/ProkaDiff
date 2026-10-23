@@ -8,6 +8,28 @@ Computes MOB precision, recall, coordinate error, and TSD concordance.
 import sys
 import argparse
 from collections import defaultdict
+from pathlib import Path
+
+_QUARANTINED_TRUTH_DIR = (
+    Path(__file__).resolve().parent.parent / "truth" / "prjna884016" / "quarantined_legacy"
+)
+
+
+def reject_quarantined_truth(truth_gd):
+    """Fail closed (exit 2): quarantined PRJNA884016 legacy truth must never be
+    loaded as positive truth (M7-P0b). Applies to --truth-gd only; --test-gd is
+    never rejected by this check. Ordinary positive truth (e.g. BL21 curated)
+    passes through untouched."""
+    resolved = Path(truth_gd).resolve()
+    quarantined = "invalid_legacy" in resolved.name or _QUARANTINED_TRUTH_DIR.resolve() in resolved.parents
+    if not quarantined:
+        return
+    print(
+        f"ERROR: quarantined truth cannot be used as positive truth: {truth_gd} "
+        "(PRJNA884016 quarantined_legacy / invalid_legacy, M7-P0b)",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 
 def parse_mob_records(gd_path):
@@ -107,6 +129,8 @@ def main():
     parser.add_argument("--tolerance", type=int, default=10, help="Coordinate tolerance in bp (default: 10)")
     parser.add_argument("--tsv", action="store_true", help="Output TSV format")
     args = parser.parse_args()
+
+    reject_quarantined_truth(args.truth_gd)
 
     test_mobs = parse_mob_records(args.test_gd)
     truth_mobs = parse_mob_records(args.truth_gd)
