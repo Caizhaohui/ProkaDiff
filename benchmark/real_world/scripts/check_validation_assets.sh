@@ -36,8 +36,10 @@ awk -F '\t' 'NR > 1 && $1 == "prjna884016" {
 
 test "$(awk 'END { print NR - 1 }' benchmark/real_world/manifests/prjna1088182_cohort.tsv)" -eq 25
 test "$(awk 'END { print NR - 1 }' benchmark/real_world/truth/prjna1088182_publication_truth.tsv)" -eq 28
-test "$(awk '$1 == "MOB" { count += 1 } END { print count + 0 }' benchmark/real_world/truth/prjna884016/SY22A1_truth.gd)" -eq 4
-test "$(awk '$1 == "JC" { count += 1 } END { print count + 0 }' benchmark/real_world/truth/prjna884016/SY22A1_truth.gd)" -eq 7
+test "$(awk '$1 == "MOB" { count += 1 } END { print count + 0 }' benchmark/real_world/truth/prjna884016/SY22A1_truth.gd)" -eq 0
+test "$(awk '$1 == "JC" { count += 1 } END { print count + 0 }' benchmark/real_world/truth/prjna884016/SY22A1_truth.gd)" -eq 0
+test "$(awk 'NR > 1 { count += 1 } END { print count + 0 }' benchmark/real_world/truth/prjna884016/mob_truth.tsv)" -eq 0
+test "$(awk 'NR > 1 { count += 1 } END { print count + 0 }' benchmark/real_world/truth/prjna884016/jc_truth.tsv)" -eq 0
 
 while IFS= read -r asset; do
     if git check-ignore -q "$asset"; then

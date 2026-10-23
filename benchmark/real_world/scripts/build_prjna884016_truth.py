@@ -2,185 +2,169 @@
 """
 benchmark/real_world/scripts/build_prjna884016_truth.py
 
-Parses MUMmer dnadiff / delta output for SY22A1 vs SY221 reference assembly
-and generates:
-1. benchmark/real_world/truth/prjna884016/SY22A1_truth.gd
-2. benchmark/real_world/truth/prjna884016/mob_truth.tsv
-3. benchmark/real_world/truth/prjna884016/jc_truth.tsv
-4. benchmark/real_world/truth/prjna884016/STRUCTURAL_DISCREPANCIES.md
+QUARANTINED AND DISABLED FOR AUTHORITATIVE VALIDATION (M7-P0a).
+
+This generator was previously used to construct positive MOB/JC truth for SY22A1.
+Forensic audit in M7-P0 proved that:
+1. Complete circular assemblies CP107005.1 and CP106998.1 are 100.000% bit-identical
+   across all 4,687,476 bp (0 chromosomal mutations).
+2. The historical 4 MOB + 7 JC calls were artifacts of a 194.7 kb local file truncation
+   (4,492,785 bp vs expected 4,687,476 bp).
+3. Transposition events in Sheng et al. (2023) occurred exclusively on the cas-expression
+   plasmid, which was never deposited in NCBI.
+
+This script now enforces fail-closed integrity checks and refuses to generate
+unsupported positive structural truth from approximate duplication lengths or truncated contigs.
 """
 
-import os
+from __future__ import annotations
+
+import argparse
+import hashlib
+import sys
 from pathlib import Path
+from typing import Final
 
-REPO_DIR = Path(__file__).resolve().parent.parent.parent.parent
-TRUTH_DIR = REPO_DIR / "benchmark" / "real_world" / "truth" / "prjna884016"
-RESULTS_DIR = REPO_DIR / "benchmark" / "real_world" / "results" / "prjna884016"
-RDIFF_PATH = TRUTH_DIR / "SY22A1_vs_SY221.rdiff"
+CANONICAL_LENGTH: Final[int] = 4687476
+CANONICAL_SEQ_SHA256: Final[str] = "524449dac020a114fbb372aa453bc6d6a3fb962dd2489407ea2107cc115e7e1a"
+EXPECTED_REF_ACC: Final[str] = "CP106998.1"
+EXPECTED_MUT_ACC: Final[str] = "CP107005.1"
 
-TRUTH_DIR.mkdir(parents=True, exist_ok=True)
-RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Parse rdiff entries
-events = []
-with open(RDIFF_PATH, "r") as f:
-    for line in f:
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split("\t")
-        if len(parts) >= 5:
-            seq_id = parts[0]
-            feature = parts[1]
-            start = int(parts[2])
-            end = int(parts[3])
-            length = int(parts[4])
-            events.append({
-                "seq_id": seq_id,
-                "feature": feature,
-                "start": start,
-                "end": end,
-                "length": length
-            })
+class TruthGeneratorError(Exception):
+    """Base error for truth generator integrity violations."""
 
-print(f"Parsed {len(events)} structural events from assembly alignment.")
 
-# Identify IS insertions and junctions
-# In E. coli, IS1 is ~768 bp, IS10 is ~1329 bp
-gd_lines = [
-    "#=GENOMEDIFF",
-    "#=TITLE\tPRJNA884016 SY22A1 Assembly Truth",
-    "#=AUTHOR\tProkaDiff Phase E Orthogonal Validator",
-]
+class AssemblyTruncationError(TruthGeneratorError):
+    """Raised when an assembly contig is truncated or missing terminal sequences."""
 
-mob_records = []
-jc_records = []
-sv_records = []
 
-id_counter = 1
+class SequenceChecksumMismatchError(TruthGeneratorError):
+    """Raised when sequence checksum does not match canonical NCBI record."""
 
-for ev in events:
-    seq_id = ev["seq_id"]
-    length = ev["length"]
-    start = ev["start"]
-    end = ev["end"]
-    feat = ev["feature"]
 
-    # Check for IS insertions
-    if feat == "DUP":
-        if 760 <= length <= 780:
-            element = "IS1"
-            gd_lines.append(f"MOB\t{id_counter}\t0\t{seq_id}\t{start}\t{element}\t+\t9")
-            mob_records.append({
-                "element": element,
-                "family": "IS1",
-                "pos": start,
-                "end": end,
-                "length": length,
-                "tsd": "9bp",
-                "orientation": "+",
-            })
-            id_counter += 1
-        elif 1320 <= length <= 1340:
-            element = "IS10"
-            gd_lines.append(f"MOB\t{id_counter}\t0\t{seq_id}\t{start}\t{element}\t+\t9")
-            mob_records.append({
-                "element": element,
-                "family": "IS4", # IS10 belongs to IS4 family
-                "pos": start,
-                "end": end,
-                "length": length,
-                "tsd": "9bp",
-                "orientation": "+",
-            })
-            id_counter += 1
-        else:
-            sv_records.append(ev)
-    elif feat == "BRK":
-        # Breakpoint junction
-        gd_lines.append(f"JC\t{id_counter}\t0\t{seq_id}\t{start}\t-1\t{seq_id}\t{end}\t1\t0")
-        jc_records.append({
-            "seq_id1": seq_id,
-            "pos1": start,
-            "dir1": "-1",
-            "seq_id2": seq_id,
-            "pos2": end,
-            "dir2": "1",
-            "overlap": 0,
-            "span_bp": length,
-        })
-        id_counter += 1
-        sv_records.append(ev)
+class RepliconMismatchError(TruthGeneratorError):
+    """Raised when replicon header does not match expected accession."""
 
-# Write truth.gd
-truth_gd_path = TRUTH_DIR / "SY22A1_truth.gd"
-with open(truth_gd_path, "w") as f:
-    f.write("\n".join(gd_lines) + "\n")
 
-print(f"Wrote truth GD: {truth_gd_path} ({id_counter-1} records)")
+class UnsupportedHeuristicError(TruthGeneratorError):
+    """Raised when an algorithm attempts to infer IS family or TSD from segment length."""
 
-# Write mob_truth.tsv
-mob_tsv_path = TRUTH_DIR / "mob_truth.tsv"
-with open(mob_tsv_path, "w") as f:
-    f.write("sample\telement\tfamily\tinsertion_coordinate\tlength_bp\ttsd\torientation\tsource_assembly\n")
-    for m in mob_records:
-        f.write(f"SY22A1\t{m['element']}\t{m['family']}\t{m['pos']}\t{m['length']}\t{m['tsd']}\t{m['orientation']}\tGCA_030345635.1\n")
 
-print(f"Wrote MOB truth: {mob_tsv_path} ({len(mob_records)} insertions)")
+class PositiveTruthProhibitedError(TruthGeneratorError):
+    """Raised when attempting to emit positive variants for 0-difference assemblies."""
 
-# Write jc_truth.tsv
-jc_tsv_path = TRUTH_DIR / "jc_truth.tsv"
-with open(jc_tsv_path, "w") as f:
-    f.write("sample\tseq_id1\tpos1\tdir1\tseq_id2\tpos2\tdir2\tspan_bp\n")
-    for j in jc_records:
-        f.write(f"SY22A1\t{j['seq_id1']}\t{j['pos1']}\t{j['dir1']}\t{j['seq_id2']}\t{j['pos2']}\t{j['dir2']}\t{j['span_bp']}\n")
 
-print(f"Wrote JC truth: {jc_tsv_path} ({len(jc_records)} junctions)")
+def validate_assembly_fasta(path: Path, expected_acc: str) -> tuple[str, str, int]:
+    """
+    Validates assembly FASTA completeness, replicon accession, and normalized checksum.
+    Returns (header, sequence, length).
+    """
+    if not path.is_file():
+        raise FileNotFoundError(f"Assembly FASTA not found: {path}")
 
-# Write STRUCTURAL_DISCREPANCIES.md as required by §38
-discrepancies_md = RESULTS_DIR / "STRUCTURAL_DISCREPANCIES.md"
-with open(discrepancies_md, "w") as f:
-    f.write("""# Phase E: PRJNA884016 Structural Discrepancy & Assembly Truth Analysis
+    with path.open("r", encoding="ascii", errors="replace") as handle:
+        header = handle.readline().strip()
+        if not header.startswith(">"):
+            raise RepliconMismatchError(f"Missing FASTA header in {path}")
+        if expected_acc not in header:
+            raise RepliconMismatchError(f"Header '{header}' does not contain expected accession '{expected_acc}'")
 
-## Overview
+        seq = "".join(line.strip() for line in handle if not line.startswith(">"))
 
-In accordance with Phase E (§31–38) of the ProkaDiff Validation Sprint, ground truth for structural variations (SV), mobile element insertions (MOB), and new junctions (JC) is derived from high-quality, long-read-resolved **complete finished assemblies** rather than solely from short-read heuristics or breseq oracle.
+    length = len(seq)
+    if length != CANONICAL_LENGTH:
+        raise AssemblyTruncationError(
+            f"Contig length {length} bp in {path} does not match canonical length {CANONICAL_LENGTH} bp. "
+            f"Missing {CANONICAL_LENGTH - length} bp terminal sequence; truncated assemblies cannot generate truth."
+        )
 
-- **Reference Assembly**: *E. coli* strain SY221 (`CP106998.1`, `GCA_030345495.1`, 4,687,476 bp, complete circular chromosome).
-- **Mutant Assembly**: *E. coli* strain SY22A1 (`CP107005.1`, `GCA_030345635.1`, 4,492,785 bp, complete circular chromosome).
+    seq_hash = hashlib.sha256(seq.upper().encode("ascii")).hexdigest()
+    if seq_hash != CANONICAL_SEQ_SHA256:
+        raise SequenceChecksumMismatchError(
+            f"Sequence SHA256 {seq_hash} in {path} does not match canonical checksum {CANONICAL_SEQ_SHA256}."
+        )
 
----
+    return header, seq, length
 
-## 1. Assembly-Derived Ground Truth Summary
 
-- **Total Base Alignment**: 100.0% of mutant genome aligns to reference with 100.00% sequence identity.
-- **SNPs / Small Indels**: **0 SNPs, 0 Small Indels**.
-- **Mobile Element (MOB) Transpositions**:
-  - `IS1` insertion (769 bp duplication) at coordinate `4,499,357 – 4,500,125`.
-  - `IS10` insertion (1,333 bp duplication) at coordinate `4,630,529 – 4,631,861`.
-- **Large Rearrangements & Junctions**:
-  - 8 confirmed breakpoint junctions spanning deleted segments in the non-essential regions.
+def forbid_heuristic_mob_assignment(feature: str, length: int) -> None:
+    """
+    Fail-closed guard: No inferred event may be promoted to validated truth solely
+    from approximate segment length.
+    """
+    if feature == "DUP":
+        if 700 <= length <= 850 or 1200 <= length <= 1450:
+            raise UnsupportedHeuristicError(
+                f"Attempted to assign MOB family from approximate segment length ({length} bp). "
+                "Inferring IS family and fixed TSD length solely from approximate duplication length is strictly prohibited."
+            )
 
----
 
-## 2. Structural Acceptance Metrics (§36–37)
+def verify_negative_truth(ref_seq: str, mut_seq: str) -> None:
+    """
+    Verifies that the assemblies are bit-identical and forbids emitting positive truth.
+    """
+    if ref_seq == mut_seq:
+        # Assemblies are 100.000% identical: 0 chromosomal variants
+        return
+    raise TruthGeneratorError("Unexpected sequence mismatch between canonical reference and mutant assemblies.")
 
-| Metric Category | Target Standard | Assembly Truth Result | Status |
-| :--- | :---: | :---: | :---: |
-| **MOB Precision** | $\ge 90\%$ | **100.0%** | PASS |
-| **MOB Recall** | $\ge 90\%$ | **100.0%** | PASS |
-| **Median Coordinate Error** | $\le 5$ bp | **0.0 bp** | PASS |
-| **Exact Breakpoint Fraction** | $\ge 80\%$ | **100.0%** | PASS |
-| **Within 5 bp Fraction** | $100\%$ | **100.0%** | PASS |
-| **JC Precision** | $\ge 70\%$ | **100.0%** | PASS |
-| **JC Recall** | $\ge 80\%$ | **100.0%** | PASS |
 
----
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Fail-closed truth integrity validator for PRJNA884016 (M7-P0a quarantine)"
+    )
+    parser.add_argument(
+        "--check-integrity",
+        action="store_true",
+        help="Run fail-closed integrity checks on assembly files",
+    )
+    parser.add_argument(
+        "--ref-fasta",
+        type=Path,
+        default=Path("data/prjna884016/assemblies/SY221_ref.fna"),
+        help="Path to reference FASTA (CP106998.1)",
+    )
+    parser.add_argument(
+        "--mut-fasta",
+        type=Path,
+        default=Path("data/prjna884016/assemblies/SY22A1.fna"),
+        help="Path to mutant FASTA (CP107005.1)",
+    )
+    args = parser.parse_args()
 
-## 3. Discrepancy & Repeat Context Attribution (§38)
+    # Fail closed by default if invoked without explicit check
+    if not args.check_integrity:
+        sys.stderr.write(
+            "ERROR: build_prjna884016_truth.py is QUARANTINED and DISABLED for authoritative validation.\n"
+            "Positive structural truth (4 MOB + 7 JC) is invalidated as a local file truncation artifact.\n"
+            "Official chromosome assemblies CP107005.1 and CP106998.1 are 100.000% bit-identical.\n"
+            "Use --check-integrity to run fail-closed verification.\n"
+        )
+        sys.exit(1)
 
-- All observed structural variations correspond to genuine biological transpositions of endogenous mobile elements (IS1 and IS10) and associated deletions.
-- Short-read alignment false junctions in high-copy ribosomal or transposon flanks are filtered by ProkaDiff's P1-3 depth-aware frequency filter, preventing false positive inflation.
-""")
+    print("Running fail-closed assembly integrity checks...")
+    try:
+        ref_header, ref_seq, ref_len = validate_assembly_fasta(args.ref_fasta, EXPECTED_REF_ACC)
+        print(f"Reference: {ref_header[:50]}... ({ref_len} bp) [PASS]")
+    except Exception as exc:
+        print(f"Reference validation failed: {exc}")
+        sys.exit(2)
 
-print(f"Wrote structural discrepancies report: {discrepancies_md}")
+    try:
+        mut_header, mut_seq, mut_len = validate_assembly_fasta(args.mut_fasta, EXPECTED_MUT_ACC)
+        print(f"Mutant: {mut_header[:50]}... ({mut_len} bp) [PASS]")
+    except AssemblyTruncationError as exc:
+        print(f"FAIL-CLOSED: Truncated mutant assembly rejected: {exc}")
+        sys.exit(3)
+    except Exception as exc:
+        print(f"Mutant validation failed: {exc}")
+        sys.exit(4)
+
+    verify_negative_truth(ref_seq, mut_seq)
+    print("Zero-difference chromosomal identity verified. Positive truth generation is prohibited.")
+
+
+if __name__ == "__main__":
+    main()

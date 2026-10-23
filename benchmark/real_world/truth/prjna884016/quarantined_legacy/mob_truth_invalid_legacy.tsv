@@ -1,0 +1,5 @@
+sample	element	family	insertion_coordinate	length_bp	tsd	orientation	source_assembly
+SY22A1	IS1	IS1	4499357	769	9bp	+	GCA_030345635.1
+SY22A1	IS1	IS1	4499358	775	9bp	+	GCA_030345635.1
+SY22A1	IS10	IS4	4630529	1333	9bp	+	GCA_030345635.1
+SY22A1	IS10	IS4	4630531	1336	9bp	+	GCA_030345635.1

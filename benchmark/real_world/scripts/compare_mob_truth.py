@@ -67,9 +67,26 @@ def compare_mob(test_mobs, truth_mobs, tolerance=10):
 
     fp = len(test_mobs) - tp
     fn = len(truth_mobs) - tp
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 1.0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 1.0
-    median_error = sorted(errors)[len(errors) // 2] if errors else 0.0
+
+    if (tp + fp) > 0:
+        precision = tp / (tp + fp)
+    else:
+        precision = "NOT_EVALUABLE"
+
+    if (tp + fn) > 0:
+        recall = tp / (tp + fn)
+    else:
+        # Zero verified positive events in truth: recall is NOT_EVALUABLE (§6, M7-P0a)
+        recall = "NOT_EVALUABLE"
+
+    if tp > 0:
+        exact_fraction = exact_count / tp
+        within_5bp_fraction = within_5bp_count / tp
+        median_error = sorted(errors)[len(errors) // 2] if errors else 0.0
+    else:
+        exact_fraction = "NOT_EVALUABLE"
+        within_5bp_fraction = "NOT_EVALUABLE"
+        median_error = "NOT_EVALUABLE"
 
     return {
         "tp": tp,
@@ -77,8 +94,8 @@ def compare_mob(test_mobs, truth_mobs, tolerance=10):
         "fn": fn,
         "precision": precision,
         "recall": recall,
-        "exact_fraction": exact_count / tp if tp > 0 else 1.0,
-        "within_5bp_fraction": within_5bp_count / tp if tp > 0 else 1.0,
+        "exact_fraction": exact_fraction,
+        "within_5bp_fraction": within_5bp_fraction,
         "median_error_bp": median_error,
     }
 
@@ -105,11 +122,16 @@ def main():
     else:
         print("=== MOB / IS Insertion Evaluation ===")
         print(f"TP: {m['tp']} | FP: {m['fp']} | FN: {m['fn']}")
-        print(f"Precision: {m['precision']:.2%}")
-        print(f"Recall:    {m['recall']:.2%}")
-        print(f"Exact Breakpoints: {m['exact_fraction']:.1%}")
-        print(f"Within 5bp:        {m['within_5bp_fraction']:.1%}")
-        print(f"Median Error:      {m['median_error_bp']} bp")
+        p_str = f"{m['precision']:.2%}" if isinstance(m['precision'], (int, float)) else str(m['precision'])
+        r_str = f"{m['recall']:.2%}" if isinstance(m['recall'], (int, float)) else str(m['recall'])
+        ef_str = f"{m['exact_fraction']:.1%}" if isinstance(m['exact_fraction'], (int, float)) else str(m['exact_fraction'])
+        w5_str = f"{m['within_5bp_fraction']:.1%}" if isinstance(m['within_5bp_fraction'], (int, float)) else str(m['within_5bp_fraction'])
+        me_str = f"{m['median_error_bp']} bp" if isinstance(m['median_error_bp'], (int, float)) else str(m['median_error_bp'])
+        print(f"Precision: {p_str}")
+        print(f"Recall:    {r_str}")
+        print(f"Exact Breakpoints: {ef_str}")
+        print(f"Within 5bp:        {w5_str}")
+        print(f"Median Error:      {me_str}")
 
 
 if __name__ == "__main__":
