@@ -3,8 +3,8 @@
 **Document ID:** `M6_CLOSEOUT.md`
 **Repository:** `Caizhaohui/ProkaDiff` (Public GitHub)
 **Git Baseline:** [`c4dc0015e6de43d29479f0334e7a6cab3e89e270`](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff)
-**Proposed Status:** **`CLOSED_WITH_LIMITATIONS — PENDING HUMAN AUTHORIZATION`**
-**Current Milestone State:** `M6 overall: ACTIVE`
+**Proposed Status:** **`CLOSED_WITH_LIMITATIONS — PENDING HUMAN AUTHORIZATION`** (Narrative Closeout Designation)
+**Current Milestone State:** `M6 overall: ACTIVE` (per [DEVELOPMENT_PLAN.md](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff/DEVELOPMENT_PLAN.md))
 **Validation Registry State:** [`benchmark/real_world/VALIDATION_REGISTRY.tsv`](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff/benchmark/real_world/VALIDATION_REGISTRY.tsv) line 6 remains strictly **`PENDING`**
 
 ---
@@ -39,42 +39,54 @@ Crucially, **milestone completion is strictly distinguished from biological vari
 
 ---
 
-## 3. Tier A Reference-Relative Benchmark: Findings & Limitations
+## 3. Tier A: Reference-Relative Publication-Event Recovery
 
-- **Publication Ground Truth Denominator:** 12 unique evaluable substitution alleles documented in Widney & Copley (2024).
-- **Consensus Clonal Recoveries ($\ge 0.75$ AF cutoff):** Exactly **2 / 12** alleles were recovered:
+- **Frozen Definition:** Tier A assesses reference-relative publication-event recovery against published variant lists. Structural breseq comparison belongs to M6-P3c, not to the Tier A truth definition.
+- **Publication Ground Truth Denominator:** Assessed 12 unique eligible publication substitution alleles documented in Widney & Copley (2024).
+- **Exact Consensus Recovery ($\ge 0.75$ AF cutoff):** Exactly **2 / 12** unique publication alleles were recovered:
   - `NC_000913.3:301690 C>T` in `Cas9_1` (`SRR28349244`): ProkaDiff AF = 0.984; breseq AF = 0.984.
   - `NC_000913.3:3536100 G>T` in `Cas9_103` (`SRR28349177`): ProkaDiff AF = 0.992; breseq AF = 0.992.
-- **Uncalled Consensus Alleles (10 / 12):**
+- **Uncalled Published Alleles (10 / 12):**
   - Deep BAM pileup diagnostics in M6-P3a confirmed robust physical read support on both strands for uncalled loci (e.g. Priority-1 loci at depths 59–217).
   - The allele fractions for these variants range between **$0.292$ and $0.691$**, reflecting the pooled multi-colony sequencing design of the source publication.
   - Under ProkaDiff's clonal consensus decision model ($\ge 0.75$ AF), these sub-clonal alleles are unpromoted by design. They do not indicate alignment failure or caller bugs.
+- **Orthogonal Biological Validation:** Orthogonal biological validation remains unavailable. Tier A measures recovery against publication tables, not wet-lab ground truth.
 
 ---
 
-## 4. Tier B Biological-Parent-Relative Verification: Status
+## 4. Tier B: Parent-Relative Genome-Edit Audit
 
+- **Frozen Definition:** Tier B assesses parent-relative genome-edit audit requiring matched starter-strain WGS.
 - **Status:** **`NOT_EVALUABLE`**
-- **Justification:** The source publication (Widney & Copley, 2024) did not deposit parental strain WGS runs in public repositories (`NO_PUBLIC_RUN_FOUND`). In accordance with AGENTS.md Rule 6 (mandatory starter WGS), parent-relative differential subtraction could not be performed. Tier B is permanently recorded as `NOT_EVALUABLE` for PRJNA1088182.
+- **Justification:** Tier B is `NOT_EVALUABLE` because verified biological-parent WGS is unavailable. The source publication (Widney & Copley, 2024) did not deposit parental strain WGS runs in public repositories (`NO_PUBLIC_RUN_FOUND`). In accordance with AGENTS.md Rule 6 (mandatory starter WGS), parent-relative differential subtraction could not be performed.
+- **Contractual Relationship:** Tier B being `NOT_EVALUABLE` does not block or fail Tier A publication-event recovery.
 
 ---
 
-## 5. Structural Variant Corroboration: Findings & Limitations
+## 5. Structural Variant Corroboration (M6-P3c): Findings & Limitations
 
-Across the 5-sample Benchmark Quintet (`SRR28349173`, `SRR28349176`, `SRR28349244`, `SRR28349231`, `SRR28349226`), evaluated against `breseq 0.40.2` on Slurm `qcpu_18i`:
+Across the 5-sample Benchmark Quintet (`SRR28349173`, `SRR28349176`, `SRR28349244`, `SRR28349231`, `SRR28349226`), evaluated against `breseq 0.40.2` on Slurm `qcpu_18i`. Structural breseq comparison is an independent computational comparator under M6-P3c, not a Tier A publication truth definition and not wet-lab biological truth:
 
-1. **Bijective Junction Accounting (1,319 Accounting Rows):**
+1. **Junction Accounting (1,319 Bidirectional Reconciliation Accounting Rows):**
    - ProkaDiff emitted **806 JC records**; breseq emitted **639 JC evidence records**.
-   - All records are partitioned into 6 frozen, mutually exclusive accounting categories:
-     - **`EXACT_MATCH` ($D = 0$ bp):** 91 pairs.
-     - **`NEAR_MATCH_WITHIN_TOLERANCE` ($0 < \max(d_1, d_2) \le 5$ bp):** 10 pairs.
-     - **Dimension 3 Corroborated Total:** Exactly **101 pairs** ($91 + 10 = 101$).
-     - **`REPEAT_FAMILY_MATCH` (Case 6 paralogous repeat breakends):** 15 pairs.
-     - **`NEAR_MISS_BOUNDARY` ($6 \le \max(d_1, d_2) \le 10$ bp, microhomology slips):** 10 pairs (Dimension 3 `NOT_CORROBORATED`).
-     - **`BRESEQ_ONLY_REJECTED`:** 513 records (suppressed by internal breseq coverage/frequency cutoffs).
-     - **`PROKADIFF_ONLY`:** 680 records (sub-threshold candidates and rRNA operon chimeras).
-   - *Sum Conservation:* ProkaDiff $= 91 + 10 + 15 + 10 + 680 = 806$; breseq $= 91 + 10 + 15 + 10 + 513 = 639$.
-   - *Epistemic Note:* These 1,319 rows represent computational edge accounting pairings between callers, **not** 1,319 validated biological mutations.
+   - These records yield exactly **1,319 bidirectional reconciliation accounting rows**, comprising:
+     - **126 paired comparison rows**
+     - **1,193 one-sided accounting rows**
+   - Partitioned across the 6 frozen, mutually exclusive accounting categories:
+     - **`EXACT_MATCH` ($D = 0$ bp):** 91 paired comparison rows (91 ProkaDiff JCs, 91 breseq JCs).
+     - **`NEAR_MATCH_WITHIN_TOLERANCE` ($0 < \max(d_1, d_2) \le 5$ bp):** 10 paired comparison rows (10 ProkaDiff JCs, 10 breseq JCs).
+     - **Dimension 3 Corroborated Subtotal:** Exactly **101 paired comparison rows** ($91 + 10 = 101$).
+     - **`REPEAT_FAMILY_MATCH` (Case 6 paralogous repeat breakends):** 15 paired comparison rows (15 ProkaDiff JCs, 15 breseq JCs).
+     - **`NEAR_MISS_BOUNDARY` ($6 \le \max(d_1, d_2) \le 10$ bp, microhomology slips):** 10 paired comparison rows (10 ProkaDiff JCs, 10 breseq JCs; Dimension 3 `NOT_CORROBORATED`).
+     - **`BRESEQ_ONLY_REJECTED`:** 513 one-sided accounting rows (0 ProkaDiff JCs, 513 breseq JCs; suppressed by internal breseq coverage/frequency cutoffs).
+     - **`PROKADIFF_ONLY`:** 680 one-sided accounting rows (680 ProkaDiff JCs, 0 breseq JCs; sub-threshold candidates and rRNA operon chimeras).
+   - *Sum Conservation Invariant:*
+     - Paired comparison rows: $91 + 10 + 15 + 10 = 126$.
+     - One-sided accounting rows: $513 + 680 = 1,193$.
+     - Total accounting rows: $126 + 1,193 = 1,319$.
+     - ProkaDiff record sum: $126 + 680 = 806$.
+     - breseq record sum: $126 + 513 = 639$.
+   - *Epistemic Invariant:* These 1,319 rows represent bidirectional computational reconciliation accounting rows between callers, **not** 1,319 matched graph edges, and **not** 1,319 biological structural events.
 2. **Decoupled MOB Concordance:**
    - **`BRESEQ_REPORTED_MOB_COVERAGE`:** **7 / 7 (100.0%)**.
    - **`PROKADIFF_MOB_COMPARATOR_AGREEMENT`:** **7 / 8 (87.5%)**.
@@ -110,11 +122,14 @@ Across the 5-sample Benchmark Quintet (`SRR28349173`, `SRR28349176`, `SRR2834924
 - **Disposition:** **`MUST REMAIN STRICTLY PENDING`**
 - Line 6 of [`benchmark/real_world/VALIDATION_REGISTRY.tsv`](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff/benchmark/real_world/VALIDATION_REGISTRY.tsv) (`prjna1088182 cohort_25`) remains **`PENDING`** with all validation boolean flags set to `false`.
 - A benchmark dataset without orthogonal wet-lab truth cannot legitimately be toggled to validated.
+- **Registry Enum Integrity:** The `VALIDATION_REGISTRY.tsv` schema defines only `ACTIVE` and `PENDING`. `CLOSED_WITH_LIMITATIONS` is not an authorized registry enum value and must not be injected into the TSV.
 
 ---
 
-## 9. Proposed Milestone State
+## 9. Proposed Milestone State & Vocabulary Verification
 
-- **Current State:** `M6 overall: ACTIVE`
-- **Proposed Closure Designation:** **`CLOSED_WITH_LIMITATIONS`**
-- **Action:** This record is prepared and ready for closure. Activation of the closed status awaits explicit authorization from the Human Project Owner.
+- **Governance Verification:** In project governance ([AGENTS.md](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff/AGENTS.md) and [DEVELOPMENT_PLAN.md](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff/DEVELOPMENT_PLAN.md)), lifecycle milestone states are `ACTIVE`, `COMPLETE (YYYY-MM-DD)`, or `NOT STARTED`.
+- **Status Nature:** `CLOSED_WITH_LIMITATIONS` is a **narrative closeout designation** and scientific review verdict; it is **not** an authorized registry status enum in `VALIDATION_REGISTRY.tsv` (where valid values are `ACTIVE` and `PENDING`).
+- **Current Milestone State:** `M6 overall: ACTIVE`.
+- **Proposed Narrative Closeout Designation:** **`CLOSED_WITH_LIMITATIONS`**.
+- **Action:** This record is prepared and ready for closure. Formal transition from `ACTIVE` awaits explicit authorization from the Human Project Owner.

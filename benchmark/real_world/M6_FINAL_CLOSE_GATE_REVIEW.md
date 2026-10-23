@@ -40,10 +40,10 @@ In strict accordance with the project multi-agent governance rules, four special
 | :--- | :--- | :--- | :--- | :---: |
 | **M6-P0: Inventory & Contract** | - Map 25 SRA samples.<br>- Audit library layouts.<br>- Assign reference contigs.<br>- Freeze Tier A denominator. | - `prjna1088182_cohort.tsv` maps 25 samples.<br>- `sra-stat -x` audit confirmed `SRR28357593` and `SRR28357592` have 0 mate spots (`BLOCKED_READ_STRUCTURE`).<br>- MG1655 (`NC_000913.3`) & BW25113 (`CP009273.1`) assigned.<br>- Tier A frozen at 12 unique evaluable substitution alleles. | Tier B marked `NOT_EVALUABLE` due to `NO_PUBLIC_RUN_FOUND` for documented parental strains. | **COMPLETE** |
 | **M6-P1: FASTQ Staging & Smoke** | - Stage 23 eligible paired runs.<br>- Compute SHA-256 checksums.<br>- Slurm smoke runs on `qcpu_18i`. | - `prjna1088182_m6_p1a_fastq_provenance.tsv` records exact byte counts and gzip SHA-256 for all 23 runs.<br>- Smoke jobs `2894179` and `2894180` completed with exit code 0. | None. | **COMPLETE** |
-| **M6-P2b: Published Allele Recovery** | - Reference-relative recovery against 12 unique published alleles.<br>- Clonal consensus calling at $\ge 0.75$ AF. | - 2/12 recovered at consensus threshold: `301690 C>T` (AF=0.984 in `SRR28349244`) and `3536100 G>T` (AF=0.992 in `SRR28349177`).<br>- 10/12 uncalled by consensus filter.<br>- Empirical verification that publication libraries represent pooled multi-colony selections. | Clonal consensus caller does not recover sub-clonal alleles diluted in pooled gDNA libraries. | **COMPLETE_WITH_LIMITATIONS** |
+| **M6-P2b: Published Allele Recovery** | - Reference-relative recovery against 12 unique published alleles.<br>- Clonal consensus calling at $\ge 0.75$ AF. | - Exact consensus recovery: 2/12 (`301690 C>T` in `SRR28349244` AF=0.984; `3536100 G>T` in `SRR28349177` AF=0.992).<br>- 10/12 uncalled by consensus filter.<br>- Verified sub-clonal allele fraction in pooled multi-colony libraries. | Clonal consensus caller does not recover sub-clonal alleles diluted in pooled gDNA libraries. | **COMPLETE_WITH_LIMITATIONS** |
 | **M6-P3a: Read-Level Diagnostics** | - Measure raw and caller-shaped read support at Priority-1 loci.<br>- Invariant conservation checks. | - Diagnostic pileups at 4 loci confirm AFs of 0.300, 0.292, 0.644, and 0.691.<br>- All 4 loci show read support on both strands with depths 59–217.<br>- Mathematical invariants hold: raw depth and caller-shaped depth sums balance perfectly. | Validates presence of alleles in reads without claiming caller defect or altering consensus threshold. | **COMPLETE** |
 | **M6-P3b: Reference Repeat Masking** | - A/B experiment: plain FASTA vs GenBank repeat features.<br>- BW25113 triad evaluation (`SRR28349226`, `SRR28349231`, `SRR28349230`). | - 401 repeat features parsed from `CP009273.1.gbk`.<br>- $\Delta\text{SNP} = 0, \Delta\text{DEL} = 0$ (point mutations invariant).<br>- Seven repeat-associated JC candidates were removed by annotation-dependent filtering. Their biological false-positive status remains unverified.<br>- Both callers report 0 MOBs in both conditions. | Eliminates repeat-associated junction candidates without altering point mutation calls or implying that repeat-associated events are automatically artifacts. | **COMPLETE** |
-| **M6-P3c / P3c.3a: Structural Reconciliation** | - Cohort structural comparison across 5 runs.<br>- Kuhn maximum-cardinality bipartite matching.<br>- 6-category bijective accounting of 1,319 edges.<br>- Decoupled MOB concordance. | - All 5 Slurm comparator runs (`breseq 0.40.2`) exited 0 on `qcpu_18i`.<br>- Kuhn bipartite matching proved greedy matching globally optimal ($d_{max} = 1$).<br>- 1,319 edges partitioned: 91 EXACT, 10 NEAR, 15 REPEAT_FAM, 10 NEAR_MISS, 513 BRESEQ_REJ, 680 PK_ONLY.<br>- Dimension 3 corroborated = 101 records.<br>- MOB concordance: breseq coverage = 7/7 (100%), PK agreement = 7/8 (87.5%). | PRJNA1088182 lacks orthogonal PCR/Sanger ground truth; Dimension 4 is strictly `NOT_EVALUABLE`. | **COMPLETE_WITH_LIMITATIONS** |
+| **M6-P3c / P3c.3a: Structural Reconciliation** | - Cohort structural comparison across 5 runs.<br>- Kuhn maximum-cardinality bipartite matching.<br>- 6-category bidirectional accounting of 1,319 rows (126 paired comparison rows, 1,193 one-sided accounting rows).<br>- Decoupled MOB concordance. | - All 5 Slurm comparator runs (`breseq 0.40.2`) exited 0 on `qcpu_18i`.<br>- Kuhn bipartite matching proved greedy matching globally optimal ($d_{max} = 1$).<br>- 1,319 rows partitioned: 91 EXACT, 10 NEAR, 15 REPEAT_FAM, 10 NEAR_MISS, 513 BRESEQ_REJ, 680 PK_ONLY.<br>- Dimension 3 corroborated = 101 paired rows.<br>- MOB concordance: breseq coverage = 7/7 (100%), PK agreement = 7/8 (87.5%). | PRJNA1088182 lacks orthogonal PCR/Sanger ground truth; Dimension 4 is strictly `NOT_EVALUABLE`. | **COMPLETE_WITH_LIMITATIONS** |
 
 ---
 
@@ -57,8 +57,10 @@ In strict accordance with the project multi-agent governance rules, four special
   - *E. coli* BW25113 (`CP009273.1`): Length `4,631,469` bp; normalized uppercase sequence SHA-256: `3761072f8884add5e9facdafc583de5d81a4cf5dbc7e51023ba966f3cf4887ce`.
   - Bit-identity between FASTA and GenBank ORIGIN sequences is 100% verified across both callers.
 
-### 2. Point Mutation Recovery (Consensus vs. Sub-Clonal Dynamics)
-- **Consensus Clonal Recoveries ($\ge 0.75$ AF):** Exactly **2 / 12** published alleles were recovered:
+### 2. Point Mutation Recovery — Tier A: Reference-Relative Publication-Event Recovery
+- **Frozen Contract Definition:** Tier A assesses reference-relative publication-event recovery against published variant lists. Structural breseq comparison belongs to M6-P3c, not to the Tier A truth definition. Tier B (parent-relative genome-edit audit) is permanently `NOT_EVALUABLE` due to missing parental WGS (`NO_PUBLIC_RUN_FOUND`). Orthogonal biological validation remains unavailable.
+- **Publication Ground Truth Denominator:** Assessed 12 unique eligible publication substitution alleles documented in Widney & Copley (2024).
+- **Exact Consensus Recovery ($\ge 0.75$ AF):** Exactly **2 / 12** published alleles were recovered:
   - `NC_000913.3:301690 C>T` in `Cas9_1` (`SRR28349244`): ProkaDiff AF = 0.984; breseq AF = 0.984.
   - `NC_000913.3:3536100 G>T` in `Cas9_103` (`SRR28349177`): ProkaDiff AF = 0.992; breseq AF = 0.992.
 - **Uncalled Published Alleles (10 / 12):** Investigated via deep BAM pileup diagnostics in M6-P3a across Priority-1 loci. Verified that all uncalled alleles have robust physical read support on both strands, but possess sub-clonal allele frequencies ($0.292$ to $0.691$) in pooled multi-colony libraries, placing them below the default consensus threshold.
@@ -67,19 +69,27 @@ In strict accordance with the project multi-agent governance rules, four special
 - Seven repeat-associated JC candidates were removed by annotation-dependent filtering. Their biological false-positive status remains unverified; repeat-associated structural events are not automatically artifacts. Point mutations were preserved perfectly ($\Delta\text{SNP} = 0, \Delta\text{DEL} = 0$).
 - Both callers independently called zero MOB events in BW25113 controls (`BOTH_CALLERS_NO_MOB_REPORTED`), with biological truth strictly preserved as `NOT_EVALUABLE`.
 
-### 4. Cohort Structural Event Accounting
-Across the 5 benchmark runs (`SRR28349173`, `SRR28349176`, `SRR28349244`, `SRR28349231`, `SRR28349226`), all 806 ProkaDiff junction records and 639 breseq junction records were bijectively mapped into exactly 1,319 accounting rows (these counts represent 1,319 computational edge accounting rows across the two callers, not 1,319 biological mutations):
-- **`EXACT_MATCH` ($D = 0$):** 91 pairs.
-- **`NEAR_MATCH_WITHIN_TOLERANCE` ($0 < \max(d_1, d_2) \le 5$ bp):** 10 pairs.
-- **Total Dimension 3 Corroborated:** Exactly **101 pairs** ($91 + 10 = 101$).
-- **`REPEAT_FAMILY_MATCH` (Case 6 paralogous repeat breakends):** 15 pairs.
-- **`NEAR_MISS_BOUNDARY` ($6 \le \max(d_1, d_2) \le 10$ bp, microhomology slips):** 10 pairs (Dimension 3 `NOT_CORROBORATED`).
-- **`BRESEQ_ONLY_REJECTED`:** 513 records (suppressed by internal breseq coverage/frequency cutoffs).
-- **`PROKADIFF_ONLY`:** 680 records (sub-threshold candidates and rRNA operon chimeras).
+### 4. Cohort Structural Event Accounting (M6-P3c Computational Corroborator)
+Across the 5 benchmark runs (`SRR28349173`, `SRR28349176`, `SRR28349244`, `SRR28349231`, `SRR28349226`), all 806 ProkaDiff junction records and 639 breseq junction records were reconciled into exactly **1,319 bidirectional reconciliation accounting rows**, comprising:
+- **126 paired comparison rows**
+- **1,193 one-sided accounting rows**
+
+Preserving the original 6 frozen, mutually exclusive accounting categories:
+- **`EXACT_MATCH` ($D = 0$):** 91 paired comparison rows (91 ProkaDiff JCs, 91 breseq JCs).
+- **`NEAR_MATCH_WITHIN_TOLERANCE` ($0 < \max(d_1, d_2) \le 5$ bp):** 10 paired comparison rows (10 ProkaDiff JCs, 10 breseq JCs).
+- **Dimension 3 Corroborated Subtotal:** Exactly **101 paired comparison rows** ($91 + 10 = 101$).
+- **`REPEAT_FAMILY_MATCH` (Case 6 paralogous repeat breakends):** 15 paired comparison rows (15 ProkaDiff JCs, 15 breseq JCs).
+- **`NEAR_MISS_BOUNDARY` ($6 \le \max(d_1, d_2) \le 10$ bp, microhomology slips):** 10 paired comparison rows (10 ProkaDiff JCs, 10 breseq JCs; Dimension 3 `NOT_CORROBORATED`).
+- **`BRESEQ_ONLY_REJECTED`:** 513 one-sided accounting rows (0 ProkaDiff JCs, 513 breseq JCs; suppressed by internal breseq coverage/frequency cutoffs).
+- **`PROKADIFF_ONLY`:** 680 one-sided accounting rows (680 ProkaDiff JCs, 0 breseq JCs; sub-threshold candidates and rRNA operon chimeras).
 - **Sum Checks:**
-  - ProkaDiff $= 91 + 10 + 15 + 10 + 680 = \mathbf{806}$.
-  - breseq $= 91 + 10 + 15 + 10 + 513 = \mathbf{639}$.
-  - Total accounting rows $= 91 + 10 + 15 + 10 + 513 + 680 = \mathbf{1,319}$.
+  - Paired comparison rows $= 91 + 10 + 15 + 10 = \mathbf{126}$.
+  - One-sided accounting rows $= 513 + 680 = \mathbf{1,193}$.
+  - Total accounting rows $= 126 + 1,193 = \mathbf{1,319}$.
+  - ProkaDiff $= 126 + 680 = \mathbf{806}$.
+  - breseq $= 126 + 513 = \mathbf{639}$.
+
+*Epistemic Invariant:* These 1,319 rows represent bidirectional computational reconciliation accounting rows between callers, **not** 1,319 matched graph edges, and **not** 1,319 biological structural events.
 
 ### 5. Decoupled MOB Concordance
 - **Breseq Coverage:** $7 / 7$ ($100.0\%$).
@@ -129,7 +139,7 @@ Across the 5 benchmark runs (`SRR28349173`, `SRR28349176`, `SRR28349244`, `SRR28
 
 The engineering deliverables and computational benchmark objectives of Milestone M6 are complete. The scientific findings are verified against physical artifacts, and biological ground truth is honestly bounded as `NOT_EVALUABLE`.
 
-Milestone M6 is recommended to be closed under the formal designation **`CLOSED_WITH_LIMITATIONS`**, subject to final approval by the Human Project Owner.
+Milestone M6 is recommended to be closed under the narrative closeout designation **`CLOSED_WITH_LIMITATIONS`**, subject to explicit authorization by the Human Project Owner. Note that in project governance ([AGENTS.md](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff/AGENTS.md) and [DEVELOPMENT_PLAN.md](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff/DEVELOPMENT_PLAN.md)), `CLOSED_WITH_LIMITATIONS` functions as a narrative closeout designation and scientific review verdict, rather than an authorized registry enum value in `VALIDATION_REGISTRY.tsv`. Milestone state remains `M6 overall: ACTIVE` until human authorization.
 
 ---
 
@@ -138,7 +148,7 @@ Milestone M6 is recommended to be closed under the formal designation **`CLOSED_
 ### Disposition: **MUST REMAIN STRICTLY `PENDING`**
 
 Codex and the Orchestrator explicitly reject marking row 6 of `benchmark/real_world/VALIDATION_REGISTRY.tsv` as validated:
-1. **Schema Integrity:** The registry schema only recognizes `PENDING` and `ACTIVE`.
+1. **Schema Integrity:** The registry schema only recognizes `PENDING` and `ACTIVE`. `CLOSED_WITH_LIMITATIONS` is not an authorized registry enum value and must not be injected into the TSV.
 2. **Absence of Biological Ground Truth:** Marking `variant_validated`, `intended_validated`, or `mob_validated` as `true` would constitute an ungrounded scientific assertion because:
    - Only 2/12 published consensus SNPs were recovered (10 were sub-clonal alleles in pooled libraries).
    - Tier B is permanently `NOT_EVALUABLE` due to missing parental WGS.
