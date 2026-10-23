@@ -1,10 +1,11 @@
-# Milestone M6 Proposed Closure Record
+# Milestone M6 Formal Closure Record
 
 **Document ID:** `M6_CLOSEOUT.md`
 **Repository:** `Caizhaohui/ProkaDiff` (Public GitHub)
 **Git Baseline:** [`c4dc0015e6de43d29479f0334e7a6cab3e89e270`](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff)
-**Proposed Status:** **`CLOSED_WITH_LIMITATIONS — PENDING HUMAN AUTHORIZATION`** (Narrative Closeout Designation)
-**Current Milestone State:** `M6 overall: ACTIVE` (per [DEVELOPMENT_PLAN.md](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff/DEVELOPMENT_PLAN.md))
+**Formal Milestone Status:** **`COMPLETE (2026-10-23)`** (Human-Authorized)
+**Scientific Closeout Designation:** **`CLOSED_WITH_LIMITATIONS`**
+**Milestone State in Governance:** `M6: COMPLETE (2026-10-23)` (per local [DEVELOPMENT_PLAN.md](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff/DEVELOPMENT_PLAN.md))
 **Validation Registry State:** [`benchmark/real_world/VALIDATION_REGISTRY.tsv`](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff/benchmark/real_world/VALIDATION_REGISTRY.tsv) line 6 remains strictly **`PENDING`**
 
 ---
@@ -18,7 +19,7 @@ All computational, algorithmic, and engineering deliverables defined in [DEVELOP
 Crucially, **milestone completion is strictly distinguished from biological variant validation**:
 - The computational engineering objectives of Milestone M6 are **COMPLETE**.
 - Independent biological truth for unconfirmed candidate variants remains **`NOT_EVALUABLE`**.
-- The proposed status is **`CLOSED_WITH_LIMITATIONS`**, awaiting explicit human project owner authorization.
+- Milestone M6 is formally closed under the scientific designation **`CLOSED_WITH_LIMITATIONS`**, with human project owner authorization granted on 2026-10-23.
 
 ---
 
@@ -47,9 +48,9 @@ Crucially, **milestone completion is strictly distinguished from biological vari
   - `NC_000913.3:301690 C>T` in `Cas9_1` (`SRR28349244`): ProkaDiff AF = 0.984; breseq AF = 0.984.
   - `NC_000913.3:3536100 G>T` in `Cas9_103` (`SRR28349177`): ProkaDiff AF = 0.992; breseq AF = 0.992.
 - **Uncalled Published Alleles (10 / 12):**
-  - Deep BAM pileup diagnostics in M6-P3a confirmed robust physical read support on both strands for uncalled loci (e.g. Priority-1 loci at depths 59–217).
-  - The allele fractions for these variants range between **$0.292$ and $0.691$**, reflecting the pooled multi-colony sequencing design of the source publication.
-  - Under ProkaDiff's clonal consensus decision model ($\ge 0.75$ AF), these sub-clonal alleles are unpromoted by design. They do not indicate alignment failure or caller bugs.
+  - Read-level pileup diagnostics across all 10 uncalled loci in [`benchmark/real_world/manifests/prjna1088182_m6_p3a_read_level.tsv`](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff/benchmark/real_world/manifests/prjna1088182_m6_p3a_read_level.tsv) confirmed that all 10 published alternate alleles have read-level support on both strands below the 0.75 consensus threshold.
+  - The caller-shaped ALT fraction range across all 10 uncalled loci is **0.198113–0.691244**.
+  - Under ProkaDiff's clonal consensus decision model ($\ge 0.75$ AF), these alternate alleles remain unpromoted by design. Biological subclonality remains unverified. They do not indicate alignment failure or caller bugs.
 - **Orthogonal Biological Validation:** Orthogonal biological validation remains unavailable. Tier A measures recovery against publication tables, not wet-lab ground truth.
 
 ---
@@ -126,10 +127,10 @@ Across the 5-sample Benchmark Quintet (`SRR28349173`, `SRR28349176`, `SRR2834924
 
 ---
 
-## 9. Proposed Milestone State & Vocabulary Verification
+## 9. Formal Milestone Closure & Vocabulary Verification
 
 - **Governance Verification:** In project governance ([AGENTS.md](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff/AGENTS.md) and [DEVELOPMENT_PLAN.md](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff/DEVELOPMENT_PLAN.md)), lifecycle milestone states are `ACTIVE`, `COMPLETE (YYYY-MM-DD)`, or `NOT STARTED`.
-- **Status Nature:** `CLOSED_WITH_LIMITATIONS` is a **narrative closeout designation** and scientific review verdict; it is **not** an authorized registry status enum in `VALIDATION_REGISTRY.tsv` (where valid values are `ACTIVE` and `PENDING`).
-- **Current Milestone State:** `M6 overall: ACTIVE`.
-- **Proposed Narrative Closeout Designation:** **`CLOSED_WITH_LIMITATIONS`**.
-- **Action:** This record is prepared and ready for closure. Formal transition from `ACTIVE` awaits explicit authorization from the Human Project Owner.
+- **Status Nature:** `CLOSED_WITH_LIMITATIONS` is a **scientific closeout designation** and review verdict; it is **not** an authorized registry status enum in `VALIDATION_REGISTRY.tsv` (where valid values are `ACTIVE` and `PENDING`).
+- **Milestone State in Governance:** `M6: COMPLETE (2026-10-23)` (per local [DEVELOPMENT_PLAN.md](file:///hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff/DEVELOPMENT_PLAN.md)).
+- **Formal Scientific Closeout Designation:** **`CLOSED_WITH_LIMITATIONS`**.
+- **Human Authorization:** Formally authorized by Human Project Owner on 2026-10-23. Milestone M6 is closed.
