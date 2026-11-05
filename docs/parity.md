@@ -122,6 +122,21 @@ unique-mapping 深度 0 在重复区 / IS 拷贝上也会出现（低 MAPQ 读�
   - **微同源吸收规范化**：将微同源重叠（overlap > 0）向负链或正链单侧坐标滑动吸收，实现与 breseq 0.40.x 的 0 bp 绝对匹配。
   - **DEL 端点由 JC 精确界定与内部伪 SNP 掩膜**：JC 支撑的覆盖度缺口采用 JC 物理端点确定 `del_start` 与 `size`，并在变异后处理中掩膜落入缺失范围内部的候选 SNP。
   - **IS150 靶向串联重复（TSD）微同源滑动容差（作业 2424014 收口）**：针对 IS150 在多拷贝接头由于微同源滑动导致初始计算 `dup = 2` 被过滤的问题，增加 1~2 bp 微同源滑动匹配（`seq[p_plus - 2] == seq[p_minus - 1]`），将 `p_plus` 从 1733648 滑动至 1733647，恢复标准 `dup = 3`，实现与 breseq 0.40.2 全部 5 处 MOB 插入 100% 召回（首份官方同场实测凭证落地：`benchmark/results/verified/clonal_2424014.md`，加速比 5.69×，红线假阳性为 0）。
+  - **G1 Clonal accepted-JC 对拍引擎修复（RC1–RC4，层 0 可测）**：针对 Clonal accepted-JC 严格对拍的四类根因（`benchmark/results/parity_closure/g1_clonal_jc/G1_JC_ROOT_CAUSE.md`）：
+    1. **二次比对严格更优规则（RC2）**：junction 构造上的比对必须比该读段主比对参考得分**严格更高**才计为 JC 证据（发表方法）；已被参考完全解释的读段只会在 repeat 侧构造上凑数，同时推高伪 IS-末端 hub 并把多拷贝折叠打成平手。唯一例外：候选**两侧均落在注释 repeat 区内**（IS 介导 rearrangement——breseq 以 prediction=unknown / frequency=NA 保留的那类）的读段至多与参考打平，允许等分保留（RC3 恢复的前提）。
+    2. **多拷贝折叠代表以 seed 强度决胜（RC1）**：同一物理 junction 在同家族不同拷贝上的摆放，spanning 支持数因共享 terminus 而并列；代表改为 (support 总数, Stage-2 seed 配对数) 字典序最大——seed 配对数反映读段实际延伸进入的拷贝（读段 IS 片段在错误拷贝上被截短、不足 mosaic 最小 unique 碱基而无法配对），仍并列才回退 canonical 最小键。`SplitCandidate` 新增 `seed_reads` 字段承载该信号。
+    3. **repeat 侧坐标规范化（RC4）**：`normalize_jc_coords` 在 `±JC_CLUSTER_TOL_BP` 内将注释拷贝**末端（terminus）**附近的接头坐标贴齐到 terminus；`overlap > 4` 且恰一侧为 repeat 时，仅当按既定方向滑动整段 overlap 后恰好落在该拷贝 terminus 上才吸收为 `overlap=0`（Clonal PD320 类 `terminus+9, ov=9 → terminus, ov=0`）；内部位置与非 repeat 侧不变。
+    4. **repeat↔repeat JC 证据门（RC3）+ MOB target 唯一性**：两侧均在注释 repeat 内的接头不再一刀切丢弃——仅「**同一拷贝的两个内部点**」（Stage-2 拷贝内配对噪声）丢弃；terminus 锚定或跨拷贝配对照常输出并附 `pd_repeat_junction=1` 注释（对应 breseq prediction=unknown 的 repeat↔repeat 真值行）。MOB 提升新增守卫：target 侧落入注释 repeat 区内不得提升（unique-mapping MOB 红线）。
+    5. **MOB 边界短差在 terminus snap 之前结算**：overlap 滑动与大重叠吸收仍在 MOB 提升之前；`±5 bp` terminus snap 改到 MOB 靶点位移之后再写入 JC 坐标。repeat 侧落在 `+` 链拷贝起点之前（或 `−` 链拷贝终点之后）1–5 bp 时，等量位移仍作用于 `p_plus`。snap 提前会把这段短差抹成 `dup = 1` 并丢掉本应成立的 MOB。
+    6. **MOB 两翼跟随支持更强的拷贝**：两条接头已提升为同一 MOB，repeat 侧是同一家族的相反元件末端、但落在不同拷贝上时，把支持读数较少一侧的 repeat 坐标改到支持较多一侧所在拷贝的相反末端（`+` 拷贝 5′ = start/`+`，3′ = end/`−`；`−` 拷贝对调）。支持数相等则不动。只改 MOB 组成接头。
+    7. **G1 wave-2（作业 3063219 之后，层 0 可测；Clonal 重跑前不是对拍结果）**：
+       - **等 seed 时按环状距离选拷贝**：`(support, seed)` 严格更大者仍胜。仅当二者并列、且接头是「唯一侧翼 ↔ 注释 repeat 末端」（20 bp 内）时，保留离唯一侧翼环状距离更近的拷贝（`len=0` 退化为线性距离）。无注释时仍回退 canonical 最小键。
+       - **远处内部点 × 另一拷贝末端的回声丢弃**：两侧落在不重叠的不同 repeat、至少一侧距所属区间两端都 >20 bp、两侧距离大于较长区间，且不是 MOB 组成接头 → 不输出。区间重叠（嵌套元件边界）或两侧都是末端则保留，并标 `pd_repeat_junction=1`。
+       - **`>20` 比对的锚定提升**（仅当 repeats 非空；空注释时候选集与旧路径相同）：唯一锚点（锚点本身不在 repeat 内）配到环状距离最近的注释末端，忽略更近的内部点；双侧多拷贝只在「区间重叠、至少一侧是末端、距离不超过较短区间」时提升一条嵌套边界。同一读段去重。诊断 seed 照旧记录。
+    8. **G1 wave-3（作业 3063365 之后，层 0 可测；Clonal 重跑前不是对拍结果）**：近拷贝折叠可以让同一插入的负链唯一侧比正链唯一侧低 1 bp。`p_plus > p_minus` 若写在 terminus 短差之前，短差来不及把 `p_plus` 拉回，MOB 被丢掉；snap 仍在 MOB 位置与 `dup` 记完之后。短差先结算，仍然 `p_plus > p_minus` 的配对继续丢弃。已有的等 seed 近拷贝规则、内部回声丢弃、Stage-2 锚定提升不改。
+    9. **G1 wave-4（作业 3063624 之后，层 0 可测；Clonal 重跑前不是对拍结果）**：代表排序只用该放置自己的支持数和 seed，不再用折叠后的累计支持。观察先按读段身份去重再汇总。只有共享证据、重叠寄存器和同一元件末端（反向拷贝的同一端算同一端）同时成立才折叠；仅重复家族同名不折叠。MOB 仍先结算 1–5 bp 短差，再做 `p_plus > p_minus` 判断；侧翼只改到已经保留的放置上，不把未观察到的拷贝写进 JC。两侧都是多拷贝时，按元件相对坐标分成序列不同的类：某一坐标的比对条数严格更高才进入候选，平局、远处内部回声和资源上限都不选精确拷贝，并在 `repeat_ambiguous` 的 rejection 里留下 `PRUNING_*` / `PRUNING_INCOMPLETE_SET`。不宣称 G1 通过。
+    10. **G1 wave-5（作业 3064516 之后，层 0 可测；Clonal 重跑前不是对拍结果）**：作业 3064516 把 matched 抬到 8，但 over 从 22 升到 30，并丢掉 MOB `(4524522, IS186, +1, 6)` 与两条已匹配 JC。同一元件末端接到靶点两侧时不再提升成 MOB；同一靶点上多个相反末端假设按两侧支持的较小值、再按和支持取一条。唯一侧翼的多拷贝在自身支持数相同时，先保留 1–5 bp 的末端短差，否则显示离该侧翼更近的末端；并列时 seed 不能把接头改到更远的相同末端。这覆盖 wave-2「仅当 seed 也并列才比距离」：自身支持数严格更高者仍胜，支持数相同时距离先于 seed。读段被分到不同拷贝、身份集不相交时，只要共享的是唯一侧翼且未匹配侧是同一注释末端，仍然折成一条。不同的唯一侧翼各自保留自己的近端。不宣称 G1 通过。
+    层 0 测例：`second_pass_equal_score_is_rejected_for_unique_candidates`、`second_pass_keeps_equal_score_for_repeat_repeat_candidates`、`multicopy_fold_support_tie_prefers_nearer_copy_over_higher_seed`、`partitioned_unique_flank_keeps_nearer_end_despite_far_seed`、`each_unique_flank_keeps_its_own_nearer_copy`、`shortfall_register_beats_nearer_exact_terminus_on_support_tie`、`same_element_end_pair_does_not_steal_forward_mob`、`emitted_flanks_display_each_nearer_copy_when_far_seed_is_higher`、`equal_seed_unique_flank_prefers_nearer_repeat_copy`、`normalize_snaps_repeat_side_to_terminus_and_absorbs_overlap`、`interrepeat_junction_gate_requires_copy_anchoring`、`distant_interior_repeat_echo_is_dropped_nested_boundary_is_kept`、`anchored_stage2_promotes_nearest_terminus_and_nested_boundary`、`mob_promotion_rejects_repeat_side_targets`、`mob_boundary_shortfall_survives_terminus_snap`、`mob_flanks_follow_stronger_copy`、`mob_flanks_keep_copies_when_support_ties`、`nearer_copy_register_shift_keeps_presnap_shortfall_mob`、`mob_flank_relocates_only_onto_retained_alternative`、`own_score_outranks_aggregated_family_support`、`incompatible_end_or_overlap_does_not_fold`、`reversed_copy_same_element_end_folds_with_shared_evidence`、`tied_homologous_copies_are_not_chosen_by_distance`、`strict_alignment_count_promotes_one_sequence_distinct_copy`、`resource_limit_blocks_sequence_distinct_promotion`（合成几何、无 Clonal 坐标硬编码）。
   - 断点微同源按通用序列比对解析；主 BAM 单遍扫描合并读段提取、候选过滤与 primary-score 收集。
 
 时间 / RSS 无「必须更快」硬阈值；但 **必须有可复核记录**。若 ProkaDiff 明显更慢或吃内存异常，记入紧凑记录，不得静默省略。
@@ -171,6 +186,21 @@ Caller-specific context or file roles never invent mate 1 or 2 when flags and su
 ### Computational bounds
 
 `MAX_STAGE2_FAMILY_GEOMETRIES = 5000` is established as a computational safety bound pending empirical benchmarking. It prevents unbounded combinatorial pairing of mosaic sub-alignments during Stage 2 analysis. It is explicitly a safety ceiling and is NOT claimed to be proven adequate for real repeat-rich genomes.
+
+### 第二轮候选构建体去重（Wave 8 契约）
+
+`collapse_identical_unique_repeat_copies` 在写出 `junctions.fa` 之前执行两级折叠：
+
+1. **同序列折叠（Target A）**：生成完全相同 `junction_construct` 序列的候选（含 repeat↔repeat 与存在 copy 内部落点成员的组）只保留一个代表——优先锚定在注释 terminus 的成员，其次 `seed_reads` 最大，再次 unique↔terminus 距离更近，最后坐标序；代表携带组内最大 `seed_reads`。唯一侧相距超过 `JC_CLUSTER_TOL_BP` 的两个不同 unique flank 不折叠。理由：比对器无法区分完全相同的构建体，多份拷贝只会稀释第二轮读段支持（breseq 0.40.x 同样每个候选连接只保留一个代表）。
+2. **同侧翼寄存器折叠（Target B）**：unique↔repeat 代表若 unique 侧翼同 contig、同链向、相距 ≤5 bp，且连接同一 repeat 家族的**同一拷贝（`(rep.start, rep.end)`，Wave 9）**的同一元件末端（5' 或 3'），合并为一个代表（最强 seed 优先，其次更近拷贝）。插入事件的正负两侧翼（相反末端、相反链向）永不合并。排序键为 `(contig, 链向, 家族, 拷贝 span, 末端, 侧翼位置)`——**拷贝身份先于侧翼位置**（Wave 10 / Codex Sol [P2]）：按位置优先排序会让 B 拷贝寄存器插进 A 拷贝两个 ≤5 bp 寄存器之间，线性扫描只与簇内最后成员比较、在该处冲刷，重新退化为每偏移一条构建体。拷贝优先排序保证加入同一拷贝的寄存器连续，同拷贝 ≤5 bp 寄存器全部合并；跨拷贝合并仍不可能（拷贝 span 仍是 extend 必等键，Wave 9 不变量）。
+
+MOB 弱侧翼拷贝归位（`align_mob_flanks_to_stronger_copy`）：当弱侧翼没有保留的替代落点时，可依据 MOB 配对本身演示的拷贝等价性，把弱侧翼的 repeat 侧移动到强拷贝的相反末端（合成落点，只动 repeat 侧，unique 侧与冻结分数不变）；等支持、同拷贝、或会拉大 unique↔terminus 距离的移动仍被拒绝。不引入「最近注释拷贝」的通用显示规则——breseq 在完全相同拷贝间的选择是枚举任意的（oracle 114 保留远拷贝、oracle 96 保留近拷贝），距离规则无法复现且会破坏已匹配记录。
+
+### 第二轮跨构建体竞争裁决与链向规范化（Wave 11 契约）
+
+1. **竞争构建体分数裁决（`parse_junction_bam`）**：junction 第二轮以 `-k 2000` 报告多命中，同一分子在近缘（旁系同源）构建体上的次优比对不能作为该构建体的证据。裁决分两遍：第一遍解码全部合格比对（`q_cover >= JC_MIN_COVER_BASES`、双侧跨断点、通过主比对分数门）并按 `(norm_qname, mate)` 记录跨构建体最高分；第二遍只保留达到该最高分的比对——**严格低于最高分的比对计入 `worse_than_competing` 并丢弃，持平（tie）全部保留**（完全相同的 repeat 拷贝不可区分，消除并列会删除真实的多拷贝证据，Codex Sol Recommendation 2）。竞争分数优先取 `AS:i:`（bowtie2 自身打分，可分辨旁系拷贝 1–2 bp 差异），无 `AS` 时回退 `cigar_match_indel_score`，有 `NM:i:` 且无 `AS` 时再减 `NM`。主比对分数门不变（唯一侧候选要求严格更高；双 repeat 侧候选允许持平，RC3）。
+2. **链向规范化分组键（`collapse_identical_unique_repeat_copies`）**：分组键取 `min(seq, rc(seq))`——构建体与其反向互补是同一条双链参考（bowtie2 双链索引），按原始序列分键会把两条反向构建体同时写入 `junctions.fa` 并稀释读段。同键组内出现两种链向（`rc` 配对）时，即使两个 unique 侧翼不同也折叠为一个代表（比对器无法区分，保留两份只会分裂读段；与 Wave 8 Target A 同一理由）；代表选择沿用现有确定性规则（锚定 terminus、最大 seed、更近距离、坐标序）。
+3. **repeat↔repeat 连接恢复（`emit.rs`）**：(a) IS-end 嵌合体过滤对「正负链各 ≥5 读且通过 `accept_junction`」的均衡 repeat↔repeat 连接豁免——均衡强支持的 repeat↔repeat 是真实结构重排（breseq 报 prediction=unknown / frequency=NA），仅因一侧落于拷贝内部而静默丢弃构成低检出；(b) 次级频率过滤对 `pd_repeat_junction`（两侧均在注释 repeat 内）豁免 `jc_min_frequency`——repeat 位点局部深度是全家族多拷贝总和，`depth × min_frequency` 按拷贝数超额索求（breseq 对此类连接 frequency=NA 的同一理由）；支持读数下限 `jc_min_support_reads` 仍然适用。
 
 breseq 本身不做「出发株 vs 编辑株」差分。产品层金标准：
 

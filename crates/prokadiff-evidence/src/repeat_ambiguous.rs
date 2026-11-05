@@ -178,6 +178,11 @@ pub struct RepeatAmbiguousSeed {
     /// incomplete placement set: the observed evidence remains complete as
     /// far as placement search is concerned, but it cannot resolve exactly.
     pub resource_limit_reason: Option<&'static str>,
+    /// Stage that stopped a repeat↔repeat alternative from becoming an
+    /// exact junction: discovery, pruning, alignment, acceptance, folding,
+    /// or emission. `None` when this seed did not refuse an alternative.
+    /// A resource-limit reason is never cleared by this field.
+    pub failure_stage: Option<&'static str>,
 }
 
 pub fn resolve_repeat_copy(
@@ -450,6 +455,9 @@ impl RepeatAmbiguousDiagnostics {
             }
             if let Some(reason) = seed.resource_limit_reason {
                 rejection_reasons.insert(reason);
+            }
+            if let Some(stage) = seed.failure_stage {
+                rejection_reasons.insert(stage);
             }
         }
 
@@ -797,6 +805,7 @@ mod tests {
             reciprocal_evidence: false,
             rejection_reason: None,
             resource_limit_reason: None,
+            failure_stage: None,
         }
     }
 

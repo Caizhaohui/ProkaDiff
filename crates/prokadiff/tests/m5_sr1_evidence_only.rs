@@ -698,6 +698,7 @@ mol_dup\t65\tchr1\t450\t42\t20M\t*\t0\t0\tACGTACGTACGTACGTACGT\t*\n";
         placement_sequence: b"FAMILY_DUP".to_vec(),
         placement_set_complete: true,
         resource_complete: true,
+        failure_stage: None,
         resolution_complete: false,
         overlap: 0,
         molecule_id: prim_dups[0].molecule_id,

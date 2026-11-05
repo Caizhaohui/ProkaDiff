@@ -59,7 +59,7 @@ Source: `benchmark/real_world/truth/bl21_curated_truth.tsv`. This is manual inte
 | IS1/IS1A identity and the named kilobase rearrangement | SUPPORTED ONLY BY CURATED INTERPRETATION | SUPPORTED ONLY BY CURATED INTERPRETATION | SUPPORTED ONLY BY CURATED INTERPRETATION |
 | Exact repeat-copy breakpoint called by ProkaDiff | NOT SUPPORTED | NOT SUPPORTED | NOT SUPPORTED |
 | Exact IS1A copy resolved by ProkaDiff | NOT SUPPORTED | NOT SUPPORTED | NOT SUPPORTED |
-| Cas9 caused the structural event | NOT SUPPORTED | NOT SUPPORTED | NOT SUPPORTED |
+| Unsupported claim that Cas9 caused the structural event | NOT SUPPORTED | NOT SUPPORTED | NOT SUPPORTED |
 | Every observed genome-wide change was editing-induced | NOT SUPPORTED | NOT SUPPORTED | NOT SUPPORTED |
 
 breseq coordinates and curated IS labels were not used to choose a ProkaDiff copy, change a diagnostic state, or create an EventId.

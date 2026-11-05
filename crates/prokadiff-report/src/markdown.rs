@@ -41,6 +41,11 @@ pub fn write_markdown_report(
     // 8. Distal Small Variants
     write_distal_small_variants(&mut w, audit, schema_version)?;
 
+    // 8b. Subclonal / Pool-seq Variant Audit (Target AF 0.05–0.70)
+    if audit.subclonal_enabled || !audit.subclonal_variants.is_empty() {
+        write_subclonal_audit_section(&mut w, audit)?;
+    }
+
     // 9. Analysis Limitations
     write_limitations(&mut w, audit)?;
 
@@ -717,6 +722,68 @@ fn display_for_variant(
             variant_reference: ".".to_string(),
             variant_alternate: ".".to_string(),
         })
+}
+
+pub const SUBCLONAL_CAVEAT_TEXT: &str = "\
+Subclonal audit mode reports read-level ALT fractions at sites outside the consensus threshold. \
+These are audit observations, not validated variant calls. \
+The AF reporting threshold (default 0.05) is a configurable setting, not an experimental sensitivity floor. \
+Effective detection limits depend on sequencing depth, strand balance, mapping quality, and the local sequencing error rate, \
+and may be well above the configured threshold. \
+Absence of an allele in the starter sample is reported with its exclusion bound at the observed depth and does not establish absence. \
+Statistical tests assume independent reads; PCR duplicates, library artifacts, and systematic errors can violate this assumption.";
+
+fn write_subclonal_audit_section(
+    w: &mut impl Write,
+    audit: &AuditResult,
+) -> std::io::Result<()> {
+    writeln!(w, "## Subclonal / Pool-seq Variant Audit (Target AF 0.05–0.70)\n")?;
+    writeln!(w, "> {SUBCLONAL_CAVEAT_TEXT}\n")?;
+    if audit.subclonal_variants.is_empty() {
+        writeln!(w, "No subclonal variants exceeded detection thresholds.\n")?;
+        return Ok(());
+    }
+    writeln!(
+        w,
+        "| Contig | Position | Type | REF | ALT | Edited Depth | Edited AF [95% CI] | Starter AF [95% CI] | Delta AF [95% CI] | Strand Bias p | Class | Flags |"
+    )?;
+    writeln!(
+        w,
+        "|---|---|---|---|---|---|---|---|---|---|---|---|"
+    )?;
+
+    for v in &audit.subclonal_variants {
+        let fmt_af_ci = |af: Option<f64>, ci: Option<&prokadiff_classify::subclonal::WilsonCi>| match (af, ci) {
+            (Some(val), Some(c)) => format!("{:.4} [{:.4}, {:.4}]", val, c.low, c.high),
+            (Some(val), None) => format!("{:.4}", val),
+            (None, _) => "NA".to_string(),
+        };
+        let delta_str = format!("{:.4} [{:.4}, {:.4}]", v.delta_af, v.delta_ci_low, v.delta_ci_high);
+        let flags_str = if v.flags.is_empty() {
+            "NONE".to_string()
+        } else {
+            v.flags.join(";")
+        };
+
+        writeln!(
+            w,
+            "| {} | {} | {} | `{}` | `{}` | {} | {} | {} | {} | {:.3e} | `{}` | {} |",
+            v.contig,
+            v.pos,
+            v.variant_type,
+            v.ref_seq,
+            v.alt_seq,
+            v.edited_counts.total_depth(),
+            fmt_af_ci(v.edited_af, v.edited_ci.as_ref()),
+            fmt_af_ci(v.starter_af, v.starter_ci.as_ref()),
+            delta_str,
+            v.edited_strand_bias_p,
+            v.classification.as_str(),
+            flags_str,
+        )?;
+    }
+    writeln!(w)?;
+    Ok(())
 }
 
 fn write_limitations(w: &mut impl Write, audit: &AuditResult) -> std::io::Result<()> {

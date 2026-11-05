@@ -1,10 +1,20 @@
+pub mod batch;
 mod markdown;
 mod schema;
 mod tables;
 
-pub use markdown::write_markdown_report;
+pub use batch::{
+    align_batch_variants, extract_clone_observations, render_batch_report_md,
+    render_batch_variants_tsv, write_batch_report_md, write_batch_variants_tsv, BatchAuditSummary,
+    BatchManifest, BatchManifestEntry, BatchManifestError, BatchVariantRecord, CloneBatchSummary,
+    CloneVariantObservation, RecurrenceStatus,
+};
+pub use markdown::{write_markdown_report, SUBCLONAL_CAVEAT_TEXT};
 pub use schema::SchemaVersion;
-pub use tables::{write_edit_outcomes_tsv, write_post_edit_variants_tsv, write_provenance_tsv};
+pub use tables::{
+    write_edit_outcomes_tsv, write_post_edit_variants_tsv, write_provenance_tsv,
+    write_subclonal_audit_tsv,
+};
 
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -217,7 +227,7 @@ bulge_validation_status\texperimental\n",
     std::fs::write(path, text)
 }
 
-const PRODUCT_OUTPUT_NAMES: [&str; 8] = [
+pub const PRODUCT_OUTPUT_NAMES: [&str; 8] = [
     "unintended.tsv",
     "summary.txt",
     "offtarget_sites.tsv",
@@ -227,6 +237,18 @@ const PRODUCT_OUTPUT_NAMES: [&str; 8] = [
     "post_edit_variants.tsv",
     "provenance.tsv",
 ];
+
+pub const OPTIONAL_PRODUCT_NAMES: [&str; 1] = [
+    "subclonal_audit.tsv",
+];
+
+pub fn product_output_names(audit: &AuditResult) -> Vec<&'static str> {
+    let mut names = PRODUCT_OUTPUT_NAMES.to_vec();
+    if audit.subclonal_enabled || !audit.subclonal_variants.is_empty() {
+        names.push("subclonal_audit.tsv");
+    }
+    names
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProductOutputError {
@@ -472,7 +494,14 @@ pub fn write_product_outputs(
     fs::create_dir(&staging).map_err(|source| output_io(&staging, source))?;
     write_product_set(&staging, audit, schema_version)
         .map_err(|source| output_io(&staging, source))?;
-    if let Some(path) = PRODUCT_OUTPUT_NAMES
+    let output_names = product_output_names(audit);
+    let mut names_to_backup = output_names.clone();
+    for opt in OPTIONAL_PRODUCT_NAMES {
+        if !names_to_backup.contains(&opt) && outdir.join(opt).exists() {
+            names_to_backup.push(opt);
+        }
+    }
+    if let Some(path) = names_to_backup
         .iter()
         .map(|name| outdir.join(name))
         .find(|path| path.is_dir())
@@ -495,7 +524,7 @@ pub fn write_product_outputs(
     ));
     fs::create_dir(&backup).map_err(|source| output_io(&backup, source))?;
     let mut backed_up = Vec::new();
-    for name in PRODUCT_OUTPUT_NAMES {
+    for name in &names_to_backup {
         let destination = outdir.join(name);
         if destination.exists() {
             if let Err(error) = fs::rename(&destination, backup.join(name)) {
@@ -531,7 +560,7 @@ pub fn write_product_outputs(
         }
     }
     let mut published = Vec::new();
-    for (index, name) in PRODUCT_OUTPUT_NAMES.iter().enumerate() {
+    for (index, name) in output_names.iter().enumerate() {
         let destination = outdir.join(name);
         let publish =
             inject_publication_failure(PublicationOperation::Publish, index, &destination)
@@ -612,6 +641,12 @@ fn write_product_set(
         audit,
         schema_version,
     )?;
+    if audit.subclonal_enabled || !audit.subclonal_variants.is_empty() {
+        tables::write_subclonal_audit_tsv(
+            outdir.join("subclonal_audit.tsv"),
+            &audit.subclonal_variants,
+        )?;
+    }
     write_provenance_tsv(outdir.join("provenance.tsv"), &audit.provenance)
 }
 

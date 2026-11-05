@@ -17,11 +17,13 @@ pub mod pileup;
 pub mod ra;
 pub mod repeat_ambiguous;
 pub mod split_seed;
+pub mod subclonal;
 
 pub use align::FastqInput;
 pub use engine::{
     call_from_aligned, call_from_aligned_extra, call_from_aligned_with_diagnostics,
-    call_from_aligned_with_extra_and_diagnostics, run_sample, EngineOptions,
+    call_from_aligned_with_extra_and_diagnostics, run_sample, run_sample_with_pileup, ContigPileup,
+    EngineOptions,
 };
 pub use error::EvidenceError;
 pub use fasta::{
@@ -31,7 +33,12 @@ pub use fasta::{
 pub use mc::call_missing_coverage;
 pub use normalize::{right_align_del, right_align_ins};
 pub use ra::{
-    call_consensus, call_consensus_with_metrics, BaseObs, ConsensusCall, PileupColumn, RaMetrics,
-    RaOptions, Strand,
+    call_consensus, call_consensus_with_metrics, BaseObs, ConsensusCall, DeletionObs, InsertionObs,
+    PileupColumn, RaMetrics, RaOptions, Strand,
 };
 pub use repeat_ambiguous::{RepeatAmbiguousDiagnostics, RepeatAmbiguousState};
+pub use subclonal::{
+    bh_adjust, binom_upper_tail, calculate_delta_ci, calculate_wilson_ci,
+    calculate_wilson_ci_with_z, classify_subclonal_candidate, fisher_two_sided,
+    AlleleCounts, StrandCounts, SubclonalClass, SubclonalParams, WilsonCi,
+};

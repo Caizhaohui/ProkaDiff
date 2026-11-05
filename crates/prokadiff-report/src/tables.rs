@@ -4,6 +4,7 @@ use std::path::Path;
 
 use prokadiff_classify::{
     AnalysisProvenance, AnnotatedVariant, AuditResult, EventId, IntendedEditAssessment, RefContig,
+    SubclonalVariant,
 };
 use prokadiff_gd::GdKind;
 
@@ -507,7 +508,73 @@ pub fn write_provenance_tsv(
     Ok(())
 }
 
-fn variant_coords(v: &AnnotatedVariant) -> (String, u64, u64) {
+/// Write subclonal audit mode variants table (`subclonal_audit.tsv`).
+pub fn write_subclonal_audit_tsv(
+    path: impl AsRef<Path>,
+    variants: &[SubclonalVariant],
+) -> std::io::Result<()> {
+    let mut w = BufWriter::new(File::create(path)?);
+    writeln!(
+        w,
+        "contig\tposition\tvariant_type\tref\talt\tstarter_depth\tstarter_alt\tstarter_af\tstarter_ci_low\tstarter_ci_high\tedited_depth\tedited_alt\tedited_af\tedited_ci_low\tedited_ci_high\tdelta_af\tdelta_ci_low\tdelta_ci_high\tstrand_bias_p_edited\terror_p_edited\terror_q_edited\tdiff_p\tdiff_q\tstarter_exclusion_bound\tclassification\tflags"
+    )?;
+
+    for v in variants {
+        let fmt_opt_f64 = |opt: Option<f64>| match opt {
+            Some(val) => format!("{val:.6}"),
+            None => "NA".to_string(),
+        };
+        let fmt_ci_low = |ci: Option<&prokadiff_classify::subclonal::WilsonCi>| match ci {
+            Some(c) => format!("{:.6}", c.low),
+            None => "NA".to_string(),
+        };
+        let fmt_ci_high = |ci: Option<&prokadiff_classify::subclonal::WilsonCi>| match ci {
+            Some(c) => format!("{:.6}", c.high),
+            None => "NA".to_string(),
+        };
+
+        let flags_str = if v.flags.is_empty() {
+            "NONE".to_string()
+        } else {
+            v.flags.join(";")
+        };
+
+        writeln!(
+            w,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.3e}\t{:.3e}\t{:.3e}\t{:.3e}\t{:.3e}\t{}\t{}\t{}",
+            v.contig,
+            v.pos,
+            v.variant_type,
+            v.ref_seq,
+            v.alt_seq,
+            v.starter_counts.total_depth(),
+            v.starter_counts.alt_counts.total(),
+            fmt_opt_f64(v.starter_af),
+            fmt_ci_low(v.starter_ci.as_ref()),
+            fmt_ci_high(v.starter_ci.as_ref()),
+            v.edited_counts.total_depth(),
+            v.edited_counts.alt_counts.total(),
+            fmt_opt_f64(v.edited_af),
+            fmt_ci_low(v.edited_ci.as_ref()),
+            fmt_ci_high(v.edited_ci.as_ref()),
+            v.delta_af,
+            v.delta_ci_low,
+            v.delta_ci_high,
+            v.edited_strand_bias_p,
+            v.edited_p_err,
+            v.edited_q_err,
+            v.p_diff,
+            v.q_diff,
+            fmt_opt_f64(v.starter_exclusion_bound),
+            v.classification.as_str(),
+            flags_str,
+        )?;
+    }
+    w.flush()?;
+    Ok(())
+}
+
+pub(crate) fn variant_coords(v: &AnnotatedVariant) -> (String, u64, u64) {
     let e = &v.entry;
     match e.kind {
         GdKind::Snp | GdKind::Ins => {

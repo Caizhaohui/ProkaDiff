@@ -373,6 +373,20 @@ pub struct AuditResult {
     pub candidate_search_status: CandidateSearchStatus,
     pub summary: AuditSummary,
     pub provenance: AnalysisProvenance,
+    pub subclonal_enabled: bool,
+    pub subclonal_variants: Vec<crate::subclonal::SubclonalVariant>,
+}
+
+impl AuditResult {
+    pub fn with_subclonal_enabled(mut self, enabled: bool) -> Self {
+        self.subclonal_enabled = enabled;
+        self
+    }
+
+    pub fn with_subclonal_variants(mut self, vars: Vec<crate::subclonal::SubclonalVariant>) -> Self {
+        self.subclonal_variants = vars;
+        self
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -659,6 +673,8 @@ pub fn build_complete_audit_result(
         candidate_search_status,
         summary,
         provenance,
+        subclonal_enabled: false,
+        subclonal_variants: Vec::new(),
     })
 }
 

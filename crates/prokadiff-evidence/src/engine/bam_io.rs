@@ -8,6 +8,7 @@ use noodles::bam;
 use noodles::sam::alignment::record::cigar::op::Kind as NoodlesKind;
 
 use crate::align::{keep_for_second_pass, normalize_qname};
+use crate::engine::jc_cluster::repeat_containing;
 use crate::error::{EvidenceError, Result};
 use crate::fasta::FastaRecord;
 use crate::jc::SubAlignment;
@@ -301,15 +302,35 @@ pub(crate) struct SecondPassReject {
     pub(crate) short_cover: usize,
     pub(crate) not_spanning: usize,
     pub(crate) worse_than_primary: usize,
+    /// Alignments that qualified on their own but lost to a HIGHER-scoring
+    /// alignment of the SAME molecule against a competing junction
+    /// construct (paralogous cross-mapping, Wave 11).
+    pub(crate) worse_than_competing: usize,
     pub(crate) kept: usize,
 }
 
 /// Promote spanning second-pass alignments to `SplitCandidate`s.
+///
+/// `repeats` / `contig_names` annotate candidates whose BOTH sides fall
+/// inside annotated repeat regions: for those, a junction alignment can at
+/// best TIE the best primary reference alignment (both flanks are reference
+/// sequence — IS-mediated rearrangements breseq reports as prediction
+/// unknown / frequency NA), so an equal score is kept. For every other
+/// candidate the published rule applies: the junction alignment must score
+/// strictly higher than the read's best primary alignment; a read already
+/// fully explained by the reference carries no junction information.
 pub(crate) fn parse_junction_bam(
     bam_path: &Path,
     candidates: &[(crate::jc_seq::CandidateJunction, usize)],
     ref_scores: &PrimaryScores,
+    repeats: &[crate::fasta::RepeatRegion],
+    contig_names: &[String],
 ) -> Result<(Vec<SplitCandidate>, SecondPassReject)> {
+    let both_repeat_sides = |cand: &crate::jc_seq::CandidateJunction| -> bool {
+        let name_of = |idx: usize| contig_names.get(idx).map(String::as_str).unwrap_or("");
+        repeat_containing(repeats, name_of(cand.side1_contig), cand.side1_pos_1).is_some()
+            && repeat_containing(repeats, name_of(cand.side2_contig), cand.side2_pos_1).is_some()
+    };
     let mut stats = SecondPassReject::default();
     let mut reader = File::open(bam_path).map(bam::io::Reader::new)?;
     let header = reader
@@ -320,7 +341,23 @@ pub(crate) fn parse_junction_bam(
         .iter()
         .map(|(n, _)| n.to_string())
         .collect();
-    let mut extra = Vec::new();
+
+    // Sweep 1 — decode every QUALIFIED alignment (cover, spanning, and
+    // not worse than the molecule's best primary reference score) and
+    // record, per molecule, the best alignment score achieved across ALL
+    // competing junction constructs. The junction pass runs bowtie2 with
+    // `-k 2000`, so one read whose best placement is construct A (the
+    // true `ldrC` paralog) also gets a lower-scoring record on the
+    // near-identical construct B (the `ldrA/B` paralog); those
+    // sub-optimal records are not evidence for B (Wave 11).
+    struct Qualified {
+        key: (String, Mate),
+        score: i32,
+        cand: SplitCandidate,
+    }
+    let mut qualified: Vec<Qualified> = Vec::new();
+    let mut best_scores: HashMap<(String, Mate), i32> = HashMap::new();
+
     for rec in reader.records() {
         let rec = rec.map_err(|e| EvidenceError::Alignment(e.to_string()))?;
         if rec.flags().is_unmapped() {
@@ -363,33 +400,77 @@ pub(crate) fn parse_junction_bam(
             canonical_molecule_identity(&qname, Some(&rec.flags()));
         let mate = Mate::from_code(mate_code);
         if let Some(rs) = ref_scores.get_score(&norm_qname, mate) {
-            if jc_score < rs {
+            let both_repeat = both_repeat_sides(cand);
+            if jc_score < rs || (jc_score == rs && !both_repeat) {
                 stats.worse_than_primary += 1;
                 continue;
             }
         }
+        // Alignment score for CONSTRUCT competition. Prefer the aligner's
+        // own `AS:i:` (it distinguishes the 1–2 bp by which paralogous
+        // constructs differ); without it fall back to the published
+        // match-minus-indel score, optionally corrected by the edit
+        // distance when the aligner reported one.
+        let tag = |t: noodles::sam::alignment::record::data::field::Tag| {
+            rec.data()
+                .get(&t)
+                .and_then(|r| r.ok())
+                .and_then(|v| v.as_int())
+        };
+        let as_score = tag(noodles::sam::alignment::record::data::field::Tag::ALIGNMENT_SCORE);
+        let nm = tag(noodles::sam::alignment::record::data::field::Tag::EDIT_DISTANCE);
+        let comp_score = match (as_score, nm) {
+            (Some(a), _) => a as i32,
+            (None, Some(n)) => jc_score - n as i32,
+            (None, None) => jc_score,
+        };
         let ov1 = breakpoint.saturating_sub(cstart);
         let ov2 = cend.saturating_sub(breakpoint);
-        stats.kept += 1;
-        extra.push(SplitCandidate {
-            contig_idx: cand.side1_contig,
-            side2_contig_idx: cand.side2_contig,
-            minus: rec.flags().is_reverse_complemented(),
-            side1_minus: cand.side1_minus,
-            side2_minus: cand.side2_minus,
-            left: SubAlignment {
-                read_start: 0,
-                read_end: ov1,
+        let key = (norm_qname, mate);
+        best_scores
+            .entry(key.clone())
+            .and_modify(|s| *s = (*s).max(comp_score))
+            .or_insert(comp_score);
+        qualified.push(Qualified {
+            key,
+            score: comp_score,
+            cand: SplitCandidate {
+                contig_idx: cand.side1_contig,
+                side2_contig_idx: cand.side2_contig,
+                minus: rec.flags().is_reverse_complemented(),
+                side1_minus: cand.side1_minus,
+                side2_minus: cand.side2_minus,
+                left: SubAlignment {
+                    read_start: 0,
+                    read_end: ov1,
+                },
+                right: SubAlignment {
+                    read_start: ov1,
+                    read_end: ov1 + ov2,
+                },
+                side1_pos_1: cand.side1_pos_1,
+                side2_pos_1: cand.side2_pos_1,
+                overlap: cand.overlap,
+                origin: SplitOrigin::SecondPass(molecule_id),
+                seed_reads: cand.seed_reads,
             },
-            right: SubAlignment {
-                read_start: ov1,
-                read_end: ov1 + ov2,
-            },
-            side1_pos_1: cand.side1_pos_1,
-            side2_pos_1: cand.side2_pos_1,
-            overlap: cand.overlap,
-            origin: SplitOrigin::SecondPass(molecule_id),
         });
+    }
+
+    // Sweep 2 — credit only alignments that reach the molecule's best
+    // score across constructs. STRICTLY lower scores are dropped: a read
+    // the competing construct explains better carries no evidence here.
+    // TIED best scores are all kept: identical repeat copies cannot be
+    // discriminated, and destroying the tie would delete genuine
+    // multi-copy evidence (Codex Sol Recommendation 2).
+    let mut extra = Vec::new();
+    for q in qualified {
+        if q.score < best_scores[&q.key] {
+            stats.worse_than_competing += 1;
+            continue;
+        }
+        stats.kept += 1;
+        extra.push(q.cand);
     }
     Ok((extra, stats))
 }

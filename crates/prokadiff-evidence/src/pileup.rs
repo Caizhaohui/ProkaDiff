@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use crate::fasta::FastaRecord;
 use crate::jc::SubAlignment;
 use crate::jc_seq::{MIN_CLIP_FOR_PLACE, MIN_CLIP_FOR_SEED};
-use crate::ra::{BaseObs, PileupColumn, Strand};
+use crate::ra::{BaseObs, DeletionObs, InsertionObs, PileupColumn, Strand};
 use crate::repeat_ambiguous::{
     RepeatAmbiguousSeed, RepeatCopyPlacement, RepeatEvidenceSource, MAX_RETAINED_REPEAT_PLACEMENTS,
 };
@@ -59,6 +59,14 @@ pub struct SplitCandidate {
     pub side2_pos_1: u64,
     pub overlap: i64,
     pub origin: SplitOrigin,
+    /// Stage-2 seed strength: how many reads paired at exactly these
+    /// coordinates during candidate discovery (0 for first-pass
+    /// softclip/CIGAR origins). Repeat-copy placements of one physical
+    /// junction can tie on spanning-read support because termini are
+    /// shared; the copy whose exact terminus key accumulated more seed
+    /// reads is the copy the reads actually extend into, so the
+    /// multi-copy fold uses this as the representative tiebreak.
+    pub seed_reads: usize,
 }
 
 /// Where a split candidate came from. Used by the engine's redundancy
@@ -131,6 +139,7 @@ impl SplitCandidate {
             side2_pos_1,
             overlap,
             origin: SplitOrigin::Cigar,
+            seed_reads: 0,
         }
     }
 }
@@ -160,8 +169,17 @@ fn add_match_depth(read: &AlignedRead, depth: &mut [u32]) {
     }
 }
 
+/// Apply one aligned read onto the pileup columns.
+///
+/// `read_id` is the caller-assigned per-record identity threaded into every
+/// `BaseObs` / `InsertionObs` / `DeletionObs` produced by this call (M11
+/// subclonal). The parameter count is inherent to the CIGAR walk (columns,
+/// two depth arrays, split/clip sinks, reference); a parameter struct would
+/// only obscure the hot-path call, so the lint is consciously allowed here.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_read(
     read: &AlignedRead,
+    read_id: u64,
     columns: &mut [PileupColumn],
     unique_depth: &mut [u32],
     total_depth: &mut [u32],
@@ -333,10 +351,27 @@ pub fn apply_read(
         }
     }
 
-    // Right-align 1-2 bp deletions within homopolymers / tandem repeats
+    // Right-align 1–2 bp deletions within homopolymers / tandem repeats
     // before end-trimming, ensuring consistent placement matching breseq.
     if let Some(seq) = ref_seq {
         right_align_hits_del(&mut hits, seq);
+    }
+
+    // M11 Round-4 (P1): record each deletion run ONCE as a structural
+    // `DeletionObs` at its normalized START column, BEFORE end-trimming can
+    // drop edge dashes. The event span is the normalized run length and is
+    // deliberately independent of which `b'-'` base observations survive
+    // trimming: a 2 bp deletion whose trailing dash is end-trimmed must
+    // stay a 2 bp event, not collapse into a false 1 bp allele. The
+    // `b'-'` BaseObs pushes below are unchanged (count/content/position).
+    for (start_ref, span) in deletion_runs(&hits) {
+        if start_ref < columns.len() {
+            columns[start_ref].deletions.push(DeletionObs {
+                span: span as u32,
+                strand,
+                read_id,
+            });
+        }
     }
 
     if hits.len() > END_TRIM * 2 {
@@ -408,6 +443,7 @@ pub fn apply_read(
             columns[*r].observations.push(BaseObs {
                 base: *base,
                 strand,
+                read_id,
             });
         }
     }
@@ -419,7 +455,11 @@ pub fn apply_read(
         };
         let norm_r = (norm_pos_1 as usize).saturating_sub(1);
         if norm_r < columns.len() {
-            columns[norm_r].insertions.push((norm_oligo, strand));
+            columns[norm_r].insertions.push(InsertionObs {
+                seq: norm_oligo,
+                strand,
+                read_id,
+            });
         }
     }
 }
@@ -506,9 +546,33 @@ fn is_homopolymer_at(seq: &[u8], pos: usize) -> bool {
     count >= 3
 }
 
+/// Maximal consecutive `b'-'` runs in a hit list as `(start_ref, len)`.
+///
+/// One run corresponds to one CIGAR deletion op (≤ 2 bp; longer deletions
+/// are diverted to the JC split path and never pushed as dashes), so the
+/// caller records exactly one [`DeletionObs`] per read per deletion run.
+/// Runs are measured AFTER right-normalization so the recorded span is the
+/// normalized event span, and BEFORE end-trimming so the span survives the
+/// loss of edge dash observations.
+fn deletion_runs(hits: &[(usize, usize, u8)]) -> Vec<(usize, usize)> {
+    let mut runs = Vec::new();
+    let mut i = 0;
+    while i < hits.len() {
+        if hits[i].2 == b'-' {
+            let start = i;
+            while i < hits.len() && hits[i].2 == b'-' {
+                i += 1;
+            }
+            runs.push((hits[start].0, i - start));
+        } else {
+            i += 1;
+        }
+    }
+    runs
+}
+
 /// Slide 1–2 bp deletions in `hits` towards the 3′ end within homopolymers / tandem repeats.
-pub(crate) fn right_align_hits_del(hits: &mut [(usize, usize, u8)], ref_seq: &[u8]) {
-    if hits.is_empty() {
+pub(crate) fn right_align_hits_del(hits: &mut [(usize, usize, u8)], ref_seq: &[u8]) {    if hits.is_empty() {
         return;
     }
     let n = hits.len();
@@ -838,6 +902,7 @@ fn hits_to_splits(
             side2_pos_1,
             overlap: 0,
             origin: SplitOrigin::Softclip(hint_id),
+            seed_reads: 0,
         });
     }
     out
@@ -905,6 +970,7 @@ fn repeat_seed_from_placement(
         reciprocal_evidence: false,
         rejection_reason: None,
         resource_limit_reason: None,
+        failure_stage: None,
     }
 }
 
@@ -1077,6 +1143,7 @@ mod tests {
                 ref_base: b,
                 observations: Vec::new(),
                 insertions: Vec::new(),
+                deletions: Vec::new(),
             })
             .collect()
     }
@@ -1108,6 +1175,7 @@ mod tests {
         for minus in [false, false, false, true, true, true] {
             apply_read(
                 &match_read(&alt, 0, minus),
+                0,
                 &mut columns,
                 &mut depth,
                 &mut vec![0u32; ref_seq.len()],
@@ -1153,6 +1221,7 @@ mod tests {
         };
         apply_read(
             &read,
+            read.molecule_id,
             &mut columns,
             &mut depth,
             &mut [0u32; 40],
@@ -1200,6 +1269,7 @@ mod tests {
         let mut clips = Vec::new();
         apply_read(
             &read,
+            read.molecule_id,
             &mut columns,
             &mut depth,
             &mut [0u32; 160],
@@ -1253,6 +1323,7 @@ mod tests {
         let mut clips = Vec::new();
         apply_read(
             &read,
+            read.molecule_id,
             &mut columns,
             &mut vec![0u32; 160],
             &mut [0u32; 160],
@@ -1310,6 +1381,7 @@ mod tests {
         let mut clips = Vec::new();
         apply_read(
             &read,
+            read.molecule_id,
             &mut columns,
             &mut vec![0u32; 160],
             &mut [0u32; 160],
@@ -1361,6 +1433,7 @@ mod tests {
         let mut clips = Vec::new();
         apply_read(
             read,
+            read.molecule_id,
             &mut columns,
             &mut vec![0u32; 160],
             &mut [0u32; 160],
@@ -1382,6 +1455,7 @@ mod tests {
         let mut clips = Vec::new();
         apply_read(
             &read,
+            read.molecule_id,
             &mut columns,
             &mut vec![0u32; ref_seq.len()],
             &mut vec![0u32; ref_seq.len()],
@@ -1738,6 +1812,7 @@ mod tests {
         for r in [&r1, &r2, &r3] {
             apply_read(
                 r,
+                r.molecule_id,
                 &mut columns,
                 &mut depth,
                 &mut vec![0u32; ref_seq.len()],
@@ -1788,6 +1863,7 @@ mod tests {
 
         apply_read(
             &read,
+            read.molecule_id,
             &mut columns,
             &mut depth,
             &mut vec![0u32; ref_seq.len()],
@@ -1807,6 +1883,267 @@ mod tests {
         assert!(
             columns[10].observations.iter().any(|o| o.base == b'-'),
             "index 10 should have deletion '-' observation"
+        );
+    }
+
+    /// M11 Round-3 (P1-1): a read with an L-bp CIGAR deletion yields L
+    /// consecutive '-' observations carrying the SAME read_id at consecutive
+    /// columns, so the classify layer can measure per-read deletion spans.
+    #[test]
+    fn deletion_run_observations_share_one_read_identity() {
+        let ref_seq = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec();
+        let mut columns = cols(&ref_seq);
+        let read = AlignedRead {
+            contig_idx: 0,
+            ref_start_0: 0,
+            minus: false,
+            seq: b"ACGTACGTACACGTACGTACGT".to_vec(),
+            cigar: vec![
+                CigarOp {
+                    kind: CigarKind::Match,
+                    len: 10,
+                },
+                CigarOp {
+                    kind: CigarKind::Del,
+                    len: 2,
+                },
+                CigarOp {
+                    kind: CigarKind::Match,
+                    len: 10,
+                },
+            ],
+            mapq: 40,
+            molecule_id: 0,
+        };
+        apply_read(
+            &read,
+            42,
+            &mut columns,
+            &mut vec![0u32; ref_seq.len()],
+            &mut vec![0u32; ref_seq.len()],
+            &mut Vec::new(),
+            &mut Vec::new(),
+            Some(&ref_seq),
+        );
+
+        // The 2 bp deletion spans reference indices 10 and 11 (0-based);
+        // right-alignment cannot slide it: ref[10]='G' != ref[12]='A'.
+        let dashes: Vec<usize> = columns
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.observations.iter().any(|o| o.read_id == 42 && o.base == b'-'))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(dashes.len(), 2, "one read's 2D yields exactly two '-' columns");
+        assert_eq!(dashes[0] + 1, dashes[1], "'-' observations must be consecutive");
+        let id_at_first = columns[dashes[0]]
+            .observations
+            .iter()
+            .find(|o| o.base == b'-')
+            .unwrap()
+            .read_id;
+        let id_at_second = columns[dashes[1]]
+            .observations
+            .iter()
+            .find(|o| o.base == b'-')
+            .unwrap()
+            .read_id;
+        assert_eq!(id_at_first, id_at_second, "same read, same identity");
+        assert_eq!(id_at_first, 42, "identity is the builder-assigned read_id");
+    }
+
+    /// M11 Round-3 (P1-2): insertion entries carry the read identity through
+    /// right-normalization so classify can match entries to reads.
+    #[test]
+    fn insertion_entry_carries_read_identity() {
+        let ref_seq = b"ACGTACGTACG".to_vec();
+        let mut columns = cols(&ref_seq);
+        let read = AlignedRead {
+            contig_idx: 0,
+            ref_start_0: 0,
+            minus: false,
+            seq: b"ACGTGACGTACG".to_vec(),
+            cigar: vec![
+                CigarOp {
+                    kind: CigarKind::Match,
+                    len: 4,
+                },
+                CigarOp {
+                    kind: CigarKind::Ins,
+                    len: 1,
+                },
+                CigarOp {
+                    kind: CigarKind::Match,
+                    len: 7,
+                },
+            ],
+            mapq: 40,
+            molecule_id: 0,
+        };
+        apply_read(
+            &read,
+            7,
+            &mut columns,
+            &mut vec![0u32; ref_seq.len()],
+            &mut vec![0u32; ref_seq.len()],
+            &mut Vec::new(),
+            &mut Vec::new(),
+            Some(&ref_seq),
+        );
+
+        let ins = &columns[3].insertions[0];
+        assert_eq!(ins.seq, b"G".to_vec());
+        assert_eq!(ins.read_id, 7);
+        assert_eq!(ins.strand, Strand::Plus);
+    }
+
+    /// M11 Round-4 (P1) regression for the Codex-Sol R4 counterexample.
+    ///
+    /// Reference `P + "ACA"` (P = 70 non-homopolymer bases), read `P + "A"`
+    /// with CIGAR `70M2D1M`. The 2 bp deletion at refs 70..71 right-normalizes
+    /// (slides) onto refs 71..72, which puts a dash on the read's LAST aligned
+    /// reference base; `END_TRIM` then legitimately removes that dash, so only
+    /// ONE `b'-'` base observation survives (at ref 71). The structural
+    /// `DeletionObs` must still carry the full normalized span 2 at the
+    /// normalized start ref 71 — independently of the trimmed observations —
+    /// so the classify layer cannot fabricate a 1 bp allele.
+    #[test]
+    fn trimmed_edge_deletion_keeps_event_span() {
+        let mut ref_seq = Vec::new();
+        for i in 0..70 {
+            ref_seq.push(b"ACGT"[i % 4]);
+        }
+        ref_seq.extend_from_slice(b"ACA"); // refs 70='A', 71='C', 72='A'
+        let mut columns = cols(&ref_seq);
+        let mut read_seq = ref_seq[..70].to_vec();
+        read_seq.push(b'A'); // 71 bp: P + "A"
+        let read = AlignedRead {
+            contig_idx: 0,
+            ref_start_0: 0,
+            minus: false,
+            seq: read_seq,
+            cigar: vec![
+                CigarOp {
+                    kind: CigarKind::Match,
+                    len: 70,
+                },
+                CigarOp {
+                    kind: CigarKind::Del,
+                    len: 2,
+                },
+                CigarOp {
+                    kind: CigarKind::Match,
+                    len: 1,
+                },
+            ],
+            mapq: 40,
+            molecule_id: 0,
+        };
+        apply_read(
+            &read,
+            9,
+            &mut columns,
+            &mut vec![0u32; ref_seq.len()],
+            &mut vec![0u32; ref_seq.len()],
+            &mut Vec::new(),
+            &mut Vec::new(),
+            Some(&ref_seq),
+        );
+
+        // Bug precondition reproduced through the real builder: end-trim
+        // removed the deletion's trailing dash, so only ONE '-' observation
+        // survives, at the normalized start ref 71.
+        let dashes: Vec<usize> = columns
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.observations.iter().any(|o| o.read_id == 9 && o.base == b'-'))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(dashes, vec![71], "trim must leave only the dash at ref 71");
+
+        // The structural event preserves the normalized span INDEPENDENTLY
+        // of the trimmed observations.
+        assert_eq!(
+            columns[71].deletions,
+            vec![DeletionObs {
+                span: 2,
+                strand: Strand::Plus,
+                read_id: 9,
+            }],
+            "one DeletionObs per read per deletion run, span 2 at the normalized start"
+        );
+        assert!(
+            columns
+                .iter()
+                .enumerate()
+                .all(|(i, c)| i == 71 || c.deletions.is_empty()),
+            "no event records anywhere but the normalized start column"
+        );
+        let total_events: usize = columns.iter().map(|c| c.deletions.len()).sum();
+        assert_eq!(total_events, 1, "exactly one event for one read's one run");
+    }
+
+    /// M11 Round-4 (P1): one `DeletionObs` per read per deletion run — two
+    /// reads with disjoint 1 bp deletions each record exactly one span-1
+    /// event at their own start column, plus their dash observations.
+    #[test]
+    fn one_deletion_event_per_read_per_run() {
+        let ref_seq = b"ACGTACGTACGT".to_vec();
+        let mut columns = cols(&ref_seq);
+        for (id, del_idx) in [(1u64, 4usize), (2, 7)] {
+            let mut read_seq = ref_seq.clone();
+            read_seq.remove(del_idx);
+            let after = ref_seq.len() - del_idx - 1;
+            let read = AlignedRead {
+                contig_idx: 0,
+                ref_start_0: 0,
+                minus: false,
+                seq: read_seq,
+                cigar: vec![
+                    CigarOp {
+                        kind: CigarKind::Match,
+                        len: del_idx,
+                    },
+                    CigarOp {
+                        kind: CigarKind::Del,
+                        len: 1,
+                    },
+                    CigarOp {
+                        kind: CigarKind::Match,
+                        len: after,
+                    },
+                ],
+                mapq: 40,
+                molecule_id: 0,
+            };
+            apply_read(
+                &read,
+                id,
+                &mut columns,
+                &mut vec![0u32; ref_seq.len()],
+                &mut vec![0u32; ref_seq.len()],
+                &mut Vec::new(),
+                &mut Vec::new(),
+                Some(&ref_seq),
+            );
+        }
+        let total_events: usize = columns.iter().map(|c| c.deletions.len()).sum();
+        assert_eq!(total_events, 2, "two reads, two runs, two event records");
+        assert_eq!(
+            columns[4].deletions,
+            vec![DeletionObs {
+                span: 1,
+                strand: Strand::Plus,
+                read_id: 1,
+            }]
+        );
+        assert_eq!(
+            columns[7].deletions,
+            vec![DeletionObs {
+                span: 1,
+                strand: Strand::Plus,
+                read_id: 2,
+            }]
         );
     }
 }

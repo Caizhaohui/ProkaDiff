@@ -30,6 +30,9 @@ pub struct Cli {
     /// Coordinate-skeleton reference (FASTA or GenBank). Repeatable.
     #[arg(long = "ref", action = ArgAction::Append, num_args = 1..)]
     pub refs: Vec<PathBuf>,
+    /// Optional path to multi-clone batch manifest TSV (enables multi-clone engineering batch audit mode).
+    #[arg(long = "batch-manifest")]
+    pub batch_manifest: Option<PathBuf>,
     /// Optional intended-edit table. Omitted → every post-subtract call is unintended.
     #[arg(long)]
     pub intended: Option<PathBuf>,
@@ -82,6 +85,18 @@ pub struct Cli {
     /// Minimum allele frequency relative to local coverage for JC records (default: 0.05).
     #[arg(long = "jc-min-frequency", default_value_t = 0.05)]
     pub jc_min_frequency: f64,
+    /// Enable subclonal (low-frequency) small variant audit mode (SNP, SUB, INS/DEL <= 2bp).
+    #[arg(long = "subclonal", default_value_t = false)]
+    pub subclonal: bool,
+    /// Minimum alternate allele frequency threshold for subclonal audit mode (default: 0.05).
+    #[arg(long = "min-subclonal-af", default_value_t = 0.05)]
+    pub min_subclonal_af: f64,
+    /// Minimum supporting ALT reads for subclonal audit mode (default: 3).
+    #[arg(long = "min-subclonal-alt-reads", default_value_t = 3)]
+    pub min_subclonal_alt_reads: u64,
+    /// Maximum strand bias p-value for subclonal warning flag (default: 0.001).
+    #[arg(long = "max-strand-bias-pvalue", default_value_t = 0.001)]
+    pub max_strand_bias_pvalue: f64,
     /// Increase diagnostic logging verbosity (-v for DEBUG, -vv for TRACE).
     #[arg(short, long, action = ArgAction::Count, global = true)]
     pub verbose: u8,
@@ -136,6 +151,7 @@ pub enum CliError {
     InvalidPam { reason: String },
     OddFastqCount { flag: &'static str, count: usize },
     FileNotFound { flag: &'static str, path: PathBuf },
+    InvalidParameter { flag: &'static str, reason: String },
 }
 
 impl std::fmt::Display for CliError {
@@ -170,6 +186,9 @@ impl std::fmt::Display for CliError {
                 "{flag}: file '{}' not found or not accessible",
                 path.display()
             ),
+            Self::InvalidParameter { flag, reason } => {
+                write!(f, "invalid {flag}: {reason}")
+            }
         }
     }
 }
@@ -244,6 +263,8 @@ pub fn validate_pam(raw: &str) -> Result<String, CliError> {
 pub struct ProductJob {
     pub starter: Vec<PathBuf>,
     pub edited: Vec<PathBuf>,
+    #[allow(dead_code)]
+    pub batch_manifest: Option<PathBuf>,
     pub refs: Vec<PathBuf>,
     pub editor: Editor,
     pub spacer: Option<String>,
@@ -259,10 +280,21 @@ pub struct ProductJob {
     pub max_rna_bulge: u32,
     pub jc_min_support_reads: usize,
     pub jc_min_frequency: f64,
+    #[allow(dead_code)]
+    pub subclonal: bool,
+    #[allow(dead_code)]
+    pub min_subclonal_af: f64,
+    #[allow(dead_code)]
+    pub min_subclonal_alt_reads: u64,
+    #[allow(dead_code)]
+    pub max_strand_bias_pvalue: f64,
 }
 
 pub fn validate_product(cli: &Cli) -> Result<ProductJob, CliError> {
-    if cli.starter.is_empty() || cli.edited.is_empty() {
+    if cli.starter.is_empty() {
+        return Err(CliError::StarterMandatory);
+    }
+    if cli.batch_manifest.is_none() && cli.edited.is_empty() {
         return Err(CliError::StarterMandatory);
     }
     if cli.refs.is_empty() {
@@ -278,11 +310,14 @@ pub fn validate_product(cli: &Cli) -> Result<ProductJob, CliError> {
     };
     let editor = parse_editor(raw)?;
     check_fastq_pairing("--starter", &cli.starter)?;
-    check_fastq_pairing("--edited", &cli.edited)?;
+    if !cli.edited.is_empty() {
+        check_fastq_pairing("--edited", &cli.edited)?;
+    }
 
+    let is_batch = cli.batch_manifest.is_some();
     let spacer = match (editor, cli.spacer.as_deref()) {
-        (Editor::Cas9 | Editor::Cas12a, None) => return Err(CliError::MissingSpacer),
-        (Editor::Cas9 | Editor::Cas12a, Some(s)) if s.trim().is_empty() => {
+        (Editor::Cas9 | Editor::Cas12a, None) if !is_batch => return Err(CliError::MissingSpacer),
+        (Editor::Cas9 | Editor::Cas12a, Some(s)) if s.trim().is_empty() && !is_batch => {
             return Err(CliError::MissingSpacer)
         }
         (_, Some(s)) if !s.trim().is_empty() => Some(validate_spacer(s)?),
@@ -318,6 +353,14 @@ pub fn validate_product(cli: &Cli) -> Result<ProductJob, CliError> {
             });
         }
     }
+    if let Some(ref bm) = cli.batch_manifest {
+        if !bm.exists() {
+            return Err(CliError::FileNotFound {
+                flag: "--batch-manifest",
+                path: bm.clone(),
+            });
+        }
+    }
     if let Some(ref p) = cli.intended {
         if !p.exists() {
             return Err(CliError::FileNotFound {
@@ -327,9 +370,35 @@ pub fn validate_product(cli: &Cli) -> Result<ProductJob, CliError> {
         }
     }
 
+    if !cli.min_subclonal_af.is_finite() || cli.min_subclonal_af < 0.01 || cli.min_subclonal_af > 0.50 {
+        return Err(CliError::InvalidParameter {
+            flag: "--min-subclonal-af",
+            reason: format!(
+                "value {} out of valid range [0.01, 0.50]",
+                cli.min_subclonal_af
+            ),
+        });
+    }
+    if cli.min_subclonal_alt_reads < 1 {
+        return Err(CliError::InvalidParameter {
+            flag: "--min-subclonal-alt-reads",
+            reason: "minimum ALT reads must be >= 1".into(),
+        });
+    }
+    if !cli.max_strand_bias_pvalue.is_finite() || cli.max_strand_bias_pvalue < 0.0 || cli.max_strand_bias_pvalue > 1.0 {
+        return Err(CliError::InvalidParameter {
+            flag: "--max-strand-bias-pvalue",
+            reason: format!(
+                "value {} out of valid range [0.0, 1.0]",
+                cli.max_strand_bias_pvalue
+            ),
+        });
+    }
+
     Ok(ProductJob {
         starter: cli.starter.clone(),
         edited: cli.edited.clone(),
+        batch_manifest: cli.batch_manifest.clone(),
         refs: cli.refs.clone(),
         editor,
         spacer,
@@ -345,6 +414,10 @@ pub fn validate_product(cli: &Cli) -> Result<ProductJob, CliError> {
         max_rna_bulge: cli.max_rna_bulge,
         jc_min_support_reads: cli.jc_min_support_reads,
         jc_min_frequency: cli.jc_min_frequency,
+        subclonal: cli.subclonal,
+        min_subclonal_af: cli.min_subclonal_af,
+        min_subclonal_alt_reads: cli.min_subclonal_alt_reads,
+        max_strand_bias_pvalue: cli.max_strand_bias_pvalue,
     })
 }
 
@@ -738,5 +811,150 @@ mod tests {
         .unwrap();
         assert!(cli.quiet);
         assert_eq!(cli.verbose, 2);
+    }
+
+    #[test]
+    fn cli_parses_batch_manifest_flag() {
+        let cli = Cli::try_parse_from([
+            "prokadiff",
+            "--starter",
+            "s.fq",
+            "--batch-manifest",
+            "batch_manifest.tsv",
+            "--ref",
+            "r.fa",
+            "--editor",
+            "cas9",
+            "--spacer",
+            "GAGTTCATCTACGCCGTGAA",
+            "--outdir",
+            "out/",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.batch_manifest,
+            Some(PathBuf::from("batch_manifest.tsv"))
+        );
+        assert!(cli.edited.is_empty());
+    }
+
+    #[test]
+    fn batch_manifest_mode_still_mandates_starter() {
+        let cli = Cli::try_parse_from([
+            "prokadiff",
+            "--batch-manifest",
+            "manifest.tsv",
+            "--ref",
+            "r.fa",
+            "--editor",
+            "cas9",
+            "--spacer",
+            "GAGTTCATCTACGCCGTGAA",
+            "--outdir",
+            "out/",
+        ])
+        .unwrap();
+        let err = validate_product(&cli).unwrap_err();
+        assert!(matches!(err, CliError::StarterMandatory));
+    }
+
+    #[test]
+    fn subclonal_parameter_bounds_validation() {
+        let d = test_dir("subclonal_bounds");
+        let s = touch(&d, "s.fq");
+        let e = touch(&d, "e.fq");
+        let r = touch(&d, "r.fa");
+
+        let make_cli = |af: &str, alt_reads: &str, sb_p: &str| {
+            Cli::try_parse_from([
+                "prokadiff",
+                "--starter",
+                s.to_str().unwrap(),
+                "--edited",
+                e.to_str().unwrap(),
+                "--ref",
+                r.to_str().unwrap(),
+                "--editor",
+                "dsb",
+                "--outdir",
+                "out/",
+                "--subclonal",
+                "--min-subclonal-af",
+                af,
+                "--min-subclonal-alt-reads",
+                alt_reads,
+                "--max-strand-bias-pvalue",
+                sb_p,
+            ])
+            .unwrap()
+        };
+
+        // AF too low (< 0.01)
+        let cli = make_cli("0.005", "3", "0.001");
+        let err = validate_product(&cli).unwrap_err();
+        assert!(matches!(
+            err,
+            CliError::InvalidParameter {
+                flag: "--min-subclonal-af",
+                ..
+            }
+        ));
+
+        // AF too high (> 0.50)
+        let cli = make_cli("0.55", "3", "0.001");
+        let err = validate_product(&cli).unwrap_err();
+        assert!(matches!(
+            err,
+            CliError::InvalidParameter {
+                flag: "--min-subclonal-af",
+                ..
+            }
+        ));
+
+        // ALT reads < 1
+        let cli = make_cli("0.05", "0", "0.001");
+        let err = validate_product(&cli).unwrap_err();
+        assert!(matches!(
+            err,
+            CliError::InvalidParameter {
+                flag: "--min-subclonal-alt-reads",
+                ..
+            }
+        ));
+
+        // Strand bias p-value > 1.0
+        let cli = make_cli("0.05", "3", "1.5");
+        let err = validate_product(&cli).unwrap_err();
+        assert!(matches!(
+            err,
+            CliError::InvalidParameter {
+                flag: "--max-strand-bias-pvalue",
+                ..
+            }
+        ));
+
+        // AF is NaN
+        let cli = make_cli("NaN", "3", "0.001");
+        let err = validate_product(&cli).unwrap_err();
+        assert!(matches!(
+            err,
+            CliError::InvalidParameter {
+                flag: "--min-subclonal-af",
+                ..
+            }
+        ));
+
+        // Strand bias p-value is NaN
+        let cli = make_cli("0.05", "3", "NaN");
+        let err = validate_product(&cli).unwrap_err();
+        assert!(matches!(
+            err,
+            CliError::InvalidParameter {
+                flag: "--max-strand-bias-pvalue",
+                ..
+            }
+        ));
+
+        let _ = std::fs::remove_dir_all(d);
     }
 }

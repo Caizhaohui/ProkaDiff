@@ -43,6 +43,10 @@ benchmark/results/*
 !benchmark/results/parity_summary.tsv
 !benchmark/results/verified/
 !benchmark/results/verified/*.md
+!benchmark/results/parity_closure/
+benchmark/results/parity_closure/*
+!benchmark/results/parity_closure/supervisor/
+!benchmark/results/parity_closure/supervisor/**
 benchmark/real_world/results/*
 !benchmark/real_world/results/.gitkeep
 benchmark/logs/
@@ -70,3 +74,6 @@ __pycache__/
 
 # Session handoffs
 .*handoff*.md
+
+# Controller/Worker evidence logs & artifacts (not published)
+.prokadiff/

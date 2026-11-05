@@ -4,6 +4,11 @@
 set -euo pipefail
 
 RUN="${1:?SRA run accession required}"
+MODE="${2:-p1a}"
+if [[ "$MODE" != "p1a" && "$MODE" != "p2a" ]]; then
+    echo "unknown staging mode: $MODE" >&2
+    exit 2
+fi
 REPO_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$REPO_DIR"
 
@@ -41,7 +46,7 @@ fail() {
 }
 
 {
-    echo "=== M6-P1a stage $RUN ==="
+    echo "=== M6 stage $MODE $RUN ==="
     echo "start $START_ISO"
     echo "host $(hostname)"
     echo "job ${SLURM_JOB_ID:-manual}"
@@ -51,7 +56,8 @@ fail() {
     echo "pigz $(pigz --version 2>&1 | head -1)"
 } | tee "$LOG"
 
-if ! python3 - "$RUN" "$REPO_DIR" << 'PY' | tee -a "$LOG"
+if [[ "$MODE" == "p1a" ]]; then
+    if ! python3 - "$RUN" "$REPO_DIR" << 'PY' | tee -a "$LOG"
 import hashlib, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[2] + "/benchmark/real_world/scripts")
@@ -82,8 +88,20 @@ if len(bases) != 4641652 or digest != expected:
     raise SystemExit(f"reference hash mismatch len={len(bases)} sha={digest}")
 print(f"reference_gate NC_000913.3 len=4641652 sha256={digest}")
 PY
-then
-    fail BLOCKED_REFERENCE "reference policy or local NC_000913.3 sequence hash failed"
+    then
+        fail BLOCKED_REFERENCE "reference policy or local NC_000913.3 sequence hash failed"
+    fi
+    export M6_EXEC_REF="NC_000913.3"
+    export M6_REF_LEN="4641652"
+    export M6_REF_SHA="e999dceccb76562d40e49a10d9e6d4cf1c05d184f4f80b92bb32d4a2420c11d0"
+else
+    if ! gate="$(python3 "$REPO_DIR/benchmark/real_world/scripts/m6_p2a_stage_gate.py" --run "$RUN")" ; then
+        fail BLOCKED_REFERENCE "P2a cohort or reference gate failed"
+    fi
+    printf '%s\n' "$gate" | tee -a "$LOG"
+    export M6_EXEC_REF="$(printf '%s\n' "$gate" | awk -F '\t' '{print $3}')"
+    export M6_REF_SHA="$(printf '%s\n' "$gate" | awk -F '\t' '{print $4}')"
+    export M6_REF_LEN="$(printf '%s\n' "$gate" | awk -F '\t' '{print $5}')"
 fi
 
 avail="$(df -B1 --output=avail "$DEST" | tail -1 | tr -d ' ')"
@@ -103,6 +121,29 @@ if [[ -z "$sra_file" ]]; then
 fi
 if ! vdb-validate "$sra_file" >> "$LOG" 2>&1; then
     fail BLOCKED_SRA_VALIDATION "vdb-validate failed for $sra_file"
+fi
+
+if [[ "$MODE" == "p2a" ]]; then
+    if ! mate_counts="$(python3 - "$sra_file" << 'PY'
+import re, subprocess, sys
+text = subprocess.check_output(["sra-stat", "-x", sys.argv[1]], text=True)
+line = text.splitlines()[0]
+def attr(name):
+    match = re.search(rf'\b{name}="(\d+)"', line)
+    if match is None:
+        raise SystemExit(f"missing {name}")
+    return match.group(1)
+print(attr("spot_count") + "\t" + attr("spot_count_mates"))
+PY
+    )"; then
+        fail BLOCKED_READ_STRUCTURE "sra-stat failed"
+    fi
+    printf 'sra-stat %s\n' "$mate_counts" | tee -a "$LOG"
+    sra_spots="${mate_counts%%$'\t'*}"
+    sra_mates="${mate_counts#*$'\t'}"
+    if [[ "$sra_spots" != "$sra_mates" || "$sra_mates" == "0" ]]; then
+        fail BLOCKED_READ_STRUCTURE "sra-stat spot_count=$sra_spots spot_count_mates=$sra_mates"
+    fi
 fi
 
 threads="${SLURM_CPUS_PER_TASK:-4}"
@@ -157,6 +198,7 @@ if ! python3 - "$RUN" "$REPO_DIR" "$r1_reads" "$r1_content" "$r2_content" "$r1_g
 import csv, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[2] + "/benchmark/real_world/scripts")
+import os
 run, repo, reads, c1, c2, z1, z2, b1, b2 = sys.argv[1:]
 runinfo = list(csv.DictReader(open(Path(repo)/"benchmark/real_world/manifests/prjna1088182_sra_runinfo.csv")))
 meta = next(row for row in runinfo if row["Run"] == run)
@@ -191,9 +233,9 @@ row = {
     "submission": meta["Submission"],
     "strain": meta["ScientificName"],
     "library_layout": meta["LibraryLayout"],
-    "execution_reference": "NC_000913.3",
-    "reference_length": "4641652",
-    "reference_sequence_sha256": "e999dceccb76562d40e49a10d9e6d4cf1c05d184f4f80b92bb32d4a2420c11d0",
+    "execution_reference": os.environ.get("M6_EXEC_REF", "NC_000913.3"),
+    "reference_length": os.environ.get("M6_REF_LEN", "4641652"),
+    "reference_sequence_sha256": os.environ.get("M6_REF_SHA", "e999dceccb76562d40e49a10d9e6d4cf1c05d184f4f80b92bb32d4a2420c11d0"),
     "r1_path": f"{rel}/{run}_1.fastq.gz",
     "r2_path": f"{rel}/{run}_2.fastq.gz",
     "r1_reads": str(observed),

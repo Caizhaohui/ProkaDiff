@@ -80,6 +80,26 @@ pub fn run_sample(
     outdir: &Path,
     opts: &EngineOptions,
 ) -> Result<PathBuf> {
+    run_sample_impl(ref_fa, reads, outdir, opts, false).map(|(p, _)| p)
+}
+
+/// Align `reads` to `ref_fa`, write a Genome Diff to `outdir/output.gd`, and return the contig pileups.
+pub fn run_sample_with_pileup(
+    ref_fa: &Path,
+    reads: &FastqInput,
+    outdir: &Path,
+    opts: &EngineOptions,
+) -> Result<(PathBuf, Vec<ContigPileup>)> {
+    run_sample_impl(ref_fa, reads, outdir, opts, true).map(|(p, pil)| (p, pil.unwrap()))
+}
+
+fn run_sample_impl(
+    ref_fa: &Path,
+    reads: &FastqInput,
+    outdir: &Path,
+    opts: &EngineOptions,
+    retain_pileup: bool,
+) -> Result<(PathBuf, Option<Vec<ContigPileup>>)> {
     let mut opts_buf;
     let opts = if opts.repeats.is_empty() {
         let mut reps = Vec::new();
@@ -134,6 +154,11 @@ pub fn run_sample(
     let pileup = pileup_contigs_with_repeat(&fasta, &primary_data.aligned, opts);
     info!("prokadiff: candidate-junction second pass");
     let extra = second_pass_splits(&fasta, reads, &primary_data, &pileup.contigs, opts, &work)?;
+    let retained = if retain_pileup {
+        Some(pileup.contigs.clone())
+    } else {
+        None
+    };
     let gd = emit_from_pileup(&fasta, pileup.contigs, opts, &extra.splits);
     let gd_path = outdir.join("output.gd");
     gd.write_path(&gd_path)?;
@@ -154,7 +179,7 @@ pub fn run_sample(
         let _ = std::fs::remove_file(&bam_path);
         let _ = std::fs::remove_dir_all(&work);
     }
-    Ok(gd_path)
+    Ok((gd_path, retained))
 }
 
 pub fn call_from_bam(
@@ -248,15 +273,23 @@ fn pileup_contigs_with_repeat(
                         ref_base: b.to_ascii_uppercase(),
                         observations: Vec::new(),
                         insertions: Vec::new(),
+                        deletions: Vec::new(),
                     })
                     .collect();
                 let mut unique_depth = vec![0u32; n];
                 let mut total_depth = vec![0u32; n];
                 let mut splits = Vec::new();
                 let mut clips = Vec::new();
-                for read in aligned.iter().filter(|r| r.contig_idx == idx) {
+                // Ordinal read identity for M11 subclonal per-read allele
+                // classification. `molecule_id` is a (qname, mate) hash and is
+                // SHARED by supplementary alignments of one molecule, so it is
+                // not unique per aligned record; this per-contig ordinal is.
+                for (next_read_id, read) in
+                    aligned.iter().filter(|r| r.contig_idx == idx).enumerate()
+                {
                     apply_read(
                         read,
+                        next_read_id as u64,
                         &mut columns,
                         &mut unique_depth,
                         &mut total_depth,

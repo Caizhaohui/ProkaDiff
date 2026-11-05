@@ -15,6 +15,46 @@ pub struct BaseObs {
     /// Reference-aligned base: A/C/G/T or `b'-'` for a 1 bp deletion in this column.
     pub base: u8,
     pub strand: Strand,
+    /// Identity of the aligned record that contributed this observation.
+    /// Unique per read within one contig pileup (an ordinal assigned by the
+    /// pileup builder, not the molecule id: supplementary alignments of one
+    /// molecule share a molecule id but are distinct aligned records).
+    /// Additive M11 subclonal field; consensus callers must not use it.
+    pub read_id: u64,
+}
+
+/// One read's inserted sequence *after* a reference position.
+/// `read_id` follows the same identity contract as [`BaseObs::read_id`]
+/// and survives right-normalization and repeat masking because it is
+/// attached to the entry before those steps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InsertionObs {
+    /// Inserted oligo (uppercase, reference-forward, right-normalized).
+    pub seq: Vec<u8>,
+    pub strand: Strand,
+    pub read_id: u64,
+}
+
+/// One read's deletion EVENT spanning `span` reference bases starting at this
+/// position (M11 Round-4 P1).
+///
+/// Structural record created by the pileup builder: exactly one entry per
+/// read per deletion run, attached at the run's START column after the final
+/// right-normalization position is fixed. The span is deliberately
+/// independent of the per-base `b'-'` `BaseObs` entries: end-trimming
+/// legitimately removes edge dash observations (e.g. a `70M2D1M` read whose
+/// deletion right-normalizes onto the read's 3′ end loses its last dash),
+/// so consumers must take deletion spans from these records and never
+/// re-infer them from surviving dash runs.
+/// `read_id` follows the same identity contract as [`BaseObs::read_id`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeletionObs {
+    /// Deleted reference bases. Recorded spans are 1–2: CIGAR deletions
+    /// longer than 2 bp are diverted to the JC split path and never pushed
+    /// as dash observations, so no longer run can be recorded here.
+    pub span: u32,
+    pub strand: Strand,
+    pub read_id: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -22,7 +62,11 @@ pub struct PileupColumn {
     pub ref_base: u8,
     pub observations: Vec<BaseObs>,
     /// Inserted sequence *after* this reference position, one per supporting read.
-    pub insertions: Vec<(Vec<u8>, Strand)>,
+    pub insertions: Vec<InsertionObs>,
+    /// Deletion events STARTING at this reference position, one per
+    /// supporting read (M11 subclonal; default-mode consensus callers must
+    /// not use it).
+    pub deletions: Vec<DeletionObs>,
 }
 
 #[derive(Clone, Debug)]
@@ -135,23 +179,27 @@ fn call_insertion_with_metrics(
     let mut best_n = 0usize;
     let mut plus = 0usize;
     let mut minus = 0usize;
-    for (seq, _strand) in &col.insertions {
-        if seq.is_empty() || seq.len() > 2 {
+    for ins in &col.insertions {
+        if ins.seq.is_empty() || ins.seq.len() > 2 {
             continue;
         }
-        let n = col.insertions.iter().filter(|(s, _)| s == seq).count();
+        let n = col
+            .insertions
+            .iter()
+            .filter(|other| other.seq == ins.seq)
+            .count();
         if n > best_n {
             best_n = n;
-            best = Some(seq.clone());
+            best = Some(ins.seq.clone());
             plus = col
                 .insertions
                 .iter()
-                .filter(|(s, st)| s == seq && *st == Strand::Plus)
+                .filter(|other| other.seq == ins.seq && other.strand == Strand::Plus)
                 .count();
             minus = col
                 .insertions
                 .iter()
-                .filter(|(s, st)| s == seq && *st == Strand::Minus)
+                .filter(|other| other.seq == ins.seq && other.strand == Strand::Minus)
                 .count();
         }
     }
@@ -197,12 +245,15 @@ mod tests {
             ref_base,
             observations: bases
                 .iter()
-                .map(|(b, s)| BaseObs {
+                .enumerate()
+                .map(|(i, (b, s))| BaseObs {
                     base: *b,
                     strand: *s,
+                    read_id: i as u64,
                 })
                 .collect(),
             insertions: Vec::new(),
+            deletions: Vec::new(),
         }
     }
 
@@ -248,12 +299,36 @@ mod tests {
     fn two_bp_insertion_on_both_strands() {
         let mut c = col(b'T', &[(b'T', Strand::Plus); 6]);
         c.insertions = vec![
-            (b"AT".to_vec(), Strand::Plus),
-            (b"AT".to_vec(), Strand::Plus),
-            (b"AT".to_vec(), Strand::Plus),
-            (b"AT".to_vec(), Strand::Minus),
-            (b"AT".to_vec(), Strand::Minus),
-            (b"AT".to_vec(), Strand::Minus),
+            InsertionObs {
+                seq: b"AT".to_vec(),
+                strand: Strand::Plus,
+                read_id: 0,
+            },
+            InsertionObs {
+                seq: b"AT".to_vec(),
+                strand: Strand::Plus,
+                read_id: 1,
+            },
+            InsertionObs {
+                seq: b"AT".to_vec(),
+                strand: Strand::Plus,
+                read_id: 2,
+            },
+            InsertionObs {
+                seq: b"AT".to_vec(),
+                strand: Strand::Minus,
+                read_id: 3,
+            },
+            InsertionObs {
+                seq: b"AT".to_vec(),
+                strand: Strand::Minus,
+                read_id: 4,
+            },
+            InsertionObs {
+                seq: b"AT".to_vec(),
+                strand: Strand::Minus,
+                read_id: 5,
+            },
         ];
         assert_eq!(
             call_consensus(&c, &RaOptions::default()),

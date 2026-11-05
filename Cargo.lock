@@ -542,6 +542,7 @@ dependencies = [
 name = "prokadiff-classify"
 version = "0.1.0"
 dependencies = [
+ "prokadiff-evidence",
  "prokadiff-gd",
  "prokadiff-offtarget",
  "sha2",

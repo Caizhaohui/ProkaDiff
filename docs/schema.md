@@ -384,3 +384,48 @@ Consumers that require exact M1-M3 parsing must pass `--schema-version v1`. New 
 `crates/prokadiff-report/tests/golden/m3_v1/` contains complete V1 product sets emitted by the M3 closure revision `v0.3.0-m3` (`0f79495`). The test renders the corresponding deterministic fixture through the current explicit V1 product path and compares all seven files byte-for-byte, including headers, cells, summary keys and values, and Markdown. The sets cover both a supplied zero-row intended table and an unexpected structural observation assessed as `PARTIAL` by the M2 assessment logic.
 
 No output normalization is applied. The fixture supplies fixed provenance values (`test` version and commit, fixed timestamp, and absent reference/Bowtie2 values), so even provenance output is compared exactly. These values are test inputs, not variable fields filtered from the comparison.
+
+## M11 subclonal audit: `subclonal_audit.tsv`
+
+Subclonal / Pool-seq audit mode is opt-in: `--subclonal` must be passed explicitly, otherwise the file is not written. The audit reads starter / edited pileups at read level and reports low-frequency small variants at sites outside the 0.75 consensus threshold. It is emitted by `write_subclonal_audit_tsv` (`crates/prokadiff-report/src/tables.rs`) with exactly this 26-column header:
+
+```text
+contig	position	variant_type	ref	alt	starter_depth	starter_alt	starter_af	starter_ci_low	starter_ci_high	edited_depth	edited_alt	edited_af	edited_ci_low	edited_ci_high	delta_af	delta_ci_low	delta_ci_high	strand_bias_p_edited	error_p_edited	error_q_edited	diff_p	diff_q	starter_exclusion_bound	classification	flags
+```
+
+`variant_type` is restricted to the authorized small-variant scope `SNP` / `SUB` / `INS` / `DEL` with indel lengths ≤ 2 bp; larger indels and all low-frequency MOB / JC / AMP observations are out of scope and never enter the audit. `starter_exclusion_bound` is the continuity-corrected Wilson upper bound when the starter ALT count is 0, otherwise `NA`. `flags` is `NONE` or a semicolon-joined sorted list (currently `STRAND_BIAS`, `SINGLE_STRAND_ALT`, `HIGH_OTHER_FRACTION`, `LOW_DEPTH`, `NEAR_CONSENSUS`).
+
+### Classification vocabulary
+
+`classification` is one of seven values, evaluated in deterministic priority order (starter depth gate → edited-specific → edited-enriched → starter subtraction → ambiguous starter trace):
+
+| 值 | 含义 | 报告性 |
+| --- | --- | --- |
+| `EDITED_SPECIFIC` | Edited 中检出（达到检出阈值），starter 中支持低于检出判据（含痕量 reads），且差分显著。这是**观测深度下的统计学排除**，受不确定度约束；不确立 starter 中的缺失，也不确立 de novo 起源 | 报告 |
+| `EDITED_ENRICHED` | 两株均存在，edited 中显著富集 | 报告 |
+| `INDETERMINATE_STARTER_DEPTH` | Starter 深度低于 `min_depth`，无法确认缺失 | 报告 |
+| `AMBIGUOUS_STARTER_TRACE` | Edited 检出，starter 有痕量 reads（A_s ≥ 1）但差分不显著 | 报告 |
+| `PRE_EXISTING_IN_STARTER` | Starter 已存在且 edited 无显著富集 → 扣除 | 排除 |
+| `DEPLETED_IN_EDITED` | Starter 等位在 edited 中显著稀释 | 排除 |
+| `NOT_SUBCLONAL` | 未达到审计阈值 | 排除 |
+
+Only reportable classes are written to `subclonal_audit.tsv`; `NOT_SUBCLONAL` and un-enriched `PRE_EXISTING_IN_STARTER` are subtracted and excluded (retain filter in `evaluate_subclonal_candidates`).
+
+### CLI options
+
+| 选项 | 默认 | 说明 |
+| --- | --- | --- |
+| `--subclonal` | 关闭 | 启用 subclonal 审计模式并写出 `subclonal_audit.tsv`。 |
+| `--min-subclonal-af` | `0.05` | 候选最小 ALT allele fraction，合法区间 `[0.01, 0.50]`。 |
+| `--min-subclonal-alt-reads` | `3` | 候选最小支持 ALT reads 数（≥ 1）。 |
+| `--max-strand-bias-pvalue` | `0.001` | 超过该 Fisher 精确检验 p 值阈值时打 `STRAND_BIAS` 软警告旗。 |
+
+统计语义：per-locus Wilson Score 区间（连续性校正，Newcombe 1998 Method 4）、Fisher 双侧精确检验、上限单尾二项背景错误检验（含 SNP/indel 错误底）、Benjamini-Hochberg FDR 校正、Newcombe hybrid-score 差分区间。统计与分类在 M11 Round-3 修复中保持不变；修复仅涉及 read 级别 REF/ALT 资格判定（逐 read 归属，插入/缺失事件按 read 身份保持独立，邻接但不相交的 1 bp 缺失不再合并为 2 bp 等位，repeat-masked 锚定的插入不会再通过聚合减法盗用 REF 计数）。
+
+### Limitations
+
+- Subclonal audit rows are **opt-in audit observations, not validated variant calls**. They carry no M1 `EventId` and are not inputs to the intended-edit or structural classification contracts.
+- The AF threshold is **configurable, not an experimental sensitivity floor**. Default `0.05` is an audit operating point, not a measured detection limit of the assay.
+- The authorized scope is **SNP / SUB / INS / DEL ≤ 2 bp only**; no low-frequency MOB / JC / AMP detection exists in this mode.
+- Titration tests use pseudorandom **non-repeating synthetic references** and are **synthetic validation only**; they are not evidence for repetitive genomic regions.
+- Detection limits depend on depth, strand balance, mapping quality, and the local error rate. Repeat masking, end trimming, and right-alignment of short indels can move or hide observations near homopolymers and tandem repeats.

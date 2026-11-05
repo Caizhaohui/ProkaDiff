@@ -12,6 +12,8 @@ readme.workspace = true
 [dependencies]
 prokadiff-gd = { workspace = true }
 prokadiff-offtarget = { workspace = true }
+# prokadiff-evidence: workspace subclonal statistical calculations for subclonal classification
+prokadiff-evidence = { workspace = true }
 thiserror = { workspace = true }
 # sha2: cryptographic SHA-256 for deterministic DV1 event identity hashing and contig sequence integrity.
 sha2 = { workspace = true }

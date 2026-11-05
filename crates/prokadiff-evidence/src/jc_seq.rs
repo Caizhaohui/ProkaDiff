@@ -37,7 +37,7 @@ pub struct CandidateJunction {
     pub seed_reads: usize,
 }
 
-fn rc_dna(seq: &[u8]) -> Vec<u8> {
+pub(crate) fn rc_dna(seq: &[u8]) -> Vec<u8> {
     seq.iter()
         .rev()
         .map(|&b| match b.to_ascii_uppercase() {

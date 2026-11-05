@@ -84,6 +84,8 @@ fn empty_audit() -> AuditResult {
             candidate_search_status: CandidateSearchStatus::NotPerformed,
         },
         provenance: mock_provenance("DISABLED_UNVALIDATED_ORACLE"),
+        subclonal_enabled: false,
+        subclonal_variants: vec![],
     }
 }
 

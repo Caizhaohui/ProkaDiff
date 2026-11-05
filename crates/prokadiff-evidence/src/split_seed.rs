@@ -261,7 +261,37 @@ pub fn find_candidate_junctions_with_repeat_evidence_limit(
     alignments: &[SplitReadAlignment],
     max_family_geometries: usize,
 ) -> SplitSeedResult {
-    let candidates = find_candidate_junctions_concrete(alignments);
+    find_candidate_junctions_with_repeat_evidence_limit_anchored(
+        alignments,
+        max_family_geometries,
+        &[],
+        &[],
+        &[],
+    )
+}
+
+/// Same discovery as [`find_candidate_junctions_with_repeat_evidence_limit`],
+/// and, when `repeats` is non-empty, one additional concrete candidate per
+/// read for two geometries the `>20` alignment cap otherwise drops:
+///
+/// - unique flank ↔ the annotated repeat **terminus** closest to that flank
+///   (circular distance);
+/// - both sides multicopy: one candidate per sequence-distinct class
+///   whose observed copy has strictly more alignments than its homologs.
+///   Ties, distant-interior echoes, and incomplete placement sets stay
+///   diagnostic. Nearest-copy distance does not break a tie.
+///
+/// Empty `repeats` leaves candidate output unchanged. Diagnostic seeds are
+/// still recorded either way; this does not invent a unique anchor.
+pub(crate) fn find_candidate_junctions_with_repeat_evidence_limit_anchored(
+    alignments: &[SplitReadAlignment],
+    max_family_geometries: usize,
+    repeats: &[crate::fasta::RepeatRegion],
+    contig_names: &[String],
+    contig_lens: &[u64],
+) -> SplitSeedResult {
+    let mut candidates = find_candidate_junctions_concrete(alignments);
+    let mut anchored_extra: Vec<CandidateJunction> = Vec::new();
     let mut by_read: HashMap<(&str, u8), Vec<&SplitReadAlignment>> = HashMap::new();
     for alignment in alignments {
         by_read
@@ -307,6 +337,8 @@ pub fn find_candidate_junctions_with_repeat_evidence_limit(
         let mut family_geometries = 0usize;
         let mut overflowed = false;
         let mut read_seeds = Vec::new();
+        let mut read_extra: Vec<CandidateJunction> = Vec::new();
+        let mut promoted: HashSet<JunctionKey> = HashSet::new();
         'family_pairs: for (i, left_family) in family_values.iter().enumerate() {
             for right_family in family_values.iter().skip(i + 1) {
                 family_geometries = family_geometries.saturating_add(1);
@@ -359,6 +391,7 @@ pub fn find_candidate_junctions_with_repeat_evidence_limit(
                     let resource_complete = placement_set_complete;
                     let family = canonical_both_sides_family(a, b);
 
+                    let overlap = a[0].read_end as i64 - b[0].read_start as i64;
                     read_seeds.push(RepeatAmbiguousSeed {
                         source: RepeatEvidenceSource::Stage2Mosaic,
                         anchor_contig_idx: 0,
@@ -372,7 +405,7 @@ pub fn find_candidate_junctions_with_repeat_evidence_limit(
                         placement_set_complete,
                         resource_complete,
                         resolution_complete: false,
-                        overlap: a[0].read_end as i64 - b[0].read_start as i64,
+                        overlap,
                         molecule_id: normalized_molecule_id(qname, mate),
                         molecule_minus: a[0].is_rc,
                         clip_length: sub_b.len(),
@@ -386,7 +419,25 @@ pub fn find_candidate_junctions_with_repeat_evidence_limit(
                         reciprocal_evidence: false,
                         rejection_reason: Some("BOTH_SIDES_MULTICOPY"),
                         resource_limit_reason: None,
+                        failure_stage: None,
                     });
+                    let (cands, stage) = sequence_distinct_repeat_candidates(
+                        a,
+                        b,
+                        overlap,
+                        repeats,
+                        contig_names,
+                        placement_set_complete,
+                    );
+                    if let Some(seed) = read_seeds.last_mut() {
+                        seed.failure_stage = stage;
+                    }
+                    for cand in cands {
+                        let key = candidate_key(&cand);
+                        if promoted.insert(key) {
+                            read_extra.push(cand);
+                        }
+                    }
                     continue;
                 }
 
@@ -480,8 +531,25 @@ pub fn find_candidate_junctions_with_repeat_evidence_limit(
                         reciprocal_evidence: false,
                         rejection_reason: Some("TRIVIAL_CONTINUATION_ONLY"),
                         resource_limit_reason: None,
+                        failure_stage: None,
                     });
                     continue;
+                }
+
+                let overlap = a[0].read_end as i64 - b[0].read_start as i64;
+                if let Some(cand) = closest_terminus_candidate(
+                    anchor,
+                    copied_from_a,
+                    &eligible_copies,
+                    overlap,
+                    repeats,
+                    contig_names,
+                    contig_lens,
+                ) {
+                    let key = candidate_key(&cand);
+                    if promoted.insert(key) {
+                        read_extra.push(cand);
+                    }
                 }
 
                 let family = canonical_stage2_family(&copies);
@@ -498,7 +566,7 @@ pub fn find_candidate_junctions_with_repeat_evidence_limit(
                     placement_set_complete,
                     resource_complete,
                     resolution_complete: false,
-                    overlap: a[0].read_end as i64 - b[0].read_start as i64,
+                    overlap,
                     molecule_id: normalized_molecule_id(qname, mate),
                     molecule_minus: a[0].is_rc,
                     clip_length: sub_b.len(),
@@ -512,6 +580,7 @@ pub fn find_candidate_junctions_with_repeat_evidence_limit(
                     reciprocal_evidence: false,
                     rejection_reason: None,
                     resource_limit_reason: None,
+                    failure_stage: None,
                 });
             }
         }
@@ -522,14 +591,17 @@ pub fn find_candidate_junctions_with_repeat_evidence_limit(
                 seed.resource_complete = false;
                 seed.resolution_complete = false;
                 seed.eligible_copies.clear();
+                seed.failure_stage = Some("PRUNING_INCOMPLETE_SET");
             }
             let limit_seed = stage2_resource_limit_seed(qname, mate, &family_values);
             repeat_seeds.extend(read_seeds);
             repeat_seeds.push(limit_seed);
         } else {
             repeat_seeds.extend(read_seeds);
+            anchored_extra.extend(read_extra);
         }
     }
+    candidates.extend(anchored_extra);
     repeat_seeds.sort_by_key(|seed| {
         (
             seed.anchor_contig_idx,
@@ -544,6 +616,296 @@ pub fn find_candidate_junctions_with_repeat_evidence_limit(
         repeat_seeds,
         rejected_trivial_continuation,
     }
+}
+
+fn candidate_key(cand: &CandidateJunction) -> JunctionKey {
+    (
+        cand.side1_contig,
+        cand.side1_pos_1,
+        cand.side1_minus,
+        cand.side2_contig,
+        cand.side2_pos_1,
+        cand.side2_minus,
+        cand.overlap,
+    )
+}
+
+fn canon_candidate(
+    s1_c: usize,
+    s1_p: u64,
+    s1_m: bool,
+    s2_c: usize,
+    s2_p: u64,
+    s2_m: bool,
+    overlap: i64,
+) -> CandidateJunction {
+    let (c1, p1, m1, c2, p2, m2) = if (s1_c, s1_p) <= (s2_c, s2_p) {
+        (s1_c, s1_p, s1_m, s2_c, s2_p, s2_m)
+    } else {
+        (s2_c, s2_p, !s2_m, s1_c, s1_p, !s1_m)
+    };
+    CandidateJunction {
+        side1_contig: c1,
+        side1_pos_1: p1,
+        side1_minus: m1,
+        side2_contig: c2,
+        side2_pos_1: p2,
+        side2_minus: m2,
+        overlap,
+        seed_reads: 1,
+    }
+}
+
+fn contig_name(names: &[String], idx: usize) -> &str {
+    names.get(idx).map(String::as_str).unwrap_or("")
+}
+
+fn repeats_at<'a>(
+    repeats: &'a [crate::fasta::RepeatRegion],
+    contig: &str,
+    pos: u64,
+) -> Vec<&'a crate::fasta::RepeatRegion> {
+    repeats
+        .iter()
+        .filter(|r| r.seq_id == contig && pos >= r.start && pos <= r.end)
+        .collect()
+}
+
+fn near_repeat_terminus(r: &crate::fasta::RepeatRegion, pos: u64) -> bool {
+    pos.abs_diff(r.start) <= 20 || pos.abs_diff(r.end) <= 20
+}
+
+fn circular_dist(a: u64, b: u64, len: u64) -> u64 {
+    let d = a.abs_diff(b);
+    if len == 0 {
+        d
+    } else {
+        d.min(len.saturating_sub(d))
+    }
+}
+
+/// Unique flank joined to the nearest annotated copy terminus.
+fn closest_terminus_candidate(
+    anchor: (usize, u64, bool),
+    anchor_is_side2: bool,
+    copies: &[RepeatCopyPlacement],
+    overlap: i64,
+    repeats: &[crate::fasta::RepeatRegion],
+    contig_names: &[String],
+    contig_lens: &[u64],
+) -> Option<CandidateJunction> {
+    if repeats.is_empty() {
+        return None;
+    }
+    let anchor_name = contig_name(contig_names, anchor.0);
+    if !repeats_at(repeats, anchor_name, anchor.1).is_empty() {
+        return None;
+    }
+    let len = contig_lens.get(anchor.0).copied().unwrap_or(0);
+    let mut best: Option<(u64, u64, RepeatCopyPlacement)> = None;
+    for copy in copies {
+        if copy.contig_idx != anchor.0 {
+            continue;
+        }
+        let name = contig_name(contig_names, copy.contig_idx);
+        let at_end = repeats_at(repeats, name, copy.position_1)
+            .into_iter()
+            .any(|r| near_repeat_terminus(r, copy.position_1));
+        if !at_end {
+            continue;
+        }
+        let d = circular_dist(anchor.1, copy.position_1, len);
+        let replace = match best {
+            None => true,
+            Some((bd, bp, _)) => d < bd || (d == bd && copy.position_1 < bp),
+        };
+        if replace {
+            best = Some((d, copy.position_1, *copy));
+        }
+    }
+    let (_, _, copy) = best?;
+    let anchor_side = (anchor.0, anchor.1, anchor.2);
+    let copy_side = (copy.contig_idx, copy.position_1, copy.minus);
+    let (s1, s2) = if anchor_is_side2 {
+        (copy_side, anchor_side)
+    } else {
+        (anchor_side, copy_side)
+    };
+    Some(canon_candidate(s1.0, s1.1, s1.2, s2.0, s2.1, s2.2, overlap))
+}
+
+/// How many sequence-distinct both-sides classes one read may promote.
+/// More than this is an incomplete set: promote none and keep the trace.
+const MAX_SEQUENCE_DISTINCT_PROMOTIONS: usize = 4;
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct RepeatSeqSig {
+    name: String,
+    offset: i64,
+    end_kind: u8,
+    minus: bool,
+}
+
+fn repeat_seq_sig(rep: &crate::fasta::RepeatRegion, pos: u64, minus: bool) -> RepeatSeqSig {
+    let offset = if rep.strand >= 0 {
+        pos as i64 - rep.start as i64
+    } else {
+        rep.end as i64 - pos as i64
+    };
+    let d_start = pos.abs_diff(rep.start);
+    let d_end = pos.abs_diff(rep.end);
+    let at_start = d_start <= 20;
+    let at_end = d_end <= 20;
+    let end_kind = if rep.strand >= 0 {
+        if at_start && (!at_end || d_start <= d_end) {
+            5
+        } else if at_end {
+            3
+        } else {
+            0
+        }
+    } else if at_end && (!at_start || d_end <= d_start) {
+        5
+    } else if at_start {
+        3
+    } else {
+        0
+    };
+    RepeatSeqSig {
+        name: rep.name.clone(),
+        offset,
+        end_kind,
+        minus,
+    }
+}
+
+/// Sequence-distinct both-sides placements.
+///
+/// Homologous copies share an element-relative signature and compete on
+/// their own alignment counts. A tie does not become an exact coordinate.
+/// Empty `repeats` leaves the candidate list untouched (`failure_stage`
+/// stays unset). A resource-incomplete placement set promotes nothing.
+fn sequence_distinct_repeat_candidates(
+    a: &[&SplitReadAlignment],
+    b: &[&SplitReadAlignment],
+    overlap: i64,
+    repeats: &[crate::fasta::RepeatRegion],
+    contig_names: &[String],
+    placement_set_complete: bool,
+) -> (Vec<CandidateJunction>, Option<&'static str>) {
+    if repeats.is_empty() {
+        return (Vec::new(), None);
+    }
+    if !placement_set_complete {
+        return (Vec::new(), Some("PRUNING_INCOMPLETE_SET"));
+    }
+
+    type Coord = (usize, u64, bool, usize, u64, bool);
+    let mut classes: BTreeMap<(RepeatSeqSig, RepeatSeqSig, i64), BTreeMap<Coord, u32>> =
+        BTreeMap::new();
+    let mut saw_distant = false;
+    let mut saw_same_copy = false;
+    let mut saw_other = false;
+
+    for aln_a in a {
+        for aln_b in b {
+            if aln_a.contig_idx != aln_b.contig_idx {
+                continue;
+            }
+            let (pa, ma) = side1_endpoint(aln_a);
+            let (pb, mb) = side2_endpoint(aln_b);
+            let name = contig_name(contig_names, aln_a.contig_idx);
+            let ra = repeats_at(repeats, name, pa);
+            let rb = repeats_at(repeats, name, pb);
+            if ra.is_empty() || rb.is_empty() {
+                continue;
+            }
+            for r1 in &ra {
+                for r2 in &rb {
+                    let same = r1.start == r2.start && r1.end == r2.end && r1.name == r2.name;
+                    let interior = |r: &crate::fasta::RepeatRegion, pos: u64| {
+                        pos.abs_diff(r.start) > 20 && pos.abs_diff(r.end) > 20
+                    };
+                    if same {
+                        if interior(r1, pa) && interior(r2, pb) {
+                            saw_same_copy = true;
+                        }
+                        continue;
+                    }
+                    let intervals_overlap = r1.start <= r2.end && r2.start <= r1.end;
+                    let len1 = r1.end.saturating_sub(r1.start);
+                    let len2 = r2.end.saturating_sub(r2.start);
+                    let dist = pa.abs_diff(pb);
+                    if !intervals_overlap
+                        && (interior(r1, pa) || interior(r2, pb))
+                        && dist > len1.max(len2)
+                    {
+                        saw_distant = true;
+                        continue;
+                    }
+                    let nested = intervals_overlap
+                        && (near_repeat_terminus(r1, pa) || near_repeat_terminus(r2, pb))
+                        && dist <= len1.min(len2);
+                    let both_termini = near_repeat_terminus(r1, pa) && near_repeat_terminus(r2, pb);
+                    if !nested && !both_termini {
+                        saw_other = true;
+                        continue;
+                    }
+                    let sig_a = repeat_seq_sig(r1, pa, ma);
+                    let sig_b = repeat_seq_sig(r2, pb, mb);
+                    let (sig_lo, sig_hi) = if sig_a <= sig_b {
+                        (sig_a, sig_b)
+                    } else {
+                        (sig_b, sig_a)
+                    };
+                    // Keep the read's side order. Canonicalization, including
+                    // the strand flip on a swap, happens once in `canon_candidate`.
+                    let coord = (aln_a.contig_idx, pa, ma, aln_b.contig_idx, pb, mb);
+                    *classes
+                        .entry((sig_lo, sig_hi, overlap))
+                        .or_default()
+                        .entry(coord)
+                        .or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    let mut winners: Vec<(u32, Coord)> = Vec::new();
+    let mut unresolved = false;
+    for coords in classes.values() {
+        let max_count = coords.values().copied().max().unwrap_or(0);
+        let tops: Vec<_> = coords
+            .iter()
+            .filter(|(_, count)| **count == max_count)
+            .map(|(coord, count)| (*count, *coord))
+            .collect();
+        if tops.len() == 1 {
+            winners.push(tops[0]);
+        } else if tops.len() > 1 {
+            unresolved = true;
+        }
+    }
+    winners.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    if winners.len() > MAX_SEQUENCE_DISTINCT_PROMOTIONS {
+        return (Vec::new(), Some("PRUNING_CLASS_CAP"));
+    }
+    let stage = if unresolved {
+        Some("PRUNING_UNRESOLVED_COPIES")
+    } else if winners.is_empty() && saw_distant {
+        Some("PRUNING_DISTANT_INTERIOR")
+    } else if winners.is_empty() && saw_same_copy {
+        Some("PRUNING_SAME_COPY_INTERIOR")
+    } else if winners.is_empty() && saw_other {
+        Some("PRUNING_NOT_BOUNDARY")
+    } else {
+        None
+    };
+    let cands = winners
+        .into_iter()
+        .map(|(_, (c1, p1, m1, c2, p2, m2))| canon_candidate(c1, p1, m1, c2, p2, m2, overlap))
+        .collect();
+    (cands, stage)
 }
 
 fn stage2_resource_limit_seed(
@@ -591,6 +953,7 @@ fn stage2_resource_limit_seed(
         reciprocal_evidence: false,
         rejection_reason: Some("RESOURCE_LIMIT_STAGE2_FAMILY_GEOMETRY"),
         resource_limit_reason: Some("RESOURCE_LIMIT_STAGE2_FAMILY_GEOMETRY"),
+        failure_stage: Some("PRUNING_INCOMPLETE_SET"),
     }
 }
 
@@ -698,10 +1061,10 @@ pub fn extract_candidate_junctions_from_sam(
     Ok(find_candidate_junctions(&alignments))
 }
 
-pub fn extract_candidate_junctions_with_repeat_evidence_from_sam(
+fn alignments_from_sam(
     sam_path: &Path,
     contig_names: &[String],
-) -> Result<SplitSeedResult> {
+) -> Result<Vec<SplitReadAlignment>> {
     let name_to_idx: HashMap<&str, usize> = contig_names
         .iter()
         .enumerate()
@@ -720,7 +1083,33 @@ pub fn extract_candidate_junctions_with_repeat_evidence_from_sam(
             alignments.push(alignment);
         }
     }
+    Ok(alignments)
+}
+
+pub fn extract_candidate_junctions_with_repeat_evidence_from_sam(
+    sam_path: &Path,
+    contig_names: &[String],
+) -> Result<SplitSeedResult> {
+    let alignments = alignments_from_sam(sam_path, contig_names)?;
     Ok(find_candidate_junctions_with_repeat_evidence(&alignments))
+}
+
+pub(crate) fn extract_candidate_junctions_with_repeat_evidence_from_sam_anchored(
+    sam_path: &Path,
+    contig_names: &[String],
+    repeats: &[crate::fasta::RepeatRegion],
+    contig_lens: &[u64],
+) -> Result<SplitSeedResult> {
+    let alignments = alignments_from_sam(sam_path, contig_names)?;
+    Ok(
+        find_candidate_junctions_with_repeat_evidence_limit_anchored(
+            &alignments,
+            MAX_STAGE2_FAMILY_GEOMETRIES,
+            repeats,
+            contig_names,
+            contig_lens,
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -760,6 +1149,234 @@ mod tests {
                 }),
         );
         alignments
+    }
+
+    fn aln(
+        qname: &str,
+        ref_start_1: u64,
+        read_start: usize,
+        read_end: usize,
+    ) -> SplitReadAlignment {
+        SplitReadAlignment {
+            qname: qname.into(),
+            mate: 1,
+            contig_idx: 0,
+            ref_start_1,
+            ref_span: 20,
+            read_start,
+            read_end,
+            read_len: 40,
+            is_rc: false,
+        }
+    }
+
+    #[test]
+    fn anchored_stage2_promotes_nearest_terminus_and_nested_boundary() {
+        use crate::fasta::RepeatRegion;
+
+        // >20 alignments: the concrete path emits nothing. With repeats, the
+        // unique flank is paired with the nearest terminus, not a closer
+        // interior point and not the lower coordinate.
+        let mut unique = vec![aln("uniq", 15_000, 0, 20)];
+        for i in 0..20 {
+            unique.push(aln("uniq", 30_000 + i * 100, 20, 40));
+        }
+        unique.push(aln("uniq", 1_000, 20, 40));
+        unique.push(aln("uniq", 8_000, 20, 40));
+        unique.push(aln("uniq", 5_100, 20, 40));
+        let repeats = vec![
+            RepeatRegion {
+                seq_id: "chr".into(),
+                name: "IS".into(),
+                strand: 1,
+                start: 1_000,
+                end: 2_443,
+            },
+            RepeatRegion {
+                seq_id: "chr".into(),
+                name: "IS".into(),
+                strand: 1,
+                start: 5_000,
+                end: 6_443,
+            },
+            RepeatRegion {
+                seq_id: "chr".into(),
+                name: "IS".into(),
+                strand: 1,
+                start: 8_000,
+                end: 9_443,
+            },
+        ];
+        let names = vec!["chr".to_string()];
+        let lens = vec![100_000u64];
+        let bare = find_candidate_junctions_with_repeat_evidence(&unique);
+        assert!(
+            bare.candidates.is_empty(),
+            "without repeat annotations the >20 read stays diagnostic-only"
+        );
+        let anchored = find_candidate_junctions_with_repeat_evidence_limit_anchored(
+            &unique,
+            MAX_STAGE2_FAMILY_GEOMETRIES,
+            &repeats,
+            &names,
+            &lens,
+        );
+        assert_eq!(anchored.candidates.len(), 1);
+        let c = &anchored.candidates[0];
+        let positions = [c.side1_pos_1, c.side2_pos_1];
+        assert!(
+            positions.contains(&8_000) && positions.contains(&15_019),
+            "nearest terminus 8000, not interior 5100 or lower terminus 1000; got {positions:?}"
+        );
+
+        // Nested: interior of the inner element within one inner-length of
+        // the outer terminus. A farther non-overlapping terminus is ignored.
+        let mut nested = Vec::new();
+        nested.push(aln("nest", 4_481, 0, 20)); // side1 endpoint 4500
+        for i in 0..20 {
+            nested.push(aln("nest", 80_000 + i * 50, 0, 20));
+        }
+        nested.push(aln("nest", 5_000, 20, 40));
+        nested.push(aln("nest", 30_000, 20, 40));
+        let nested_reps = vec![
+            RepeatRegion {
+                seq_id: "chr".into(),
+                name: "inner".into(),
+                strand: -1,
+                start: 4_200,
+                end: 5_000,
+            },
+            RepeatRegion {
+                seq_id: "chr".into(),
+                name: "outer".into(),
+                strand: 1,
+                start: 1_000,
+                end: 5_000,
+            },
+        ];
+        let promoted = find_candidate_junctions_with_repeat_evidence_limit_anchored(
+            &nested,
+            MAX_STAGE2_FAMILY_GEOMETRIES,
+            &nested_reps,
+            &names,
+            &lens,
+        );
+        assert_eq!(promoted.candidates.len(), 1);
+        let n = &promoted.candidates[0];
+        let npos = [n.side1_pos_1, n.side2_pos_1];
+        assert!(
+            npos.contains(&4_500) && npos.contains(&5_000),
+            "nested boundary only; got {npos:?}"
+        );
+    }
+
+    fn is_copies() -> Vec<crate::fasta::RepeatRegion> {
+        use crate::fasta::RepeatRegion;
+        [1_000u64, 3_000, 5_000, 7_000]
+            .into_iter()
+            .map(|start| RepeatRegion {
+                seq_id: "chr".into(),
+                name: "IS".into(),
+                strand: 1,
+                start,
+                end: start + 100,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tied_homologous_copies_are_not_chosen_by_distance() {
+        let mut reads = Vec::new();
+        reads.push(aln("tie", 1_081, 0, 20));
+        reads.push(aln("tie", 3_081, 0, 20));
+        for i in 0..18 {
+            reads.push(aln("tie", 50_000 + i * 40, 0, 20));
+        }
+        reads.push(aln("tie", 5_000, 20, 40));
+        reads.push(aln("tie", 7_000, 20, 40));
+        let names = vec!["chr".to_string()];
+        let lens = vec![100_000u64];
+        let result = find_candidate_junctions_with_repeat_evidence_limit_anchored(
+            &reads,
+            MAX_STAGE2_FAMILY_GEOMETRIES,
+            &is_copies(),
+            &names,
+            &lens,
+        );
+        assert!(
+            result.candidates.is_empty(),
+            "a tie must not become an exact copy, got {:?}",
+            result
+                .candidates
+                .iter()
+                .map(|c| (c.side1_pos_1, c.side2_pos_1))
+                .collect::<Vec<_>>()
+        );
+        assert!(result.repeat_seeds.iter().any(|seed| {
+            seed.failure_stage == Some("PRUNING_UNRESOLVED_COPIES")
+                && seed.resource_limit_reason.is_none()
+        }));
+    }
+
+    #[test]
+    fn strict_alignment_count_promotes_one_sequence_distinct_copy() {
+        let mut reads = Vec::new();
+        for _ in 0..3 {
+            reads.push(aln("win", 1_081, 0, 20));
+        }
+        reads.push(aln("win", 3_081, 0, 20));
+        for i in 0..17 {
+            reads.push(aln("win", 50_000 + i * 40, 0, 20));
+        }
+        reads.push(aln("win", 5_000, 20, 40));
+        reads.push(aln("win", 5_000, 20, 40));
+        let names = vec!["chr".to_string()];
+        let lens = vec![100_000u64];
+        let result = find_candidate_junctions_with_repeat_evidence_limit_anchored(
+            &reads,
+            MAX_STAGE2_FAMILY_GEOMETRIES,
+            &is_copies(),
+            &names,
+            &lens,
+        );
+        assert_eq!(result.candidates.len(), 1);
+        let c = &result.candidates[0];
+        let positions = [c.side1_pos_1, c.side2_pos_1];
+        assert!(
+            positions.contains(&1_100) && positions.contains(&5_000),
+            "higher own alignment count wins, not the nearer copy; got {positions:?}"
+        );
+        assert!(result
+            .repeat_seeds
+            .iter()
+            .all(|seed| seed.resource_limit_reason.is_none()));
+    }
+
+    #[test]
+    fn resource_limit_blocks_sequence_distinct_promotion() {
+        let mut reads = Vec::new();
+        for _ in 0..3 {
+            reads.push(aln("lim", 1_081, 0, 20));
+        }
+        reads.push(aln("lim", 3_081, 0, 20));
+        for i in 0..17 {
+            reads.push(aln("lim", 50_000 + i * 40, 0, 20));
+        }
+        reads.push(aln("lim", 5_000, 20, 40));
+        let names = vec!["chr".to_string()];
+        let lens = vec![100_000u64];
+        let result = find_candidate_junctions_with_repeat_evidence_limit_anchored(
+            &reads,
+            0,
+            &is_copies(),
+            &names,
+            &lens,
+        );
+        assert!(result.candidates.is_empty());
+        assert!(result.repeat_seeds.iter().any(|seed| {
+            seed.resource_limit_reason == Some("RESOURCE_LIMIT_STAGE2_FAMILY_GEOMETRY")
+                && seed.failure_stage == Some("PRUNING_INCOMPLETE_SET")
+        }));
     }
 
     #[test]
@@ -1296,12 +1913,14 @@ readPlain\t0\tchr1\t300\t60\t20M\t*\t0\t0\tACGTACGTACGTACGTACGT\t*\n";
                 ref_base: b'C',
                 observations: Vec::new(),
                 insertions: Vec::new(),
+                deletions: Vec::new(),
             };
             200
         ];
         let mut clips = Vec::new();
         apply_read(
             &read,
+            read.molecule_id,
             &mut columns,
             &mut vec![0; 200],
             &mut vec![0; 200],

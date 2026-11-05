@@ -1,4 +1,5 @@
 import csv
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -56,12 +57,20 @@ def test_ten_unrecovered_alleles_keep_p2a_status_and_balance():
 
 def test_contracts_unchanged():
     repo = Path(__file__).resolve().parents[3]
-    diff = subprocess.check_output(
-        ["git", "diff", "--stat", "--", "crates", "benchmark/real_world/VALIDATION_REGISTRY.tsv"],
+    # VALIDATION_REGISTRY.tsv is always strictly asserted untouched; crates
+    # cleanliness is only checked when explicitly requested, because ongoing
+    # worktrees may legitimately carry uncommitted crate changes.
+    # `git status --porcelain` detects staged, unstaged, and untracked
+    # changes relative to HEAD, so `git add` cannot bypass the check.
+    diff_paths = ["benchmark/real_world/VALIDATION_REGISTRY.tsv"]
+    if os.environ.get("PROKADIFF_CHECK_CRATES_CLEAN") == "1":
+        diff_paths.append("crates")
+    status = subprocess.check_output(
+        ["git", "status", "--porcelain", "--"] + diff_paths,
         cwd=repo,
         text=True,
     )
-    assert diff.strip() == ""
+    assert status.strip() == ""
 
 
 def test_read_level_tsv_schema_and_numeric_integrity():

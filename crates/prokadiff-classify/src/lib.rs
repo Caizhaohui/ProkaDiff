@@ -10,6 +10,7 @@ pub mod geometry;
 #[cfg(test)]
 mod homolog;
 mod intended;
+pub mod subclonal;
 
 #[cfg(test)]
 mod m1_regression_tests;
@@ -50,6 +51,7 @@ pub use intended::{
     EvidenceObservation, IntendedEdit, IntendedEditAssessment, IntendedEditStatus, IntendedError,
     IntendedEventRelationship, IntendedEventRole, McDiagnostic,
 };
+pub use subclonal::{evaluate_subclonal_candidates, RawSubclonalObservation, SubclonalVariant};
 pub use prokadiff_offtarget::{
     write_mutation_offtarget_links_tsv, write_offtarget_sites_tsv, MutationOffTargetLink,
     OffTargetSite,
