@@ -43,10 +43,6 @@ benchmark/results/*
 !benchmark/results/parity_summary.tsv
 !benchmark/results/verified/
 !benchmark/results/verified/*.md
-!benchmark/results/parity_closure/
-benchmark/results/parity_closure/*
-!benchmark/results/parity_closure/supervisor/
-!benchmark/results/parity_closure/supervisor/**
 benchmark/real_world/results/*
 !benchmark/real_world/results/.gitkeep
 benchmark/logs/
@@ -74,6 +70,21 @@ __pycache__/
 
 # Session handoffs
 .*handoff*.md
+
+# Multi-AI governance / development ledgers & reports (kept local, not published to GitHub)
+/M[0-9]*_*.md
+/ACTIVE_TASK.md
+/HANDOFF.md
+/STAGE_ROADMAP.md
+/MULTI_AI_DEVELOPMENT_STRATEGY.md
+/PROJECT_GOAL_FREEZE_AND_ACCEPTANCE_AUDIT.md
+/docs/development/
+/case_studies/
+/.codex/
+/benchmark/PARITY_ISSUES.md
+/benchmark/real_world/M[0-9]*.md
+/benchmark/real_world/REAL_WORLD_ISSUES.md
+/benchmark/results/parity_closure/
 
 # Controller/Worker evidence logs & artifacts (not published)
 .prokadiff/
