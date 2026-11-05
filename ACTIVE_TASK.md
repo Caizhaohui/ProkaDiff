@@ -8,7 +8,7 @@
 - **Developer P1**: OpenCode CLI / GLM-5.3
 - **Governing Policy**: Multi-AI Collaboration V3.2 (`~/.config/ai-collaboration/POLICY.md`)
 - **Slurm Allocation**: Job `3095377`, compute node `bnode2` (`qcpu_18i`), reused via `srun --overlap`
-- **Status**: `AWAITING_USER_APPROVAL` — M11 technically complete & independently accepted (Codex Sol Round 6 `[PASS]`, 2026-11-05); push/tag/release and next-milestone authorization rest with the user
+- **Status**: `RELEASED v0.11.0-m11` — M11 accepted (Codex Sol R6 `[PASS]`) and released by user authorization 2026-11-05: `main` pushed to `origin` (`1a0c7b5..da58fe0`), annotated tag `v0.11.0-m11` pushed; GitHub Release object to be published from the tag by the user (API credentials unavailable in dev environment; notes prepared at `.prokadiff/RELEASE_NOTES_v0.11.0-m11.md`). Next milestone requires fresh user authorization.
 
 ---
 

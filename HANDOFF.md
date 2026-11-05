@@ -2,6 +2,8 @@
 
 ## Milestone M11 Formal Acceptance Closeout — 2026-11-05
 
+- **RELEASE (user-authorized 2026-11-05)**: `main` pushed to `origin` (`1a0c7b5..da58fe0`, fast-forward); annotated tag **`v0.11.0-m11`** created and pushed (accumulated M6–M11 content since `v0.5.0-m5`). GitHub Release object pending user publication from the pushed tag (no GitHub API credentials in the dev environment); release notes prepared at `.prokadiff/RELEASE_NOTES_v0.11.0-m11.md`.
+
 - **CURRENT_PROJECT**: ProkaDiff
 - **COMPLETED_MILESTONE**: `M11` (亚克隆低频变异与混群审计模式 / Subclonal Pool-seq Variant Audit Mode) — **COMPLETE (ACCEPTED)**
   - Codex Sol Round 6 formal verdict: **`[PASS] Milestone M11 Round 6 Accepted`** — no open P1/P2 findings (`.prokadiff/codex_m11_r6_review.txt`).
