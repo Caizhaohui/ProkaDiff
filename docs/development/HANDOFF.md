@@ -1,3 +1,5 @@
+<!-- LIVE VERSION MOVED: authoritative HANDOFF.md and ACTIVE_TASK.md now live at the repository root (2026-11-05 controller handoff). This file is historical. -->
+
 # ProkaDiff Development Handoff
 
 ## Milestone M9 Formal Sign-Off Closeout & Milestone M10 Activation — 2026-11-04

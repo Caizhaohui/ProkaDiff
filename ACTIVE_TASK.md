@@ -8,7 +8,19 @@
 - **Developer P1**: OpenCode CLI / GLM-5.3
 - **Governing Policy**: Multi-AI Collaboration V3.2 (`~/.config/ai-collaboration/POLICY.md`)
 - **Slurm Allocation**: Job `3095377`, compute node `bnode2` (`qcpu_18i`), reused via `srun --overlap`
-- **Status**: `M11_T06_ROUND3_REVIEW_PENDING`
+- **Status**: `AWAITING_USER_APPROVAL` — M11 technically complete & independently accepted (Codex Sol Round 6 `[PASS]`, 2026-11-05); push/tag/release and next-milestone authorization rest with the user
+
+---
+
+## M11 正式验收 (2026-11-05) — Codex Sol Round 6 `[PASS] Accepted`
+
+- **Final verdict**: `[PASS] Milestone M11 Round 6 Accepted`, no open P1/P2 findings (`.prokadiff/codex_m11_r6_review.txt`).
+- **Gates**: A–E all PASS (Gate A under user-authorized revision, contract §7).
+- **Final evidence**: workspace 494 passed / 0 failed / 3 ignored; clippy 0 warnings; 256 oracle tests green; release gates 3×PASS — qfree vnode1 jobs 3130686/3130717.
+- **Baseline commit**: `b30fbad` (user-authorized, local only; push/tag/release retained by user).
+- **Acceptance report**: [`M11_FINAL_INTEGRATION_REPORT.md`](M11_FINAL_INTEGRATION_REPORT.md).
+- **Review trail**: R1–R6 (REJECTED ×5 with all findings repaired within the three-attempt rule; ACCEPTED ×1). Full trail in `M11_WORKER_DISPATCH_LEDGER.md` DISP-M11-006…017.
+- **Next action (user)**: decide on push/tag/release and authorize the next roadmap sprint (`STAGE_ROADMAP.md`). No autonomous dispatch remains for M11 per POLICY §13.4 (terminal state reached).
 
 ---
 

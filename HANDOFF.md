@@ -1,5 +1,25 @@
 # ProkaDiff Development Handoff
 
+## Milestone M11 Formal Acceptance Closeout — 2026-11-05
+
+- **CURRENT_PROJECT**: ProkaDiff
+- **COMPLETED_MILESTONE**: `M11` (亚克隆低频变异与混群审计模式 / Subclonal Pool-seq Variant Audit Mode) — **COMPLETE (ACCEPTED)**
+  - Codex Sol Round 6 formal verdict: **`[PASS] Milestone M11 Round 6 Accepted`** — no open P1/P2 findings (`.prokadiff/codex_m11_r6_review.txt`).
+  - Gates A–E all PASS; Gate A under user-authorized revision (`M11_ARCHITECTURE_AND_ACCEPTANCE_CONTRACT.md` §7; authorization record `.prokadiff/m11_gate_a_authorization.md`).
+  - Final deterministic evidence: `cargo test --workspace` **494 passed / 0 failed / 3 ignored**; clippy 0 warnings; 256 committed-oracle tests green; release gates 3×PASS / 0 findings — qfree vnode1 (jobs 3130686, 3130717).
+  - Review trail: R1–R5 REJECTED (9 / 4P1+2P2 / 2P1+3P2 / 1P1+2P2 / 1P2 findings — every finding repaired, attempts 1–2 of 3 used), R6 ACCEPTED.
+  - Deliverables: `crates/prokadiff-evidence/src/subclonal.rs` (statistics engine), `crates/prokadiff-classify/src/subclonal.rs` (per-read classifier over `BaseObs.read_id`/`InsertionObs`/`DeletionObs`), `crates/prokadiff-report` (26-column `subclonal_audit.tsv` + caveat report, documented in `docs/schema.md`), `crates/prokadiff/tests/subclonal_titration.rs` (production gradient suite), CLI flags (`--subclonal`, `--min-subclonal-af`, `--min-subclonal-alt-reads`, `--max-strand-bias-pvalue`).
+  - Acceptance report: [`M11_FINAL_INTEGRATION_REPORT.md`](M11_FINAL_INTEGRATION_REPORT.md).
+- **BASELINE_COMMIT**: `b30fbadfb666d11cfcccac605be742e3ed223a77` (user-authorized first content-addressed baseline; local only). From M12 onward, commit a content-addressed baseline BEFORE new development (literal byte-diff Gate comparisons become standard practice).
+- **CURRENT_STATUS**: `AWAITING_USER_APPROVAL` — push/tag/release and next-milestone authorization rest with the user (`FINAL_AUTHORIZATION_AUTHORITY`). Per POLICY §13.4, no autonomous M11 dispatch remains (terminal state).
+- **HISTORICAL_CONSTRAINTS**: G1 Clonal JC `FROZEN_HOLD` (`MATCHED=10, OVER=24, UNDER=8, PASS=false`); PRJNA1088182 & PRJNA884016 `PENDING` — all untouched and verified preserved by Round 6.
+- **CONTROLLER**: OpenCode CLI / GLM-5.3-Flash (acting Controller per user-authorized handoff 2026-11-05; former Controller Antigravity / Gemini weekly quota exhausted; quota state `RATE_LIMITED`, no verified reset time, do not probe during cooldown).
+- **OPERATING_POLICY**: Multi-AI Collaboration V3.2 (`~/.config/ai-collaboration/POLICY.md`)
+- **ACTIVE_WORKTREE**: `/hpcfs/fhome/caizhh/Desktop/03_Tool_Development/04_ProkaDiff`
+- **SLURM_COMPUTE**: `qfree` vnode1 (jobs 3130686, 3130717); interactive allocation `3095377` (bnode2, qcpu_18i) reused only for the takeover recovery run
+
+---
+
 ## Controller Handoff: Antigravity/Gemini → OpenCode/GLM-5.3-Flash (M11 Recovery) — 2026-11-05
 
 - **PREVIOUS_CONTROLLER**: Antigravity CLI / Gemini 3.8 Flash Medium (`AUTONOMOUS_EXECUTION_CONTROLLER`) — weekly quota exhausted mid-M11-T06; final action (interrupted full `cargo test`) incomplete.

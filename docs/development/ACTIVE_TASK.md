@@ -1,3 +1,5 @@
+<!-- LIVE VERSION MOVED: authoritative HANDOFF.md and ACTIVE_TASK.md now live at the repository root (2026-11-05 controller handoff). This file is historical. -->
+
 # Active Task
 
 - **Project**: ProkaDiff
